@@ -107,7 +107,7 @@ ngx_int_t   ngx_http_cache_purge_cache_get(ngx_http_request_t *r,
 # endif /* nginx_version >= 1007009 */
 ngx_int_t   ngx_http_cache_purge_init(ngx_http_request_t *r,
                                       ngx_http_file_cache_t *cache, ngx_http_complex_value_t *cache_key);
-void        ngx_http_cache_purge_handler(ngx_http_request_t *r);
+void        ngx_http_cache_purge_handler(ngx_http_request_t *r, char * s);
 
 ngx_int_t   ngx_http_file_cache_purge(ngx_http_request_t *r);
 
@@ -434,7 +434,7 @@ ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (cplcf->fastcgi.purge_all) {
         ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -449,7 +449,7 @@ ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r) {
     r->main->count++;
 #  endif
 
-    ngx_http_cache_purge_handler(r);
+    ngx_http_cache_purge_handler(r, "fastcgi");
 
     return NGX_DONE;
 }
@@ -721,7 +721,7 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (cplcf->proxy.purge_all) {
         ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -736,7 +736,7 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r) {
     r->main->count++;
 #  endif
 
-    ngx_http_cache_purge_handler(r);
+    ngx_http_cache_purge_handler(r,"proxy");
 
     return NGX_DONE;
 }
@@ -946,7 +946,7 @@ ngx_http_scgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (cplcf->scgi.purge_all) {
         ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -961,7 +961,7 @@ ngx_http_scgi_cache_purge_handler(ngx_http_request_t *r) {
     r->main->count++;
 #  endif
 
-    ngx_http_cache_purge_handler(r);
+    ngx_http_cache_purge_handler(r,"scgi");
 
     return NGX_DONE;
 }
@@ -1194,7 +1194,7 @@ ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (cplcf->uwsgi.purge_all) {
         ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -1209,7 +1209,7 @@ ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r) {
     r->main->count++;
 #  endif
 
-    ngx_http_cache_purge_handler(r);
+    ngx_http_cache_purge_handler(r,"uwsgi");
 
     return NGX_DONE;
 }
@@ -1536,7 +1536,7 @@ ngx_http_cache_purge_init(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 }
 
 void
-ngx_http_cache_purge_handler(ngx_http_request_t *r) {
+ngx_http_cache_purge_handler(ngx_http_request_t *r, char * s) {
     ngx_http_cache_purge_loc_conf_t     *cplcf;
     ngx_int_t  rc;
 
@@ -1548,12 +1548,42 @@ ngx_http_cache_purge_handler(ngx_http_request_t *r) {
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
     rc = NGX_OK;
-    if (!cplcf->conf->purge_all && !ngx_http_cache_purge_is_partial(r)) {
-        rc = ngx_http_file_cache_purge(r);
 
-        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "http file cache purge: %i, \"%s\"",
-                       rc, r->cache->file.name.data);
+    if( s == "proxy" ) {
+      if (!cplcf->proxy.purge_all && !ngx_http_cache_purge_is_partial(r)) {
+          rc = ngx_http_file_cache_purge(r);
+
+          ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                         "http file cache purge: %i, \"%s\"",
+                         rc, r->cache->file.name.data);
+      }
+    }
+    else if( s == "fastcgi" ){
+      if (!cplcf->fastcgi.purge_all && !ngx_http_cache_purge_is_partial(r)) {
+          rc = ngx_http_file_cache_purge(r);
+
+          ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                          "http file cache purge: %i, \"%s\"",
+                          rc, r->cache->file.name.data);
+      }
+    }
+    else if(s == "scgi"){
+      if (!cplcf->scgi.purge_all && !ngx_http_cache_purge_is_partial(r)) {
+          rc = ngx_http_file_cache_purge(r);
+
+          ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                         "http file cache purge: %i, \"%s\"",
+                         rc, r->cache->file.name.data);
+      }
+    }
+    else{
+      if (!cplcf->uwsgi.purge_all && !ngx_http_cache_purge_is_partial(r)) {
+          rc = ngx_http_file_cache_purge(r);
+
+          ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                         "http file cache purge: %i, \"%s\"",
+                         rc, r->cache->file.name.data);
+      }
     }
 
     switch (rc) {
