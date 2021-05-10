@@ -1309,18 +1309,56 @@ ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
 }
 
 
+int wildcmp(const ngx_str_t *wild, const u_char *string) {
+  u_char pattern_char;
+  u_char str_char;
+  size_t i;
+  u_char wildcard_break;
+  size_t len;
+
+  wildcard_break = '\0';
+  len = wild->len;
+
+  for(i = 0; i < len; i++) {
+      pattern_char = *(wild->data + i);
+      if (pattern_char == '*') {
+          if (i == len - 1) {
+              wildcard_break = '\0';
+          } else {
+              wildcard_break = *(wild->data + i + 1);
+          }
+          while((str_char = *(string))) {
+              if (str_char == wildcard_break) {
+                  wildcard_break = '\0';
+                  break;
+              }
+              ++string;
+          }
+      } else {
+          if (*string != pattern_char) {
+              return 0;
+          }
+          ++string;
+      }
+  }
+  
+  if (wildcard_break != '\0' || *(string)) {
+      return 0;
+  }
+  return 1;
+}
+
+#define BUFFER_SIZE 30
+
 static ngx_int_t
 ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
-    u_char *key_partial;
-    u_char *key_in_file;
-    ngx_uint_t len;
-    ngx_flag_t remove_file = 0;
-
+    ngx_str_t   *key_partial;
+    u_char      *key_in_file;
+    ngx_flag_t   remove_file = 0;
     key_partial = ctx->data;
-    len = ngx_strlen(key_partial);
 
-    /* if key_partial is empty always match, because is a '*' */
-    if (len == 0) {
+    /* if key_partial.len == 1 always match, because is a '*' */
+    if (key_partial->len == 1) {
         ngx_log_debug(NGX_LOG_DEBUG_HTTP, ctx->log, 0,
                       "empty key_partial, forcing deletion");
         remove_file = 1;
@@ -1333,23 +1371,24 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx, ngx_str_t *pa
                                 NGX_FILE_DEFAULT_ACCESS);
         file.log = ctx->log;
 
-        /* I don't know if it's a good idea to use the ngx_cycle pool for this,
-           but the request is not available here */
-        key_in_file = ngx_pcalloc(ngx_cycle->pool, sizeof(u_char) * (len + 1));
-
         /* KEY: /proxy/passwd */
-        /* since we don't need the "KEY: " ignore 5 + 1 extra u_char from last
-           intro */
-        /* Optimization: we don't need to read the full key only the n chars
-           included in key_partial */
-        ngx_read_file(&file, key_in_file, sizeof(u_char) * len,
+        // Read the whole key
+
+        // find cache key end (header_start) from file's header 
+        u_char *header_buf = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_file_cache_header_t));
+        ngx_read_file(&file, header_buf, sizeof(ngx_http_file_cache_header_t),0);
+        ngx_http_file_cache_header_t *h = (ngx_http_file_cache_header_t*) header_buf;
+        size_t key_len = h->header_start - 1 - sizeof(ngx_http_file_cache_header_t) - 6;
+        /* since we don't need the "KEY: " ignore 5 + 1 extra u_char from last intro */
+        key_in_file = ngx_pcalloc(ngx_cycle->pool,
+            sizeof(u_char) * key_len);
+        ngx_read_file(&file, key_in_file, sizeof(u_char) * key_len,
                       sizeof(ngx_http_file_cache_header_t) + sizeof(u_char) * 6);
         ngx_close_file(file.fd);
 
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ctx->log, 0,
                        "http cache file \"%s\" key read: \"%s\"", path->data, key_in_file);
-
-        if (ngx_strncasecmp(key_in_file, key_partial, len) == 0) {
+        if (wildcmp(key_partial, key_in_file) == 1) {
             ngx_log_debug(NGX_LOG_DEBUG_HTTP, ctx->log, 0,
                           "match found, deleting file \"%s\"", path->data);
             remove_file = 1;
@@ -1797,19 +1836,11 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                   "purge_partial http in %s",
                   cache->path->name.data);
-
-    u_char              *key_partial;
     ngx_str_t           *key;
     ngx_http_cache_t    *c;
-    ngx_uint_t          len;
 
     c = r->cache;
     key = c->keys.elts;
-    len = key[0].len;
-
-    /* Only check the first key */
-    key_partial = ngx_pcalloc(r->pool, sizeof(u_char) * len);
-    ngx_memcpy(key_partial, key[0].data, sizeof(u_char) * (len - 1));
 
     /* Walk the tree and remove all the files matching key_partial */
     ngx_tree_ctx_t  tree;
@@ -1818,7 +1849,7 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
     tree.pre_tree_handler = ngx_http_purge_file_cache_noop;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler = ngx_http_purge_file_cache_noop;
-    tree.data = key_partial;
+    tree.data = key;
     tree.alloc = 0;
     tree.log = ngx_cycle->log;
 
@@ -1828,15 +1859,15 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
 ngx_int_t
 ngx_http_cache_purge_is_partial(ngx_http_request_t *r) {
     ngx_str_t *key;
+    ngx_str_t first_key;
     ngx_http_cache_t  *c;
 
     c = r->cache;
     key = c->keys.elts;
+    first_key = key[0];
 
-    /* Only check the first key */
-    return c->keys.nelts > 0 // number of array elements
-        && key[0].len > 0 // char length of the key
-        && key[0].data[key[0].len - 1] == '*'; // is the last char an asterix char?
+    return c->keys.nelts > 0 
+        && ngx_strchr(first_key.data, '*') != NULL;
 }
 
 char *
