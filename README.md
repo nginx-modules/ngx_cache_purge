@@ -197,7 +197,6 @@ Sample configuration (Optional)
                 deny               all;
                 proxy_cache        tmpcache;
                 proxy_cache_key    "$1$is_args$args";
-                cache_purge_response_type json;
             }
         }
 
