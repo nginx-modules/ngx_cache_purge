@@ -140,7 +140,7 @@ Sample configuration (same location syntax - purge all cached files)
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
                 proxy_cache_key    "$uri$is_args$args";
-                proxy_cache_purge  PURGE purge_all from 127.0.0.1;
+                proxy_cache_purge  PURGE purge_all from 127.0.0.1 192.168.0.0/8;
             }
         }
     }
