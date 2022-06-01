@@ -123,7 +123,7 @@ Sample configuration (same location syntax)
             location / {
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
-                proxy_cache_key    $uri$is_args$args;
+                proxy_cache_key    "$uri$is_args$args";
                 proxy_cache_purge  PURGE from 127.0.0.1;
             }
         }
@@ -139,7 +139,7 @@ Sample configuration (same location syntax - purge all cached files)
             location / {
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
-                proxy_cache_key    $uri$is_args$args;
+                proxy_cache_key    "$uri$is_args$args";
                 proxy_cache_purge  PURGE purge_all from 127.0.0.1;
             }
         }
@@ -155,13 +155,14 @@ Sample configuration (separate location syntax)
             location / {
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
-                proxy_cache_key    $uri$is_args$args;
+                proxy_cache_key    "$uri$is_args$args";
             }
 
             location ~ /purge(/.*) {
                 allow              127.0.0.1;
                 deny               all;
-                proxy_cache_purge  tmpcache $1$is_args$args;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$1$is_args$args";
             }
         }
     }
@@ -180,20 +181,23 @@ Sample configuration (Optional)
             location / { #json
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
-                proxy_cache_key    $uri$is_args$args;
+                proxy_cache_key    "$uri$is_args$args";
             }
 
             location ~ /purge(/.*) { #xml
                 allow              127.0.0.1;
                 deny               all;
-                proxy_cache_purge  tmpcache $1$is_args$args;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$1$is_args$args";
                 cache_purge_response_type xml;
             }
 
             location ~ /purge2(/.*) { # json
                 allow              127.0.0.1;
                 deny               all;
-                proxy_cache_purge  tmpcache $1$is_args$args;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$1$is_args$args";
+                cache_purge_response_type json;
             }
         }
 
@@ -202,19 +206,21 @@ Sample configuration (Optional)
             location / { #text
                 proxy_pass         http://127.0.0.1:8000;
                 proxy_cache        tmpcache;
-                proxy_cache_key    $uri$is_args$args;
+                proxy_cache_key    "$uri$is_args$args";
             }
 
             location ~ /purge(/.*) { #text
                 allow              127.0.0.1;
                 deny               all;
-                proxy_cache_purge  tmpcache $1$is_args$args;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$1$is_args$args";
             }
 
             location ~ /purge2(/.*) { #html
                 allow              127.0.0.1;
                 deny               all;
-                proxy_cache_purge  tmpcache $1$is_args$args;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$1$is_args$args";
                 cache_purge_response_type html;
             }
         }
