@@ -540,9 +540,9 @@ typedef struct {
     ngx_array_t                   *cookie_domains;
     ngx_array_t                   *cookie_paths;
 #  endif /* nginx_version >= 1001015 */
-# if (nginx_version >= 1019003)
+#  if (nginx_version >= 1019003)
     ngx_array_t                   *cookie_flags;
-#endif /* nginx_version >= 1019003 */
+#  endif /* nginx_version >= 1019003 */
 #  if (nginx_version < 1007008)
     ngx_str_t                      body_source;
 #  endif /* nginx_version < 1007008 */
@@ -579,11 +579,14 @@ typedef struct {
     ngx_str_t                      ssl_trusted_certificate;
     ngx_str_t                      ssl_crl;
 #    endif /* nginx_version >= 1007000 */
-#    if (nginx_version >= 1007008)
+#    if ((nginx_version >= 1007008) && (nginx_version < 1021000))
     ngx_str_t                      ssl_certificate;
     ngx_str_t                      ssl_certificate_key;
     ngx_array_t                   *ssl_passwords;
-#    endif /* nginx_version >= 1007008 */
+#    endif /* nginx_version >= 1007008 && nginx_version < 1021000 */
+#    if (nginx_version >= 1019004)
+    ngx_array_t                   *ssl_conf_commands;
+#    endif /*nginx_version >= 1019004 */
 #  endif
 } ngx_http_proxy_loc_conf_t;
 
@@ -1052,11 +1055,14 @@ typedef struct {
     ngx_str_t                  ssl_trusted_certificate;
     ngx_str_t                  ssl_crl;
 #    endif /* nginx_version >= 1007000 */
-#    if (nginx_version >= 1007008)
+#    if ((nginx_version >= 1007008) && (nginx_version < 1021000))
     ngx_str_t                  ssl_certificate;
     ngx_str_t                  ssl_certificate_key;
     ngx_array_t               *ssl_passwords;
-#    endif /* nginx_version >= 1007008 */
+#    endif /* nginx_version >= 1007008 && nginx_version < 1021000 */
+#    if (nginx_version >= 1019004)
+    ngx_array_t               *ssl_conf_commands;
+#    endif /*nginx_version >= 1019004 */
 #  endif
 } ngx_http_uwsgi_loc_conf_t;
 
