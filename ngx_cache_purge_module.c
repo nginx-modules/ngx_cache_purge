@@ -1337,6 +1337,12 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx, ngx_str_t *pa
         file.offset = file.sys_offset = 0;
         file.fd = ngx_open_file(path->data, NGX_FILE_RDONLY, NGX_FILE_OPEN,
                                 NGX_FILE_DEFAULT_ACCESS);
+
+        if (file.fd == -1) {
+            /* File not exists means already deleted */
+            return NGX_OK;
+        }
+
         file.log = ctx->log;
 
         /* I don't know if it's a good idea to use the ngx_cycle pool for this,
