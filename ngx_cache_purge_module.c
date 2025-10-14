@@ -1315,15 +1315,25 @@ ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
 }
 
 
+typedef struct {
+    u_char *key_partial;
+    u_char *key_in_file;
+    ngx_uint_t key_len;
+} ngx_http_cache_purge_partial_ctx_t;
+
 static ngx_int_t
 ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
+    ngx_http_cache_purge_partial_ctx_t *data;
     u_char *key_partial;
     u_char *key_in_file;
     ngx_uint_t len;
     ngx_flag_t remove_file = 0;
 
-    key_partial = ctx->data;
-    len = ngx_strlen(key_partial);
+    data = ctx->data;
+
+    key_partial = data->key_partial;
+    key_in_file = data->key_in_file;
+    len = data->key_len;
 
     /* if key_partial is empty always match, because is a '*' */
     if (len == 0) {
@@ -1342,9 +1352,7 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx, ngx_str_t *pa
         }
         file.log = ctx->log;
 
-        /* I don't know if it's a good idea to use the ngx_cycle pool for this,
-           but the request is not available here */
-        key_in_file = ngx_pcalloc(ngx_cycle->pool, sizeof(u_char) * (len + 1));
+        ngx_memzero(key_in_file, sizeof(u_char) * len);
 
         /* KEY: /proxy/passwd */
         /* since we don't need the "KEY: " ignore 5 + 1 extra u_char from last
@@ -1807,18 +1815,21 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
                   "purge_partial http in %s",
                   cache->path->name.data);
 
-    u_char              *key_partial;
-    ngx_str_t           *key;
-    ngx_http_cache_t    *c;
-    ngx_uint_t          len;
+    ngx_str_t           *keys;
+    ngx_str_t           key;
 
-    c = r->cache;
-    key = c->keys.elts;
-    len = key[0].len;
+    /* Only check the first key, and discard '*' at the end */
+    keys = r->cache->keys.elts;
+    key = keys[0];
+    key.len--;
 
-    /* Only check the first key */
-    key_partial = ngx_pcalloc(r->pool, sizeof(u_char) * len);
-    ngx_memcpy(key_partial, key[0].data, sizeof(u_char) * (len - 1));
+    ngx_http_cache_purge_partial_ctx_t *ctx;
+    ctx = ngx_palloc(r->pool, sizeof(ngx_http_cache_purge_partial_ctx_t));
+    ctx->key_len = key.len;
+    if (key.len > 0) {
+        ctx->key_partial = key.data;
+        ctx->key_in_file = ngx_pnalloc(r->pool, sizeof(u_char) * key.len);
+    }
 
     /* Walk the tree and remove all the files matching key_partial */
     ngx_tree_ctx_t  tree;
@@ -1827,7 +1838,7 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
     tree.pre_tree_handler = ngx_http_purge_file_cache_noop;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler = ngx_http_purge_file_cache_noop;
-    tree.data = key_partial;
+    tree.data = ctx;
     tree.alloc = 0;
     tree.log = ngx_cycle->log;
 
