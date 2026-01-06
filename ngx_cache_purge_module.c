@@ -117,7 +117,7 @@ char       *ngx_http_uwsgi_cache_purge_conf(ngx_conf_t *cf,
 ngx_int_t   ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r);
 # endif /* NGX_HTTP_UWSGI */
 
-char        *ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, 
+char        *ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf,
                 ngx_command_t *cmd, void *conf);
 static ngx_int_t
 ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx, ngx_str_t *path);
@@ -1263,7 +1263,7 @@ ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, ngx_command_t *cmd, void
 
     value = cf->args->elts;
 
-    if (ngx_strcmp(value[1].data, "html") != 0 && ngx_strcmp(value[1].data, "json") != 0 
+    if (ngx_strcmp(value[1].data, "html") != 0 && ngx_strcmp(value[1].data, "json") != 0
         && ngx_strcmp(value[1].data, "xml") != 0 && ngx_strcmp(value[1].data, "text") != 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                            "invalid parameter \"%V\", expected"
@@ -1368,6 +1368,14 @@ ngx_http_cache_purge_access_handler(ngx_http_request_t *r) {
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
 
+    /* Safety check: if conf is not properly initialized, fall through to original handler */
+    if (cplcf->conf == NULL || cplcf->conf == NGX_CONF_UNSET_PTR) {
+        if (cplcf->original_handler) {
+            return cplcf->original_handler(r);
+        }
+        return NGX_DECLINED;
+    }
+
     if (r->method_name.len != cplcf->conf->method.len
             || (ngx_strncmp(r->method_name.data, cplcf->conf->method.data,
                             r->method_name.len))) {
@@ -1469,7 +1477,7 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
     ngx_str_t    *key;
     ngx_int_t     rc;
     size_t        len;
-    
+
     size_t body_len;
     size_t resp_tmpl_len;
     u_char *buf;
@@ -1559,7 +1567,7 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
     if (b == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
-    
+
 
     out.buf = b;
     out.next = NULL;
