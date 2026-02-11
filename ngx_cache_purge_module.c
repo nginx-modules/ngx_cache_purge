@@ -528,6 +528,9 @@ typedef struct {
 #  endif /* nginx_version >= 1007008 */
 
     ngx_array_t                   *headers_source;
+#  if (nginx_version >= 1029004)
+    ngx_uint_t                     host_set;
+#  endif /* nginx_version >= 1029004 */
 #  if (nginx_version < 8040)
     ngx_array_t                   *headers_names;
 #  endif /* nginx_version < 8040 */
