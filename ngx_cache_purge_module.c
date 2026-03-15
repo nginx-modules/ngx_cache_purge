@@ -359,10 +359,20 @@ typedef struct {
 } ngx_http_cache_purge_refresh_file_t;
 
 typedef struct {
-    ngx_http_request_t              *request;
-    ngx_http_file_cache_t           *cache;
-    ngx_str_t                        key_partial;
-    ngx_uint_t                       key_prefix_len;
+    ngx_str_t     path;
+    ngx_flag_t    is_dir;
+} ngx_http_cache_purge_refresh_scan_entry_t;
+
+typedef struct {
+    ngx_queue_t    queue;
+    ngx_str_t      path;
+} ngx_http_cache_purge_refresh_dir_t;
+
+typedef struct {
+    ngx_http_request_t              *request;       /* parent request */
+    ngx_http_file_cache_t           *cache;         /* cache instance */
+    ngx_str_t                        key_partial;   /* key prefix (without *) */
+    ngx_uint_t                       key_prefix_len;/* non-URI prefix length in key */
     ngx_flag_t                       purge_all;
     ngx_flag_t                       exact;
     ngx_flag_t                       timed_out;
@@ -373,14 +383,17 @@ typedef struct {
 
     /* collected refresh candidates */
     ngx_pool_t                      *chunk_pool;
+    ngx_pool_t                      *scan_pool;
     ngx_array_t                     *files;         /* collected files: ngx_http_cache_purge_refresh_file_t[] */
+    ngx_array_t                     *scan_entries;  /* current directory entries */
     ngx_uint_t                       current;       /* next file index to dispatch */
     ngx_uint_t                       queued;        /* total collected file count */
     ngx_uint_t                       active;        /* active subrequest count */
-    ngx_uint_t                       chunk_limit;   /* legacy field, no longer on main path */
+    ngx_uint_t                       chunk_limit;
+    ngx_uint_t                       scan_index;
     ngx_flag_t                       scan_done;     /* collection complete */
-    ngx_str_t                        scan_after;    /* lower bound for current scan round */
-    ngx_str_t                        resume_path;   /* last collected path for next scan round */
+    ngx_flag_t                       scan_initialized;
+    ngx_queue_t                      pending_dirs;
 
     /* stats */
     ngx_uint_t                       total;
@@ -397,8 +410,6 @@ typedef struct {
 
 static ngx_int_t ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ngx_http_file_cache_t *cache);
-static ngx_int_t ngx_http_cache_purge_refresh_collect_file(
-    ngx_tree_ctx_t *ctx, ngx_str_t *path);
 static ngx_int_t ngx_http_cache_purge_refresh_collect_open_file(
     ngx_http_request_t *r, ngx_http_cache_purge_refresh_ctx_t *ctx);
 static ngx_int_t ngx_http_cache_purge_refresh_collect_path(
@@ -418,6 +429,11 @@ static void ngx_http_cache_purge_refresh_finalize(
     ngx_http_request_t *r, ngx_http_cache_purge_refresh_ctx_t *ctx);
 static ngx_int_t ngx_http_cache_purge_refresh_scan_next_chunk(
     ngx_http_request_t *r, ngx_http_cache_purge_refresh_ctx_t *ctx);
+static ngx_int_t ngx_http_cache_purge_refresh_enqueue_dir(
+    ngx_http_cache_purge_refresh_ctx_t *ctx, ngx_str_t *path);
+static ngx_int_t ngx_http_cache_purge_refresh_load_dir(
+    ngx_http_request_t *r, ngx_http_cache_purge_refresh_ctx_t *ctx,
+    ngx_str_t *path);
 static ngx_int_t ngx_http_cache_purge_add_variable(ngx_conf_t *cf);
 static ngx_int_t ngx_http_cache_purge_refresh_bypass_variable(
     ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
@@ -3573,19 +3589,6 @@ ngx_http_cache_purge_add_variable(ngx_conf_t *cf)
 }
 
 
-/*
- * Tree walk callback: collect matching cache files for refresh.
- * Reads each cache file's binary header to extract ETag and Last-Modified,
- * and extracts the URI from the stored cache key.
- */
-static ngx_int_t
-ngx_http_cache_purge_refresh_collect_file(ngx_tree_ctx_t *ctx,
-    ngx_str_t *path)
-{
-    return ngx_http_cache_purge_refresh_collect_path(ctx->data, path, 0);
-}
-
-
 static ngx_int_t
 ngx_http_cache_purge_refresh_collect_open_file(ngx_http_request_t *r,
     ngx_http_cache_purge_refresh_ctx_t *ctx)
@@ -3633,6 +3636,7 @@ ngx_http_cache_purge_refresh_collect_path(
     ssize_t                              n;
     size_t                               key_read_len;
     u_char                              *p, *q;
+    ngx_pool_t                          *pool;
 
     ngx_memzero(&path_copy, sizeof(ngx_str_t));
     ngx_memzero(&uri, sizeof(ngx_str_t));
@@ -3640,6 +3644,8 @@ ngx_http_cache_purge_refresh_collect_path(
     ngx_memzero(&etag, sizeof(ngx_str_t));
     ngx_memzero(&cache_key, sizeof(ngx_str_t));
     ngx_memzero(&item, sizeof(ngx_http_cache_purge_invalidate_item_t));
+
+    pool = rctx->request->pool;
 
     if (rctx->timeout_enabled && !rctx->timed_out
         && ngx_current_msec >= rctx->deadline)
@@ -3735,7 +3741,7 @@ ngx_http_cache_purge_refresh_collect_path(
         return NGX_OK;
     }
 
-    path_data = ngx_pnalloc(rctx->request->pool, path->len + 1);
+    path_data = ngx_pnalloc(pool, path->len + 1);
     if (path_data == NULL) {
         ngx_free(key_buf);
         return NGX_ERROR;
@@ -3753,7 +3759,7 @@ ngx_http_cache_purge_refresh_collect_path(
     q = (u_char *) ngx_strchr(p, '?');
     if (q != NULL) {
         uri.len = q - p;
-        uri_data = ngx_pnalloc(rctx->request->pool, uri.len + 1);
+        uri_data = ngx_pnalloc(pool, uri.len + 1);
         if (uri_data == NULL) {
             ngx_free(key_buf);
             return NGX_ERROR;
@@ -3764,7 +3770,7 @@ ngx_http_cache_purge_refresh_collect_path(
 
         q++;  /* skip '?' */
         args.len = n - rctx->key_prefix_len - uri.len - 1;
-        args_data = ngx_pnalloc(rctx->request->pool, args.len + 1);
+        args_data = ngx_pnalloc(pool, args.len + 1);
         if (args_data == NULL) {
             ngx_free(key_buf);
             return NGX_ERROR;
@@ -3774,7 +3780,7 @@ ngx_http_cache_purge_refresh_collect_path(
         args.data = args_data;
     } else {
         uri.len = n - rctx->key_prefix_len;
-        uri_data = ngx_pnalloc(rctx->request->pool, uri.len + 1);
+        uri_data = ngx_pnalloc(pool, uri.len + 1);
         if (uri_data == NULL) {
             ngx_free(key_buf);
             return NGX_ERROR;
@@ -3786,7 +3792,7 @@ ngx_http_cache_purge_refresh_collect_path(
 
     /* Store ETag from binary header */
     if (header.etag_len > 0 && header.etag_len < NGX_HTTP_CACHE_ETAG_LEN) {
-        etag_data = ngx_pnalloc(rctx->request->pool, header.etag_len + 1);
+        etag_data = ngx_pnalloc(pool, header.etag_len + 1);
         if (etag_data == NULL) {
             ngx_free(key_buf);
             return NGX_ERROR;
@@ -3806,7 +3812,7 @@ ngx_http_cache_purge_refresh_collect_path(
     item.last_modified = header.last_modified;
     item.fs_size = ngx_file_size(&fi);
 
-    cache_key_data = ngx_pnalloc(rctx->request->pool, n + 1);
+    cache_key_data = ngx_pnalloc(pool, n + 1);
     if (cache_key_data == NULL) {
         ngx_free(key_buf);
         return NGX_ERROR;
@@ -4276,11 +4282,160 @@ ngx_http_cache_purge_refresh_finalize(ngx_http_request_t *r,
 
 
 static ngx_int_t
+ngx_http_cache_purge_refresh_enqueue_dir(
+    ngx_http_cache_purge_refresh_ctx_t *ctx, ngx_str_t *path)
+{
+    ngx_http_cache_purge_refresh_dir_t  *dir;
+    u_char                              *p;
+
+    dir = ngx_palloc(ctx->request->pool,
+                     sizeof(ngx_http_cache_purge_refresh_dir_t));
+    if (dir == NULL) {
+        return NGX_ERROR;
+    }
+
+    p = ngx_pnalloc(ctx->request->pool, path->len + 1);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(p, path->data, path->len);
+    p[path->len] = '\0';
+
+    dir->path.len = path->len;
+    dir->path.data = p;
+
+    ngx_queue_insert_tail(&ctx->pending_dirs, &dir->queue);
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_refresh_load_dir(ngx_http_request_t *r,
+    ngx_http_cache_purge_refresh_ctx_t *ctx, ngx_str_t *path)
+{
+    ngx_dir_t                                dir;
+    ngx_http_cache_purge_refresh_scan_entry_t *entry;
+    ngx_str_t                                child;
+    u_char                                  *name;
+    u_char                                  *p;
+    size_t                                   len;
+    ngx_int_t                                rc;
+
+    if (ctx->scan_pool != NULL) {
+        ngx_destroy_pool(ctx->scan_pool);
+        ctx->scan_pool = NULL;
+    }
+
+    ctx->scan_pool = ngx_create_pool(4096, r->connection->log);
+    if (ctx->scan_pool == NULL) {
+        return NGX_ERROR;
+    }
+
+    ctx->scan_entries = ngx_array_create(ctx->scan_pool, 64,
+                                         sizeof(ngx_http_cache_purge_refresh_scan_entry_t));
+    if (ctx->scan_entries == NULL) {
+        return NGX_ERROR;
+    }
+
+    ctx->scan_index = 0;
+
+    if (ngx_open_dir(path, &dir) == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
+                      ngx_open_dir_n " \"%V\" failed", path);
+        return NGX_ERROR;
+    }
+
+    rc = NGX_OK;
+
+    for ( ;; ) {
+        ngx_set_errno(0);
+
+        if (ngx_read_dir(&dir) == NGX_ERROR) {
+            if (ngx_errno != NGX_ENOMOREFILES) {
+                ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
+                              ngx_read_dir_n " \"%V\" failed", path);
+                rc = NGX_ERROR;
+            }
+
+            break;
+        }
+
+        len = ngx_de_namelen(&dir);
+        name = ngx_de_name(&dir);
+
+        if (len == 1 && name[0] == '.') {
+            continue;
+        }
+
+        if (len == 2 && name[0] == '.' && name[1] == '.') {
+            continue;
+        }
+
+        if (path->len == ctx->cache->path->name.len
+            && ngx_strncmp(path->data, ctx->cache->path->name.data,
+                           path->len) == 0
+            && ngx_de_is_dir(&dir))
+        {
+            if (len == sizeof("proxy_temp") - 1
+                && ngx_strncmp(name, (u_char *) "proxy_temp", len) == 0)
+            {
+                continue;
+            }
+        }
+
+        child.len = path->len + 1 + len;
+        child.data = ngx_pnalloc(ctx->scan_pool, child.len + 1);
+        if (child.data == NULL) {
+            rc = NGX_ERROR;
+            break;
+        }
+
+        p = ngx_cpymem(child.data, path->data, path->len);
+        *p++ = '/';
+        ngx_memcpy(p, name, len);
+        p[len] = '\0';
+
+        if (!dir.valid_info && ngx_de_info(child.data, &dir) == NGX_FILE_ERROR) {
+            ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
+                          ngx_de_info_n " \"%V\" failed", &child);
+            continue;
+        }
+
+        if (!ngx_de_is_file(&dir) && !ngx_de_is_dir(&dir)) {
+            continue;
+        }
+
+        entry = ngx_array_push(ctx->scan_entries);
+        if (entry == NULL) {
+            rc = NGX_ERROR;
+            break;
+        }
+
+        entry->path = child;
+        entry->is_dir = ngx_de_is_dir(&dir);
+    }
+
+    if (ngx_close_dir(&dir) == NGX_ERROR) {
+        ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
+                      ngx_close_dir_n " \"%V\" failed", path);
+        if (rc == NGX_OK) {
+            rc = NGX_ERROR;
+        }
+    }
+
+    return rc;
+}
+
+
+static ngx_int_t
 ngx_http_cache_purge_refresh_scan_next_chunk(ngx_http_request_t *r,
     ngx_http_cache_purge_refresh_ctx_t *ctx)
 {
-    ngx_tree_ctx_t  tree;
-    ngx_int_t       rc;
+    ngx_http_cache_purge_refresh_dir_t         *dir;
+    ngx_http_cache_purge_refresh_scan_entry_t  *entry;
+    ngx_int_t                                   rc;
 
     if (ctx->scan_done) {
         return NGX_OK;
@@ -4295,7 +4450,7 @@ ngx_http_cache_purge_refresh_scan_next_chunk(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    ctx->files = ngx_array_create(ctx->chunk_pool, ctx->chunk_limit,
+    ctx->files = ngx_array_create(r->pool, ctx->chunk_limit,
                                   sizeof(ngx_http_cache_purge_refresh_file_t));
     if (ctx->files == NULL) {
         return NGX_ERROR;
@@ -4303,33 +4458,89 @@ ngx_http_cache_purge_refresh_scan_next_chunk(ngx_http_request_t *r,
 
     ctx->current = 0;
     ctx->queued = 0;
-    ctx->scan_after = ctx->resume_path;
 
     if (ctx->exact) {
         ctx->scan_done = 1;
         return ngx_http_cache_purge_refresh_collect_open_file(r, ctx);
     }
 
-    tree.init_handler = NULL;
-    tree.file_handler = ngx_http_cache_purge_refresh_collect_file;
-    tree.pre_tree_handler = ngx_http_purge_file_cache_noop;
-    tree.post_tree_handler = ngx_http_purge_file_cache_noop;
-    tree.spec_handler = ngx_http_purge_file_cache_noop;
-    tree.data = ctx;
-    tree.alloc = 0;
-    tree.log = ngx_cycle->log;
+    if (!ctx->scan_initialized) {
+        ngx_queue_init(&ctx->pending_dirs);
+        if (ngx_http_cache_purge_refresh_enqueue_dir(ctx,
+                                                     &ctx->cache->path->name)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
 
-    rc = ngx_walk_tree(&tree, &ctx->cache->path->name);
-    if (rc == NGX_ABORT) {
-        return NGX_OK;
+        ctx->scan_initialized = 1;
     }
 
-    if (rc != NGX_OK) {
-        return rc;
-    }
+    for ( ;; ) {
+        if (ctx->timeout_enabled && !ctx->timed_out
+            && ngx_current_msec >= ctx->deadline)
+        {
+            ngx_http_cache_purge_refresh_mark_timeout(ctx);
+            ctx->scan_done = 1;
+            return NGX_OK;
+        }
 
-    ctx->scan_done = 1;
-    return NGX_OK;
+        if (ctx->queued >= ctx->chunk_limit) {
+            return NGX_OK;
+        }
+
+        if (ctx->scan_entries != NULL
+            && ctx->scan_index < ctx->scan_entries->nelts)
+        {
+            entry = ((ngx_http_cache_purge_refresh_scan_entry_t *)
+                     ctx->scan_entries->elts) + ctx->scan_index++;
+
+            if (entry->is_dir) {
+                if (ngx_http_cache_purge_refresh_enqueue_dir(ctx, &entry->path)
+                    != NGX_OK)
+                {
+                    return NGX_ERROR;
+                }
+
+                continue;
+            }
+
+            rc = ngx_http_cache_purge_refresh_collect_path(ctx, &entry->path, 0);
+            if (rc != NGX_OK) {
+                if (rc == NGX_ABORT && ctx->timed_out) {
+                    ctx->scan_done = 1;
+                    return NGX_OK;
+                }
+
+                return rc;
+            }
+
+            continue;
+        }
+
+        if (ctx->scan_pool != NULL) {
+            ngx_destroy_pool(ctx->scan_pool);
+            ctx->scan_pool = NULL;
+        }
+
+        ctx->scan_entries = NULL;
+        ctx->scan_index = 0;
+
+        if (ngx_queue_empty(&ctx->pending_dirs)) {
+            ctx->scan_done = 1;
+            return NGX_OK;
+        }
+
+        dir = (ngx_http_cache_purge_refresh_dir_t *) ngx_queue_data(
+                  ngx_queue_head(&ctx->pending_dirs),
+                  ngx_http_cache_purge_refresh_dir_t, queue);
+        ngx_queue_remove(&dir->queue);
+
+        rc = ngx_http_cache_purge_refresh_load_dir(r, ctx, &dir->path);
+        if (rc != NGX_OK) {
+            return rc;
+        }
+    }
 }
 
 
@@ -4388,10 +4599,33 @@ ngx_http_cache_purge_refresh_start(ngx_http_request_t *r)
     }
 
     if (ctx->queued == 0) {
-        if (ctx->scan_done) {
-            ngx_http_cache_purge_refresh_finalize(r, ctx);
+        if (!ctx->scan_done) {
+            rc = ngx_http_cache_purge_refresh_scan_next_chunk(r, ctx);
+            if (rc != NGX_OK) {
+                ctx->errors++;
+                ngx_http_cache_purge_refresh_finalize(r, ctx);
+                return;
+            }
         }
-        return;
+
+        if (ctx->timed_out) {
+            if (ctx->queued > 0) {
+                ctx->errors += ctx->queued;
+                ctx->current = ctx->queued;
+            }
+
+            if (ctx->active == 0) {
+                ngx_http_cache_purge_refresh_finalize(r, ctx);
+            }
+            return;
+        }
+
+        if (ctx->queued == 0) {
+            if (ctx->scan_done) {
+                ngx_http_cache_purge_refresh_finalize(r, ctx);
+            }
+            return;
+        }
     }
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
@@ -4431,11 +4665,9 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
 {
     ngx_http_cache_purge_refresh_ctx_t  *ctx;
     ngx_http_cache_purge_loc_conf_t     *cplcf;
-    ngx_tree_ctx_t                       tree;
     ngx_str_t                           *keys;
     ngx_str_t                            key;
     ngx_str_t                            tail;
-    ngx_int_t                            rc;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                   "cache purge refresh in %s", cache->path->name.data);
@@ -4454,6 +4686,13 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ctx->exact = !ctx->purge_all && !ngx_http_cache_purge_is_partial(r);
     ctx->timeout_enabled = (cplcf->refresh_timeout != 0);
     ctx->deadline = ngx_current_msec + cplcf->refresh_timeout;
+    ctx->chunk_limit = cplcf->refresh_concurrency * 4;
+    if (ctx->chunk_limit == 0) {
+        ctx->chunk_limit = 4;
+    }
+    if (ctx->chunk_limit < 32) {
+        ctx->chunk_limit = 32;
+    }
 
     ngx_memzero(&ctx->timeout_ev, sizeof(ngx_event_t));
     ctx->timeout_ev.handler = ngx_http_cache_purge_refresh_timeout_handler;
@@ -4507,48 +4746,6 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
             ctx->key_prefix_len = 0;
         }
     }
-
-    ctx->files = ngx_array_create(r->pool, 256,
-                                  sizeof(ngx_http_cache_purge_refresh_file_t));
-    if (ctx->files == NULL) {
-        if (ctx->timeout_ev.timer_set) {
-            ngx_del_timer(&ctx->timeout_ev);
-        }
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    if (ctx->exact) {
-        rc = ngx_http_cache_purge_refresh_collect_open_file(r, ctx);
-        if (rc == NGX_ABORT && ctx->timed_out) {
-            ctx->scan_done = 1;
-        } else if (rc != NGX_OK) {
-            if (ctx->timeout_ev.timer_set) {
-                ngx_del_timer(&ctx->timeout_ev);
-            }
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-    } else {
-        tree.init_handler = NULL;
-        tree.file_handler = ngx_http_cache_purge_refresh_collect_file;
-        tree.pre_tree_handler = ngx_http_purge_file_cache_noop;
-        tree.post_tree_handler = ngx_http_purge_file_cache_noop;
-        tree.spec_handler = ngx_http_purge_file_cache_noop;
-        tree.data = ctx;
-        tree.alloc = 0;
-        tree.log = ngx_cycle->log;
-
-        rc = ngx_walk_tree(&tree, &ctx->cache->path->name);
-        if (rc == NGX_ABORT && ctx->timed_out) {
-            ctx->scan_done = 1;
-        } else if (rc != NGX_OK) {
-            if (ctx->timeout_ev.timer_set) {
-                ngx_del_timer(&ctx->timeout_ev);
-            }
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-    }
-
-    ctx->scan_done = 1;
 
     /* Set module context on the request */
     ngx_http_set_ctx(r, ctx, ngx_http_cache_purge_module);
