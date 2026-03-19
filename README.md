@@ -264,6 +264,108 @@ match will not align with the stored key.
 
 ## Sample configurations
 
+## Refresh (conditional cache validation)
+
+Instead of blindly purging matched cache entries, `refresh` sends conditional
+`HEAD` subrequests upstream using `If-None-Match` / `If-Modified-Since`
+headers extracted from each cached file. Entries that return `200` are
+purged; entries that return `304` are kept.
+
+Refresh currently supports `proxy_cache` only. Attempting refresh on
+`fastcgi`, `scgi`, or `uwsgi` caches returns `400 Bad Request`.
+
+### Refresh directives
+
+`cache_purge_refresh`
+
+```
+Syntax:  cache_purge_refresh on | off
+Default: off
+Context: http, server, location
+```
+
+Enables refresh mode so purge requests perform conditional validation instead
+of unconditional deletion.
+
+`cache_purge_refresh_timeout`
+
+```
+Syntax:  cache_purge_refresh_timeout <time>
+Default: 30s
+Context: http, server, location
+```
+
+Maximum wall-clock time for a refresh operation. After the timeout, no new
+subrequests are dispatched and remaining entries are counted as errors.
+
+`cache_purge_refresh_concurrency`
+
+```
+Syntax:  cache_purge_refresh_concurrency <number>
+Default: 1
+Context: http, server, location
+```
+
+Maximum number of concurrent `HEAD` validation subrequests during refresh.
+
+Refresh locations must include:
+
+```nginx
+proxy_cache_bypass $cache_purge_refresh_bypass;
+proxy_no_cache     $cache_purge_refresh_bypass;
+```
+
+The module automatically sets `$cache_purge_refresh_bypass` for refresh
+subrequests so validation reaches upstream instead of being satisfied by the
+local cache.
+
+The cache key must end with the URI portion, for example
+`$uri$is_args$args`, so refresh can reconstruct the upstream request target
+from cached keys.
+
+### Basic — refresh with separate location
+
+```nginx
+http {
+    proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+
+    server {
+        location / {
+            proxy_pass      http://127.0.0.1:8000;
+            proxy_cache     tmpcache;
+            proxy_cache_key "$uri$is_args$args";
+        }
+
+        location ~ /purge(/.*) {
+            allow              127.0.0.1;
+            deny               all;
+            proxy_cache_purge  tmpcache $1$is_args$args;
+
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$1$is_args$args";
+            proxy_cache_bypass $cache_purge_refresh_bypass;
+            proxy_no_cache     $cache_purge_refresh_bypass;
+
+            cache_purge_refresh             on;
+            cache_purge_refresh_timeout     60s;
+            cache_purge_refresh_concurrency 32;
+        }
+    }
+}
+```
+
+```bash
+# Refresh a single file
+curl -X PURGE http://localhost/purge/path/to/file.txt
+
+# Refresh a wildcard prefix
+curl -X PURGE http://localhost/purge/images/*
+
+# Refresh the whole cache zone (requires purge_all)
+curl -X PURGE http://localhost/purge/*
+```
+
 ### Basic — inline purge method
 
 ```nginx

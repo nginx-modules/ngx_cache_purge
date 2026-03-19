@@ -2699,6 +2699,7 @@ ngx_http_cache_purge_read_item(ngx_pool_t *pool, ngx_log_t *log,
         return NGX_ERROR;
     }
 
+    file.name = *path;
     file.log = log;
 
     if (ngx_fd_info(file.fd, &fi) == NGX_FILE_ERROR) {
@@ -2828,6 +2829,16 @@ ngx_http_cache_purge_open_temp_cache(ngx_http_request_t *r,
     ngx_str_t          *key;
 
     ngx_memzero(c, sizeof(ngx_http_cache_t));
+
+    /*
+     * Shallow-copy the request struct so we can override pool and cache
+     * without mutating the original.  ngx_http_file_cache_create_key and
+     * ngx_http_file_cache_open read r->cache, r->pool, r->connection->log,
+     * and loc_conf pointers — all of which remain valid through the shallow
+     * copy.  This is fragile if nginx internals change; keep the scope of
+     * tr usage minimal and do not pass &tr to anything beyond these two
+     * cache API calls.
+     */
     ngx_memcpy(&tr, r, sizeof(ngx_http_request_t));
 
     tr.pool = pool;
@@ -2872,10 +2883,6 @@ ngx_http_cache_purge_item_matches_cache(
     ngx_http_cache_purge_invalidate_item_t *expected,
     ngx_http_cache_t *c)
 {
-    ngx_uint_t  matched;
-
-    matched = 0;
-
     if (expected->etag_len > 0) {
         if (expected->etag_len != c->etag.len
             || c->etag.data == NULL
@@ -2883,35 +2890,33 @@ ngx_http_cache_purge_item_matches_cache(
         {
             return 0;
         }
-
-        matched = 1;
     }
 
     if (expected->last_modified > 0) {
         if (expected->last_modified != c->last_modified) {
             return 0;
         }
-
-        matched = 1;
     }
 
     if (expected->uniq != 0) {
         if (expected->uniq != c->uniq) {
             return 0;
         }
-
-        matched = 1;
     }
 
     if (expected->body_start > 0) {
         if (expected->body_start != c->body_start) {
             return 0;
         }
-
-        matched = 1;
     }
 
-    return matched;
+    /*
+     * If no fields were available for comparison (all zero/empty in the
+     * scanned item), we cannot confirm a race.  Allow the invalidation
+     * rather than silently skipping it — a false positive purge is safer
+     * than a false negative that leaves stale content.
+     */
+    return 1;
 }
 
 
@@ -3403,8 +3408,12 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     ngx_http_cache_purge_batch_ctx_t  ctx;
     ngx_tree_ctx_t                    tree;
 
-    ngx_memzero(&ctx,  sizeof(ngx_http_cache_purge_batch_ctx_t));
+    ngx_memzero(&ctx, sizeof(ngx_http_cache_purge_batch_ctx_t));
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
+
+    ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                  "purge_all http in %s",
+                  cache->path->name.data);
 
     ctx.request   = r;
     ctx.cache     = cache;
@@ -3432,6 +3441,11 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     ngx_str_t                        *key;
     ngx_uint_t                        len;
 
+    ngx_memzero(&ctx, sizeof(ngx_http_cache_purge_batch_ctx_t));
+    ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                  "purge_partial http in %s",
+                  cache->path->name.data);
+
     key = r->cache->keys.elts;
     len = key[0].len;
 
@@ -3439,7 +3453,7 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
         len--;
     }
 
-    ngx_memzero(&ctx,  sizeof(ngx_http_cache_purge_batch_ctx_t));
+    ngx_memzero(&ctx, sizeof(ngx_http_cache_purge_batch_ctx_t));
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
 
     ctx.request = r;
@@ -3888,6 +3902,8 @@ ngx_http_cache_purge_refresh_collect_path(
     if (f.fd == NGX_INVALID_FILE) {
         return NGX_OK;  /* skip unreadable files */
     }
+    f.name.data = path->data;
+    f.name.len = path->len;
     f.log = ngx_cycle->log;
 
     if (ngx_fd_info(f.fd, &fi) == NGX_FILE_ERROR) {
@@ -4098,13 +4114,23 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
 
     pd = data;
     ctx = pd->ctx;
-    file = pd->file;
 
     if (pd->handled) {
         return NGX_OK;
     }
 
     pd->handled = 1;
+
+    /*
+     * If the refresh context has been finalized (e.g. request pool being
+     * destroyed), chunk pools may already be freed.  Do not access pd->file
+     * or any chunk-pool-allocated data.
+     */
+    if (ctx->finalized) {
+        return NGX_OK;
+    }
+
+    file = pd->file;
 
     if (!pd->validation_ready) {
         ctx->errors++;
@@ -4283,6 +4309,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
                       sizeof(ngx_table_elt_t))
         != NGX_OK)
     {
+        pd->handled = 1;
         ctx->errors++;
         return NGX_OK;
     }
@@ -4291,6 +4318,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     if (r->headers_in.host != NULL) {
         h = ngx_list_push(&sr->headers_in.headers);
         if (h == NULL) {
+            pd->handled = 1;
             ctx->errors++;
             return NGX_OK;
         }
@@ -4306,6 +4334,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     if (file->etag.len > 0) {
         h = ngx_list_push(&sr->headers_in.headers);
         if (h == NULL) {
+            pd->handled = 1;
             ctx->errors++;
             return NGX_OK;
         }
@@ -4320,12 +4349,14 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     if (file->last_modified > 0) {
         h = ngx_list_push(&sr->headers_in.headers);
         if (h == NULL) {
+            pd->handled = 1;
             ctx->errors++;
             return NGX_OK;
         }
         time_buf = ngx_pnalloc(r->pool,
                                sizeof("Mon, 28 Sep 1970 06:00:00 GMT"));
         if (time_buf == NULL) {
+            pd->handled = 1;
             ctx->errors++;
             return NGX_OK;
         }
