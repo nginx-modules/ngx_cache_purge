@@ -2946,12 +2946,22 @@ ngx_http_cache_purge_invalidate_item(ngx_http_request_t *r,
     ngx_http_cache_purge_invalidate_item_t *item,
     ngx_http_cache_purge_invalidate_result_e *result)
 {
-    ngx_http_cache_t                      c;
+    ngx_http_cache_t                     *c;
     ngx_int_t                              rc;
 
     *result = NGX_HTTP_CACHE_PURGE_INVALIDATE_ERROR;
 
-    rc = ngx_http_cache_purge_open_temp_cache(r, cache, pool, &item->cache_key, &c);
+    /*
+     * Allocate c on the pool rather than the stack.
+     * ngx_http_file_cache_open registers a pool cleanup that references c,
+     * so c must survive until the pool is destroyed.
+     */
+    c = ngx_pcalloc(pool, sizeof(ngx_http_cache_t));
+    if (c == NULL) {
+        return NGX_ERROR;
+    }
+
+    rc = ngx_http_cache_purge_open_temp_cache(r, cache, pool, &item->cache_key, c);
     if (rc == NGX_DECLINED) {
         *result = NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING;
         return NGX_OK;
@@ -2961,9 +2971,21 @@ ngx_http_cache_purge_invalidate_item(ngx_http_request_t *r,
         return NGX_ERROR;
     }
 
-    return ngx_http_cache_purge_invalidate_opened_cache(r->connection->log,
-                                                        cache, &c, NULL, item,
-                                                        result);
+    rc = ngx_http_cache_purge_invalidate_opened_cache(r->connection->log,
+                                                      cache, c, NULL, item,
+                                                      result);
+
+    /*
+     * Release the node reference acquired by open_temp_cache.
+     * ngx_http_file_cache_free decrements count under mutex and,
+     * if exists==0 && count==0, safely removes the node from the
+     * rbtree and frees the slab memory.  It also sets c->updated=1,
+     * so the pool cleanup (ngx_http_file_cache_cleanup) will be a
+     * no-op when the pool is eventually destroyed.
+     */
+    ngx_http_file_cache_free(c, NULL);
+
+    return rc;
 }
 
 ngx_int_t
