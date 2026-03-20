@@ -4219,9 +4219,17 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
             ctx->errors += ctx->queued - ctx->current;
             ctx->current = ctx->queued;
         }
-
-        return NGX_OK;
     }
+
+    /*
+     * Background subrequests do not post the parent request upon
+     * finalization (unlike WAITED subrequests which go through the
+     * postpone filter).  We must manually post the parent request
+     * so that its write_event_handler (refresh_start) runs on the
+     * next event loop iteration to dispatch more subrequests or
+     * finalize the refresh operation.
+     */
+    ngx_http_post_request(ctx->request, NULL);
 
     return NGX_OK;
 }
@@ -4276,10 +4284,26 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     ps->data = pd;
 
     /* Create subrequest */
+    /*
+     * Use BACKGROUND subrequests to avoid r->main->count overflow.
+     *
+     * Normal (WAITED) subrequests are added to r->postponed and only
+     * finalize (decrementing main->count) when they become the active
+     * subrequest via the postpone filter.  Since our write_event_handler
+     * never outputs data, the postpone filter never runs, so count
+     * accumulates unboundedly — overflowing at 64535 for large file sets.
+     *
+     * Background subrequests skip the postpone list entirely.  Each one
+     * finalizes independently via ngx_http_finalize_connection →
+     * ngx_http_close_request → main->count--.  The tradeoff is that
+     * background finalization does NOT post the parent request, so we
+     * must manually call ngx_http_post_request() in refresh_done to
+     * re-trigger the dispatch loop.
+     */
     rc = ngx_http_subrequest(r, &file->uri,
                              file->args.len > 0 ? &file->args : NULL,
                              &sr, ps,
-                             NGX_HTTP_SUBREQUEST_WAITED);
+                             NGX_HTTP_SUBREQUEST_BACKGROUND);
     if (rc != NGX_OK) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "refresh fire subrequest failed rc=%i uri=\"%V\"",
@@ -4292,7 +4316,20 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     ctx->active++;
     ctx->dispatched++;
 
-    /* Change method to HEAD */
+    /*
+     * Set HEAD method and header_only flag for cache validation.
+     *
+     * Note: nginx's cache_convert_head (on by default) converts HEAD to GET
+     * in ngx_http_upstream_cache() before the cache_bypass check, so the
+     * upstream actually receives a GET request.  However, header_only = 1
+     * ensures nginx finalizes the subrequest after receiving response headers
+     * without reading the body (ngx_http_upstream.c:3280 fast-path when
+     * header_only && !cacheable && !store).  The real bandwidth savings come
+     * from conditional headers (If-None-Match / If-Modified-Since) which
+     * elicit 304 responses with no body.  Forcing true HEAD would require
+     * hooking into the upstream init phase or setting proxy_cache_convert_head
+     * off globally, both unacceptably invasive.
+     */
     sr->method = NGX_HTTP_HEAD;
     sr->method_name = ngx_http_head_method_name;
     sr->header_only = 1;
@@ -4952,6 +4989,7 @@ ngx_http_cache_purge_refresh_start(ngx_http_request_t *r)
     }
 
     for (i = ctx->active; i < concurrency; i++) {
+
         rc = ngx_http_cache_purge_refresh_fire_subrequest(r, ctx);
         if (rc == NGX_OK) {
             continue;
