@@ -3800,6 +3800,27 @@ ngx_http_cache_purge_refresh_bypass_variable(ngx_http_request_t *r,
             v->no_cacheable = 1;
             v->not_found = 0;
             v->data = (u_char *) "1";
+
+            /*
+             * Restore HEAD method for refresh subrequests.
+             *
+             * nginx's cache_convert_head (on by default) converts HEAD to GET
+             * by setting u->method in ngx_http_upstream_cache() *before* the
+             * cache_bypass predicate check.  Since proxy_create_request()
+             * prioritizes u->method over r->method_name, our HEAD setting
+             * gets overridden.
+             *
+             * This variable handler is evaluated by ngx_http_test_predicates()
+             * during the cache_bypass check — after u->method is set but
+             * before create_request() reads it.  Clearing u->method here
+             * makes proxy_create_request() fall through to r->method_name
+             * (HEAD), which is exactly what we want.
+             */
+            if (r->upstream != NULL && r->method == NGX_HTTP_HEAD) {
+                r->upstream->method.len = 0;
+                r->upstream->method.data = NULL;
+            }
+
             return NGX_OK;
         }
     }
