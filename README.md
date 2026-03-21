@@ -276,16 +276,20 @@ Refresh currently supports `proxy_cache` only. Attempting refresh on
 
 ### Refresh directives
 
-`cache_purge_refresh`
+`proxy_cache_refresh`
 
 ```
-Syntax:  cache_purge_refresh on | off
-Default: off
+Syntax:  proxy_cache_refresh <method> [refresh_all] [from all|<ip> [.. <ip>]]
+Default: none
 Context: http, server, location
 ```
 
-Enables refresh mode so purge requests perform conditional validation instead
-of unconditional deletion.
+Enables refresh mode with a dedicated directive. The first argument is the
+HTTP method used to trigger refresh requests, for example `REFRESH`. Optional
+`refresh_all` enables full-zone refresh.
+
+The legacy `refresh` parameter on `proxy_cache_purge` is removed; use
+`proxy_cache_refresh` instead.
 
 `cache_purge_refresh_timeout`
 
@@ -349,18 +353,15 @@ http {
             proxy_cache_key "$uri$is_args$args";
         }
 
-        location ~ /purge(/.*) {
+        location ~ /refresh(/.*) {
             allow              127.0.0.1;
             deny               all;
-            proxy_cache_purge  tmpcache $1$is_args$args;
 
             proxy_pass         http://127.0.0.1:8000;
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$1$is_args$args";
             proxy_cache_bypass $cache_purge_refresh_bypass;
             proxy_no_cache     $cache_purge_refresh_bypass;
 
-            cache_purge_refresh             on;
+            proxy_cache_refresh             REFRESH refresh_all from 127.0.0.1;
             cache_purge_refresh_timeout     60s;
             cache_purge_refresh_concurrency 32;
         }
@@ -370,13 +371,13 @@ http {
 
 ```bash
 # Refresh a single file
-curl -X PURGE http://localhost/purge/path/to/file.txt
+curl -X REFRESH http://localhost/refresh/path/to/file.txt
 
 # Refresh a wildcard prefix
-curl -X PURGE http://localhost/purge/images/*
+curl -X REFRESH http://localhost/refresh/images/*
 
-# Refresh the whole cache zone (requires purge_all)
-curl -X PURGE http://localhost/purge/*
+# Refresh the whole cache zone (requires refresh_all)
+curl -X REFRESH http://localhost/refresh/*
 ```
 
 ### Basic — inline purge method

@@ -229,6 +229,8 @@ ngx_int_t  ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r);
 # if (NGX_HTTP_PROXY)
 char      *ngx_http_proxy_cache_purge_conf(ngx_conf_t *cf,
                ngx_command_t *cmd, void *conf);
+char      *ngx_http_proxy_cache_refresh_conf(ngx_conf_t *cf,
+               ngx_command_t *cmd, void *conf);
 ngx_int_t  ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r);
 # endif
 
@@ -252,6 +254,8 @@ char *ngx_http_cache_purge_legacy_status_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 char *ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+char *ngx_http_cache_refresh_conf(ngx_conf_t *cf,
+    ngx_http_cache_purge_conf_t *cpcf);
 
 static ngx_int_t ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
@@ -476,6 +480,10 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
     { ngx_string("proxy_cache_purge"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_proxy_cache_purge_conf,
+      NGX_HTTP_LOC_CONF_OFFSET, 0, NULL },
+    { ngx_string("proxy_cache_refresh"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+      ngx_http_proxy_cache_refresh_conf,
       NGX_HTTP_LOC_CONF_OFFSET, 0, NULL },
 # endif
 
@@ -1846,6 +1854,96 @@ ngx_http_proxy_cache_purge_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     cplcf->proxy.enable = 0;
     cplcf->conf         = &cplcf->proxy;
     clcf->handler       = ngx_http_proxy_cache_purge_handler;
+
+    return NGX_CONF_OK;
+}
+
+char *
+ngx_http_proxy_cache_refresh_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_compile_complex_value_t   ccv;
+    ngx_http_cache_purge_loc_conf_t   *cplcf;
+    ngx_http_core_loc_conf_t          *clcf;
+    ngx_http_proxy_loc_conf_t         *plcf;
+    ngx_str_t                         *value;
+#  if (nginx_version >= 1007009)
+    ngx_http_complex_value_t           cv;
+#  endif /* nginx_version >= 1007009 */
+
+    cplcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_cache_purge_module);
+
+    if (cplcf->proxy.enable != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    if (cf->args->nelts != 3) {
+        return ngx_http_cache_refresh_conf(cf, &cplcf->proxy);
+    }
+
+    if (cf->cmd_type & (NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF)) {
+        return "(separate location syntax) is not allowed here";
+    }
+
+    plcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
+
+#  if (nginx_version >= 1007009)
+
+    plcf->upstream.cache = 1;
+
+    value = cf->args->elts;
+
+    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+    ccv.cf = cf;
+    ccv.value = &value[1];
+    ccv.complex_value = &cv;
+
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    if (cv.lengths != NULL) {
+        plcf->upstream.cache_value = ngx_palloc(cf->pool,
+                                                sizeof(ngx_http_complex_value_t));
+        if (plcf->upstream.cache_value == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        *plcf->upstream.cache_value = cv;
+
+    } else {
+        plcf->upstream.cache_zone = ngx_shared_memory_add(cf, &value[1], 0,
+                                    &ngx_http_proxy_module);
+        if (plcf->upstream.cache_zone == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+#  else
+
+    value = cf->args->elts;
+
+    plcf->upstream.cache = ngx_shared_memory_add(cf, &value[1], 0,
+                           &ngx_http_proxy_module);
+    if (plcf->upstream.cache == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+#  endif /* nginx_version >= 1007009 */
+
+    ngx_memzero(&ccv, sizeof(ngx_http_compile_complex_value_t));
+    ccv.cf = cf;
+    ccv.value = &value[2];
+    ccv.complex_value = &plcf->cache_key;
+
+    if (ngx_http_compile_complex_value(&ccv) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+
+    cplcf->proxy.enable = 0;
+    cplcf->proxy.refresh = 1;
+    cplcf->conf = &cplcf->proxy;
+    clcf->handler = ngx_http_proxy_cache_purge_handler;
 
     return NGX_CONF_OK;
 }
@@ -3527,12 +3625,12 @@ ngx_http_cache_purge_conf(ngx_conf_t *cf, ngx_http_cache_purge_conf_t *cpcf)
         from_position++;
     }
 
-    /* We will refresh (validate) instead of blindly purging */
     if (from_position < cf->args->nelts
         && ngx_strcmp(value[from_position].data, "refresh") == 0)
     {
-        cpcf->refresh = 1;
-        from_position++;
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "the \"refresh\" parameter was removed from \"proxy_cache_purge\"; use \"proxy_cache_refresh\" instead");
+        return NGX_CONF_ERROR;
     }
 
 
@@ -3623,6 +3721,136 @@ ngx_http_cache_purge_conf(ngx_conf_t *cf, ngx_http_cache_purge_conf_t *cpcf)
     return NGX_CONF_OK;
 }
 
+char *
+ngx_http_cache_refresh_conf(ngx_conf_t *cf, ngx_http_cache_purge_conf_t *cpcf) {
+    ngx_cidr_t       cidr;
+    ngx_in_cidr_t   *access;
+# if (NGX_HAVE_INET6)
+    ngx_in6_cidr_t  *access6;
+# endif /* NGX_HAVE_INET6 */
+    ngx_str_t       *value;
+    ngx_int_t        rc;
+    ngx_uint_t       i;
+    ngx_uint_t       from_position;
+
+    value = cf->args->elts;
+    from_position = 2;
+
+    if (ngx_strcmp(value[1].data, "on") == 0
+        || ngx_strcmp(value[1].data, "off") == 0)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "\"proxy_cache_refresh\" requires an explicit HTTP method such as \"REFRESH\"");
+        return NGX_CONF_ERROR;
+    }
+
+    cpcf->method = value[1];
+    cpcf->refresh = 1;
+
+    if (cf->args->nelts < 4) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "missing \"from\" keyword after refresh method");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[from_position].data, "purge_all") == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "unknown parameter \"purge_all\"; use \"refresh_all\" with \"proxy_cache_refresh\"");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[from_position].data, "refresh_all") == 0) {
+        cpcf->purge_all = 1;
+        from_position++;
+    }
+
+    if (from_position >= cf->args->nelts) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "missing \"from\" keyword after optional parameters");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[from_position].data, "from") != 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "invalid parameter \"%V\", expected \"from\" keyword",
+                           &value[from_position]);
+        return NGX_CONF_ERROR;
+    }
+
+    if (from_position + 1 >= cf->args->nelts) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "missing argument after \"from\" keyword");
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_strcmp(value[from_position + 1].data, "all") == 0) {
+        cpcf->enable = 1;
+        return NGX_CONF_OK;
+    }
+
+    for (i = (from_position + 1); i < cf->args->nelts; i++) {
+        rc = ngx_ptocidr(&value[i], &cidr);
+
+        if (rc == NGX_ERROR) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid parameter \"%V\"", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        if (rc == NGX_DONE) {
+            ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                               "low address bits of %V are meaningless",
+                               &value[i]);
+        }
+
+        switch (cidr.family) {
+        case AF_INET:
+            if (cpcf->access == NULL) {
+                cpcf->access = ngx_array_create(cf->pool,
+                                                cf->args->nelts - (from_position + 1),
+                                                sizeof(ngx_in_cidr_t));
+                if (cpcf->access == NULL) {
+                    return NGX_CONF_ERROR;
+                }
+            }
+
+            access = ngx_array_push(cpcf->access);
+            if (access == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            access->mask = cidr.u.in.mask;
+            access->addr = cidr.u.in.addr;
+            break;
+
+# if (NGX_HAVE_INET6)
+        case AF_INET6:
+            if (cpcf->access6 == NULL) {
+                cpcf->access6 = ngx_array_create(cf->pool,
+                                                 cf->args->nelts - (from_position + 1),
+                                                 sizeof(ngx_in6_cidr_t));
+                if (cpcf->access6 == NULL) {
+                    return NGX_CONF_ERROR;
+                }
+            }
+
+            access6 = ngx_array_push(cpcf->access6);
+            if (access6 == NULL) {
+                return NGX_CONF_ERROR;
+            }
+
+            access6->mask = cidr.u.in6.mask;
+            access6->addr = cidr.u.in6.addr;
+            break;
+# endif /* NGX_HAVE_INET6 */
+        }
+    }
+
+    cpcf->enable = 1;
+    return NGX_CONF_OK;
+}
+
+void
 
 /* -- location configuration --------------------------------------------- */
 
@@ -3717,6 +3945,18 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 # if (NGX_HTTP_PROXY)
     ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
 
+    if (conf->proxy.enable && conf->proxy.refresh) {
+        plcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
+
+        if (!(plcf->upstream.upstream || plcf->proxy_lengths)
+            && !(conf->proxy_separate_zone || conf->proxy_separate_value))
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "\"proxy_cache_refresh\" is supported only with \"proxy_cache\"");
+            return NGX_CONF_ERROR;
+        }
+    }
+
     if (conf->proxy.enable) {
         /*
          * Install the purge access-handler even when clcf->handler is
@@ -3729,6 +3969,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->original_handler = clcf->handler;  /* may be NULL */
         clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
+    }
     }
 # endif
 
