@@ -291,6 +291,10 @@ HTTP method used to trigger refresh requests, for example `REFRESH`. Optional
 The legacy `refresh` parameter on `proxy_cache_purge` is removed; use
 `proxy_cache_refresh` instead.
 
+`proxy_cache_refresh` and `proxy_cache_purge` cannot be configured together in
+the same `location`. If you need both actions, expose separate endpoints such as
+`/purge/...` and `/refresh/...`.
+
 `cache_purge_refresh_timeout`
 
 ```
@@ -368,6 +372,10 @@ http {
     }
 }
 ```
+
+This separate-location layout is also the recommended way to expose both purge
+and refresh. Do not place `proxy_cache_purge` and `proxy_cache_refresh` in the
+same `location` block.
 
 ```bash
 # Refresh a single file

@@ -1755,7 +1755,7 @@ ngx_http_proxy_cache_purge_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     cplcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_cache_purge_module);
 
     if (cplcf->proxy.enable != NGX_CONF_UNSET) {
-        return "is duplicate";
+        return "\"proxy_cache_purge\" cannot be used together with \"proxy_cache_refresh\" in the same location";
     }
 
     if (cf->args->nelts != 3) {
@@ -1872,7 +1872,7 @@ ngx_http_proxy_cache_refresh_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf
     cplcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_cache_purge_module);
 
     if (cplcf->proxy.enable != NGX_CONF_UNSET) {
-        return "is duplicate";
+        return "\"proxy_cache_refresh\" cannot be used together with \"proxy_cache_purge\" in the same location";
     }
 
     if (cf->args->nelts != 3) {
