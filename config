@@ -1,3 +1,9 @@
+#!/bin/bash
+
+# nginx module build configuration
+# This file tells nginx how to compile the ngx_cache_purge module
+
+# Check which HTTP modules are enabled and set appropriate defines
 if [ "$HTTP_PROXY" = "YES" ]; then
     have=NGX_HTTP_PROXY . auto/have
 fi
@@ -14,18 +20,53 @@ if [ "$HTTP_UWSGI" = "YES" ]; then
     have=NGX_HTTP_UWSGI . auto/have
 fi
 
+# Module name and source files
 ngx_addon_name=ngx_http_cache_purge_module
 CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_module.c"
 
+# Build configuration for different nginx versions
 if [ -n "$ngx_module_link" ]; then
+    # Modern nginx (1.9.11+) with dynamic module support
     ngx_module_type=HTTP
     ngx_module_name="$ngx_addon_name"
     ngx_module_srcs="$CACHE_PURGE_SRCS"
-
+    
+    # Dependencies - this module requires HTTP cache support
+    ngx_module_deps=""
+    
+    # Module libraries (none needed for this module)
+    ngx_module_libs=""
+    
+    # Add module to build
     . auto/module
 else
+    # Older nginx versions (< 1.9.11) - static linking only
     HTTP_MODULES="$HTTP_MODULES $ngx_addon_name"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $CACHE_PURGE_SRCS"
 fi
 
+# Define that this module is available
 have=NGX_CACHE_PURGE_MODULE . auto/have
+
+# Module version information
+cat << END >> $NGX_AUTOCONF_ERR
+
+ngx_cache_purge module configured.
+
+Features:
+  + Background queue system for async purge processing
+  + Memory leak fixes for partial purge operations  
+  + Configurable throttling and batch processing
+  + Enhanced security and error handling
+  + Full backwards compatibility
+
+Configuration directives:
+  + cache_purge_background_queue on|off
+  + cache_purge_queue_size <number>
+  + cache_purge_batch_size <number>
+  + cache_purge_throttle_ms <milliseconds>
+
+Build with: --add-module=path/to/ngx_cache_purge
+  or: --add-dynamic-module=path/to/ngx_cache_purge
+
+END
