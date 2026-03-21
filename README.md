@@ -308,6 +308,19 @@ Context: http, server, location
 
 Maximum number of concurrent `HEAD` validation subrequests during refresh.
 
+### How it works
+
+Refresh subrequests are sent as true `HEAD` requests with conditional headers
+(`If-None-Match` / `If-Modified-Since`). The module clears nginx's internal
+`cache_convert_head` override during the cache-bypass check so upstream sees
+`HEAD` rather than a converted `GET`, which keeps 200/304 validation responses
+bodyless and minimizes bandwidth.
+
+Refresh uses nginx background subrequests (`NGX_HTTP_SUBREQUEST_BACKGROUND`)
+to avoid `r->main->count` overflow. This lets a single refresh request safely
+validate 100,000+ cached entries without tripping nginx's 64535 subrequest
+limit.
+
 Refresh locations must include:
 
 ```nginx
