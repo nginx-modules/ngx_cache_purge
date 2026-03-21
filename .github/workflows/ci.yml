@@ -1,0 +1,287 @@
+# .github/workflows/ci.yml
+name: ngx_cache_purge CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run tests daily at 3 AM UTC
+    - cron: '0 3 * * *'
+
+env:
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  test-matrix:
+    name: Test on NGINX ${{ matrix.nginx_version }} (Ubuntu ${{ matrix.ubuntu_version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version: ['1.26.3', '1.28.2', '1.29.6']
+        ubuntu_version: ['20.04', '24.04']
+        include:
+          - nginx_version: '1.20.2'
+            ubuntu_version: '20.04'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build test image
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: t/Dockerfile
+        build-args: |
+          NGINX_VERSION=${{ matrix.nginx_version }}
+          UBUNTU_VERSION=${{ matrix.ubuntu_version }}
+        tags: ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        provenance: false
+        sbom: false
+
+    - name: Run basic tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/basic.t
+
+    - name: Run background queue tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/background_queue.t
+
+    - name: Run configuration tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/config.t
+
+    - name: Run memory leak tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/memory.t
+
+    - name: Run performance tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/performance.t
+
+    - name: Generate test reports
+      if: always()
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          bash -c "prove --formatter=TAP::Formatter::JUnit -v t/ \
+            > /src/test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}.xml" \
+        || true
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
+        path: test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}.xml
+
+  memory-leak-test:
+    name: Memory Leak Analysis
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build debug image with Valgrind
+      run: |
+        cat > Dockerfile.valgrind << 'EOF'
+        FROM ubuntu:24.04
+        ENV DEBIAN_FRONTEND=noninteractive
+        ARG NGINX_VERSION=1.26.3
+        ENV NGINX_VERSION=${NGINX_VERSION}
+
+        RUN apt-get update && apt-get install -y \
+            build-essential libpcre3-dev libssl-dev zlib1g-dev \
+            libgd-dev libgeoip-dev libxml2-dev libxslt1-dev \
+            valgrind wget curl git perl cpanminus \
+            && rm -rf /var/lib/apt/lists/* \
+            && cpanm --notest Test::Nginx Test::More Test::Base \
+               Test::LongString List::MoreUtils IO::Socket::SSL
+
+        RUN wget http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
+            && tar xzf nginx-${NGINX_VERSION}.tar.gz \
+            && rm nginx-${NGINX_VERSION}.tar.gz
+
+        WORKDIR /src
+        COPY . .
+
+        RUN cd /nginx-${NGINX_VERSION} && \
+            ./configure \
+                --sbin-path=/usr/sbin/nginx \
+                --add-module=/src \
+                --with-http_ssl_module \
+                --with-debug && \
+            make && make install
+
+        RUN mkdir -p /var/cache/nginx/client_temp \
+            /var/cache/nginx/proxy_temp \
+            /var/cache/nginx/fastcgi_temp \
+            /var/cache/nginx/uwsgi_temp \
+            /var/cache/nginx/scgi_temp
+
+        CMD ["prove", "-v", "t/memory.t"]
+        EOF
+
+        docker build -f Dockerfile.valgrind -t ngx-cache-purge-valgrind .
+
+    - name: Run memory leak tests with Valgrind
+      run: |
+        docker run --rm -v $PWD:/src ngx-cache-purge-valgrind
+
+  static-analysis:
+    name: Cppcheck
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run static analysis with Cppcheck
+      run: |
+        sudo apt-get update && sudo apt-get install -y cppcheck
+        cppcheck --enable=all --inconclusive --std=c99 \
+          --suppress=missingIncludeSystem \
+          --error-exitcode=1 \
+          ngx_cache_purge_module.c
+
+  semgrep-analysis:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    if: github.actor != 'dependabot[bot]'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run security scan
+      run: |
+        semgrep scan \
+          --config p/security-audit \
+          --config p/secrets \
+          --config p/c \
+          --error
+
+  performance-benchmark:
+    name: Performance Benchmark
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Build test image
+      run: |
+        docker build -f t/Dockerfile \
+          --build-arg NGINX_VERSION=1.26.3 \
+          --build-arg UBUNTU_VERSION=24.04 \
+          -t ngx-cache-purge-perf .
+
+    - name: Run performance benchmarks
+      run: |
+        docker run --rm -v $PWD:/src ngx-cache-purge-perf \
+          bash -c "
+            echo 'Performance Test: Large Cache Purge'
+            mkdir -p cache/test
+            for i in \$(seq 1 10000); do
+              echo 'test content' > cache/test/file_\$i.cache
+            done
+            time prove -v t/performance.t
+          "
+
+  publish-test-results:
+    name: Publish Test Results
+    runs-on: ubuntu-latest
+    needs: [test-matrix, memory-leak-test]
+    if: always()
+    permissions:
+      checks: write
+      contents: read
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download test artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: test-results
+        pattern: test-results-*
+        merge-multiple: true
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: always()
+      with:
+        name: Test Results
+        path: 'test-results/**/*.xml'
+        reporter: java-junit
+        fail-on-error: false
+
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [test-matrix, memory-leak-test, static-analysis, semgrep-analysis]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Generate changelog
+      id: changelog
+      run: |
+        echo "## Changes" > CHANGELOG.md
+        git log --oneline --pretty=format:"* %s" $(git describe --tags --abbrev=0)..HEAD >> CHANGELOG.md
+        echo "changelog<<EOF" >> $GITHUB_OUTPUT
+        cat CHANGELOG.md >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Get version
+      id: version
+      run: |
+        VERSION=$(grep '#define.*VERSION' ngx_cache_purge_module.c | head -1 | cut -d'"' -f2 || echo "v$(date +%Y%m%d)")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: ${{ steps.version.outputs.version }}
+        name: Release ${{ steps.version.outputs.version }}
+        body: |
+          ## ngx_cache_purge ${{ steps.version.outputs.version }}
+
+          ### New Features
+          * Background queue system for async purge processing
+          * Memory leak fixes for partial purge operations
+          * Configurable throttling and batch processing
+          * Enhanced security and error handling
+
+          ### Configuration
+          * `cache_purge_background_queue` - Enable async processing
+          * `cache_purge_queue_size` - Max queue size (default 1024)
+          * `cache_purge_batch_size` - Items per batch (default 10)
+          * `cache_purge_throttle_ms` - Delay between batches (default 10ms)
+
+          ${{ steps.changelog.outputs.changelog }}
+        draft: false
+        prerelease: false
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

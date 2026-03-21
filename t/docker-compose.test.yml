@@ -1,0 +1,42 @@
+# t/docker-compose.test.yml
+# Build context is the repo root so the module source is available to COPY.
+# Run from t/: docker-compose -f docker-compose.test.yml run --rm nginx-test prove -v t/basic.t
+
+version: "3.8"
+
+x-test-base: &test-base
+  build:
+    context: ..
+    dockerfile: t/Dockerfile
+    args:
+      NGINX_VERSION: ${NGINX_VERSION:-1.28.2}
+      UBUNTU_VERSION: ${UBUNTU_VERSION:-22.04}
+  volumes:
+    - ..:/src
+
+services:
+  # Main test runner — default prove target
+  nginx-test:
+    <<: *test-base
+    command: prove -v t/basic.t t/background_queue.t t/config.t t/memory.t t/performance.t
+
+  # Individual suites (useful for `docker-compose run --rm <service>`)
+  test-basic:
+    <<: *test-base
+    command: prove -v t/basic.t
+
+  test-queue:
+    <<: *test-base
+    command: prove -v t/background_queue.t
+
+  test-config:
+    <<: *test-base
+    command: prove -v t/config.t
+
+  test-memory:
+    <<: *test-base
+    command: prove -v t/memory.t
+
+  test-performance:
+    <<: *test-base
+    command: prove -v t/performance.t
