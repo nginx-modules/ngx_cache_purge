@@ -291,7 +291,7 @@ of unconditional deletion.
 
 ```
 Syntax:  cache_purge_refresh_timeout <time>
-Default: 30s
+Default: 300s
 Context: http, server, location
 ```
 

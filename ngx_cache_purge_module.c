@@ -3700,7 +3700,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_uint_value(conf->refresh_concurrency,
                               prev->refresh_concurrency, 32);
     ngx_conf_merge_msec_value(conf->refresh_timeout,
-                              prev->refresh_timeout, 30000);
+                              prev->refresh_timeout, 300000);
 
 # if (NGX_HTTP_FASTCGI)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
