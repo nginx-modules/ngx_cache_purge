@@ -315,8 +315,53 @@ Context: http, server, location
 ```
 
 Maximum number of concurrent `HEAD` validation subrequests during refresh.
+### Important Rules
 
-### How it works
+- One `location` can configure only one entry directive: `proxy_cache_purge` or `proxy_cache_refresh`.
+- For exact and partial requests, both entry directives accept both `PURGE` and `REFRESH`.
+- For exact and partial requests, the actual action is decided by the HTTP method, not by the directive name.
+- Successful purge and refresh responses include `X-Cache-Action: purge` or `X-Cache-Action: refresh`.
+- Full-zone requests are not freely interchangeable: `PURGE` needs `purge_all`, and `REFRESH` needs `refresh_all`.
+- A full-zone capability mismatch returns `400 Bad Request`.
+- `purge_all` belongs to `proxy_cache_purge`; `refresh_all` belongs to `proxy_cache_refresh`.
+- `proxy_cache_refresh ... purge_all ...` is invalid configuration and is rejected at config load time.
+- Refresh is `proxy_cache` only. It is not available for `fastcgi_cache`, `scgi_cache`, or `uwsgi_cache`.
+- Any proxy location that participates in the refresh request path must include both:
+
+      proxy_cache_bypass  $cache_purge_refresh_bypass;
+      proxy_no_cache      $cache_purge_refresh_bypass;
+
+- The cache key must end with the URI or request URI portion. It is not limited to `$uri$is_args$args`, but the URI/request URI must be at the tail of the key.
+
+### Method Routing Model
+
+For exact and partial requests, runtime routing is method-driven:
+
+| Configured entry directive | Request method | Actual action |
+| --- | --- | --- |
+| `proxy_cache_purge` | `PURGE` | purge |
+| `proxy_cache_purge` | `REFRESH` | refresh |
+| `proxy_cache_refresh` | `REFRESH` | refresh |
+| `proxy_cache_refresh` | `PURGE` | purge |
+
+This table applies only to exact and partial requests. Full-zone requests use the
+capability rules in the next section.
+
+### Capability Matrix
+
+For full-zone requests, the request method and the configured full capability must match:
+
+| Full-zone request | Required configured capability | Failure result |
+| --- | --- | --- |
+| `PURGE /.../*` | `purge_all` on `proxy_cache_purge` | `400 Bad Request` |
+| `REFRESH /.../*` | `refresh_all` on `proxy_cache_refresh` | `400 Bad Request` |
+
+Configuration-time rules are also strict:
+
+- `proxy_cache_purge ... purge_all ...` is valid.
+- `proxy_cache_refresh ... refresh_all ...` is valid.
+- `proxy_cache_refresh ... purge_all ...` is invalid.
+- `proxy_cache_purge` and `proxy_cache_refresh` in the same `location` are invalid.
 
 Refresh subrequests are sent as true `HEAD` requests with conditional headers
 (`If-None-Match` / `If-Modified-Since`). The module clears nginx's internal
@@ -373,9 +418,92 @@ http {
 }
 ```
 
-This separate-location layout is also the recommended way to expose both purge
-and refresh. Do not place `proxy_cache_purge` and `proxy_cache_refresh` in the
-same `location` block.
+Gradual migration layout: keep one entry directive and migrate clients by switching
+HTTP method first. Exact and partial requests already route by method.
+
+    http {
+        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
+
+        server {
+            location / {
+                proxy_pass         http://127.0.0.1:8000;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$host$request_uri";
+                proxy_cache_bypass $cache_purge_refresh_bypass;
+                proxy_no_cache     $cache_purge_refresh_bypass;
+                proxy_cache_purge  PURGE from 127.0.0.1;
+            }
+        }
+    }
+
+In that layout:
+
+- `PURGE /path/file` performs purge.
+- `REFRESH /path/file` performs refresh.
+- Full-zone `REFRESH` still needs a dedicated `proxy_cache_refresh ... refresh_all ...` location.
+
+This migration trick does not remove refresh prerequisites. If a request is routed
+to refresh, the proxy path participating in that refresh flow still needs the
+refresh bypass rules, and the cache key still needs to end with the URI or
+request URI portion.
+
+### Common Misconfigurations
+
+- Do not put both entry directives in one `location`:
+
+      location /control/ {
+          proxy_cache_purge   PURGE from 127.0.0.1;
+          proxy_cache_refresh REFRESH from 127.0.0.1;
+      }
+
+- Do not expect full-zone `PURGE` to work on a `refresh_all` location, or full-zone `REFRESH` to work on a `purge_all` location. Those fail with `400 Bad Request`.
+
+- Do not write `proxy_cache_refresh REFRESH purge_all from 127.0.0.1;`. Use `refresh_all`, not `purge_all`.
+
+- Do not omit refresh bypass rules from proxy locations used by refresh:
+
+      proxy_cache_bypass $cache_purge_refresh_bypass;
+      proxy_no_cache     $cache_purge_refresh_bypass;
+
+- Do not use a cache key where the URI appears in the middle, such as `$arg_x$uri$host`. The URI or request URI must be at the end of the key.
+
+- Do not try refresh on `fastcgi`, `scgi`, or `uwsgi` caches.
+
+### Response Format
+
+Refresh success responses return `200 OK`. The exact body format depends on
+`cache_purge_response_type`, but refresh currently supports only JSON or text
+output. If `cache_purge_response_type` is `json`, refresh returns JSON; all other
+values fall back to text. In the default text format, the body looks like:
+
+    Refresh: total=<N> kept=<K> purged=<P> errors=<E>
+
+Where:
+- `total`: number of matched cache entries scanned
+- `kept`: entries where upstream returned `304` or a race kept the cache entry
+- `purged`: entries where upstream returned `200` and cache was invalidated
+- `errors`: entries that failed (subrequest error, timeout, and so on)
+
+Successful purge and refresh responses also include:
+
+    X-Cache-Action: purge
+
+or:
+
+    X-Cache-Action: refresh
+
+### How it works
+
+Refresh subrequests use conditional validator headers (`If-None-Match` /
+`If-Modified-Since`) so unchanged objects can be kept with `304 Not Modified`
+responses. Internally nginx may still convert the upstream request method to
+`GET`, but refresh forces header-only handling and does not read the response
+body. The bandwidth savings therefore come from validator-based `304` responses
+and from avoiding response-body reads on the refresh path.
+
+Subrequests use nginx's background subrequest mechanism (`NGX_HTTP_SUBREQUEST_BACKGROUND`)
+to avoid `r->main->count` overflow. This allows refresh to handle 100,000+ cached
+entries in a single request without hitting nginx's 64535 subrequest limit.
 
 ```bash
 # Refresh a single file
