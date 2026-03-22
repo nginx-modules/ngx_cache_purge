@@ -473,16 +473,19 @@ request URI portion.
 
 Refresh success responses return `200 OK`. The exact body format depends on
 `cache_purge_response_type`, but refresh currently supports only JSON or text
-output. If `cache_purge_response_type` is `json`, refresh returns JSON; all other
-values fall back to text. In the default text format, the body looks like:
+output. If `cache_purge_response_type` is `json`, refresh returns JSON like
+`{"status":"refresh",...,"status_counts":{"200":190,"301":1,"304":15375}}`;
+all other values fall back to text. In the default text format, the body looks
+like:
 
-    Refresh: total=<N> kept=<K> purged=<P> errors=<E>
+    Refresh: total=<N> kept=<K> purged=<P> errors=<E> statuses={200:<N>,304:<N>,...}
 
 Where:
 - `total`: number of matched cache entries scanned
-- `kept`: entries where upstream returned `304` or a race kept the cache entry
-- `purged`: entries invalidated after upstream returned `200`, `404`, or `410`
-- `errors`: entries that failed conservatively (subrequest error, timeout, upstream `403`/`500`, and so on)
+- `kept`: entries whose final action was to retain the cache entry (for example upstream `304`, `301`, `403`, `500`, or a race-kept result)
+- `purged`: entries whose final action was to invalidate the cache entry (currently upstream `200`, `404`, or `410` when invalidate succeeds)
+- `errors`: true refresh failures only (for example subrequest creation failure, timeout, transport failure, or internal invalidate/helper failure)
+- `statuses={...}`: dynamic upstream HTTP status counts for this refresh request; only observed HTTP statuses are listed
 
 Successful purge and refresh responses also include:
 
@@ -514,12 +517,13 @@ Current upstream status policy during refresh is intentionally conservative:
 - `304 Not Modified`: keep the cache entry
 - `200 OK`: treat as changed and run the normal invalidate path
 - `404 Not Found` / `410 Gone`: purge the cache entry because the upstream object is gone
-- other statuses (for example `403`, `429`, `500`) and subrequest failures: keep the cache entry and count an error
+- other HTTP statuses (for example `301`, `302`, `403`, `429`, `500`): keep the cache entry and record the code in `statuses={...}`
+- subrequest creation failure, timeout, transport failure, or internal invalidate/helper failure: increment `errors`
 
 At the end of each refresh request, the module also emits one `error_log notice`
 summary line like:
 
-    cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1>
+    cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1> statuses={200:190,301:1,304:15375}
 
 Per-entry decisions remain debug-level logs.
 

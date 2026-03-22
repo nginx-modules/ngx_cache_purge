@@ -137,7 +137,7 @@ http {
 - refresh 只支持 `proxy_cache`。
 - refresh 会向 upstream 发带条件头（`If-None-Match` / `If-Modified-Since`）的校验子请求，并读取缓存文件里的 `ETag` / `Last-Modified`。
 - nginx 内部仍可能把上游方法转成 `GET`，但 refresh 路径会强制只处理响应头、不读取响应体；真正的带宽收益主要来自 `304 Not Modified` 和不读 body。
-- upstream 返回 `304` 时保留缓存；返回 `200` 时走正常 invalidate 路径；返回 `404` / `410` 时直接 purge；其它状态则计入 `errors` 并保留缓存。
+- upstream 返回 `304` 时保留缓存；返回 `200` 时走正常 invalidate 路径；返回 `404` / `410` 时直接 purge；其它 HTTP 状态默认保留缓存，并额外记入状态码统计；只有内部/传输失败才计入 `errors`。
 
 ### cache key 边界
 
@@ -248,10 +248,11 @@ location / {
 
 ## 响应与排错提示
 
-- refresh 成功时返回 `200 OK`；refresh 目前只支持 JSON 或 text 两种正文格式：当 `cache_purge_response_type=json` 时返回 JSON，其余取值都会回退到 text。默认 text 模式下，正文类似 `Refresh: total=<N> kept=<K> purged=<P> errors=<E>`。
-- 其中统计口径是：`kept` 表示上游返回 `304` 或竞态下保留缓存；`purged` 表示上游返回 `200`、`404` 或 `410` 后成功失效的条目；`errors` 表示保守失败的条目，例如子请求失败、超时、上游返回 `403` / `429` / `500` 等。
+- refresh 成功时返回 `200 OK`；refresh 目前只支持 JSON 或 text 两种正文格式：当 `cache_purge_response_type=json` 时返回 JSON，例如 `{"status":"refresh",...,"status_counts":{"200":190,"301":1,"304":15375}}`；其余取值都会回退到 text。默认 text 模式下，正文类似 `Refresh: total=<N> kept=<K> purged=<P> errors=<E> statuses={200:<N>,304:<N>,...}`。
+- 其中统计口径是：`kept` 表示本次 refresh 的最终动作是保留缓存（例如上游返回 `304`、`301`、`403`、`500`，或者竞态下保留缓存）；`purged` 表示最终动作是清理缓存（当前主要对应上游返回 `200`、`404`、`410` 且 invalidate 成功）；`errors` 只表示真正需要排查的失败，例如子请求创建失败、超时、传输失败、内部 invalidate/helper 失败。
+- `statuses={...}` 表示本次 refresh 实际观察到的 upstream HTTP 状态码统计；只显示本次请求里真正出现过的状态码，不做穷举。
 - purge / refresh 成功时都带 `X-Cache-Action` 响应头。
 - full-zone 能力错配时返回 `400 Bad Request`，优先检查是不是把 `PURGE` 发到了 `refresh_all` location，或者把 `REFRESH` 发到了 `purge_all` location。
-- refresh 当前对上游状态码的策略是保守的：`304` 保留，`200` 走正常 invalidate 路径，`404` / `410` 直接 purge，其它状态默认保留并计入 `errors`。
-- 每次 refresh 结束时，模块还会在 `error_log notice` 写一条汇总日志，例如 `cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1>`；逐条条目的明细仍然只在 debug 日志中可见。
+- refresh 当前对上游状态码的策略是保守的：`304` 保留，`200` 走正常 invalidate 路径，`404` / `410` 直接 purge，其它 HTTP 状态默认保留并写入 `statuses={...}`；只有内部/传输失败才计入 `errors`。
+- 每次 refresh 结束时，模块还会在 `error_log notice` 写一条汇总日志，例如 `cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1> statuses={200:190,301:1,304:15375}`；逐条条目的明细仍然只在 debug 日志中可见。
 - 如果 refresh 结果异常，优先检查三件事：是否是 `proxy_cache`、refresh 链路上是否配置 bypass/no_cache、cache key 是否以 URI/request URI 结尾。

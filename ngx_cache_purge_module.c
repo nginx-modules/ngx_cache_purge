@@ -400,6 +400,11 @@ typedef struct {
 } ngx_http_cache_purge_refresh_dir_t;
 
 typedef struct {
+    ngx_uint_t    status;
+    ngx_uint_t    count;
+} ngx_http_cache_purge_refresh_status_count_t;
+
+typedef struct {
     ngx_http_request_t              *request;       /* parent request */
     ngx_http_file_cache_t           *cache;         /* cache instance */
     ngx_str_t                        key_partial;   /* key prefix (without *) */
@@ -429,6 +434,7 @@ typedef struct {
     ngx_flag_t                       scan_initialized;
     ngx_queue_t                      temp_pools;
     ngx_queue_t                      pending_dirs;
+    ngx_array_t                     *status_counts; /* ngx_http_cache_purge_refresh_status_count_t[] */
     /* stats */
     ngx_uint_t                       total;
     ngx_uint_t                       refreshed;
@@ -445,6 +451,20 @@ typedef struct {
 
 static ngx_int_t ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ngx_http_file_cache_t *cache);
+static ngx_int_t ngx_http_cache_purge_refresh_record_status(
+    ngx_http_cache_purge_refresh_ctx_t *ctx, ngx_uint_t status);
+static size_t ngx_http_cache_purge_refresh_status_counts_text_len(
+    ngx_array_t *status_counts);
+static u_char *ngx_http_cache_purge_refresh_write_status_counts_text(
+    u_char *p, ngx_array_t *status_counts);
+static size_t ngx_http_cache_purge_refresh_status_counts_json_len(
+    ngx_array_t *status_counts);
+static u_char *ngx_http_cache_purge_refresh_write_status_counts_json(
+    u_char *p, ngx_array_t *status_counts);
+static size_t ngx_http_cache_purge_refresh_status_counts_log_len(
+    ngx_array_t *status_counts);
+static u_char *ngx_http_cache_purge_refresh_write_status_counts_log(
+    u_char *p, ngx_array_t *status_counts);
 static ngx_int_t ngx_http_cache_purge_refresh_collect_open_file(
     ngx_http_request_t *r, ngx_http_cache_purge_refresh_ctx_t *ctx);
 static ngx_int_t ngx_http_cache_purge_refresh_collect_path(
@@ -4505,6 +4525,161 @@ ngx_http_cache_purge_refresh_collect_path(
  * Checks upstream status to decide whether to keep or purge the cache file.
  */
 static ngx_int_t
+ngx_http_cache_purge_refresh_record_status(
+    ngx_http_cache_purge_refresh_ctx_t *ctx, ngx_uint_t status)
+{
+    ngx_uint_t                                 i;
+    ngx_http_cache_purge_refresh_status_count_t *entry;
+
+    if (ctx->status_counts == NULL) {
+        return NGX_ERROR;
+    }
+
+    entry = ctx->status_counts->elts;
+    for (i = 0; i < ctx->status_counts->nelts; i++) {
+        if (entry[i].status == status) {
+            entry[i].count++;
+            return NGX_OK;
+        }
+    }
+
+    entry = ngx_array_push(ctx->status_counts);
+    if (entry == NULL) {
+        return NGX_ERROR;
+    }
+
+    entry->status = status;
+    entry->count = 1;
+
+    return NGX_OK;
+}
+
+
+static size_t
+ngx_http_cache_purge_refresh_status_counts_text_len(ngx_array_t *status_counts)
+{
+    ngx_uint_t                                 i;
+    size_t                                     len;
+
+    if (status_counts == NULL || status_counts->nelts == 0) {
+        return 0;
+    }
+
+    len = sizeof(" statuses={}") - 1;
+
+    for (i = 0; i < status_counts->nelts; i++) {
+        len += 2 * NGX_INT_T_LEN;
+        if (i != 0) {
+            len++;
+        }
+    }
+
+    return len;
+}
+
+
+static u_char *
+ngx_http_cache_purge_refresh_write_status_counts_text(u_char *p,
+    ngx_array_t *status_counts)
+{
+    ngx_uint_t                                 i;
+    ngx_http_cache_purge_refresh_status_count_t *entry;
+
+    if (status_counts == NULL || status_counts->nelts == 0) {
+        return p;
+    }
+
+    entry = status_counts->elts;
+    *p++ = ' ';
+    ngx_memcpy(p, "statuses={", sizeof("statuses={") - 1);
+    p += sizeof("statuses={") - 1;
+
+    for (i = 0; i < status_counts->nelts; i++) {
+        if (i != 0) {
+            *p++ = ',';
+        }
+
+        p = ngx_sprintf(p, "%ui:%ui", entry[i].status, entry[i].count);
+    }
+
+    *p++ = '}';
+
+    return p;
+}
+
+
+static size_t
+ngx_http_cache_purge_refresh_status_counts_json_len(ngx_array_t *status_counts)
+{
+    ngx_uint_t                                 i;
+    size_t                                     len;
+
+    if (status_counts == NULL || status_counts->nelts == 0) {
+        return sizeof(",\"status_counts\":{}") - 1;
+    }
+
+    len = sizeof(",\"status_counts\":{}") - 1;
+
+    for (i = 0; i < status_counts->nelts; i++) {
+        len += 2 * NGX_INT_T_LEN + 4;
+        if (i != 0) {
+            len++;
+        }
+    }
+
+    return len;
+}
+
+
+static u_char *
+ngx_http_cache_purge_refresh_write_status_counts_json(u_char *p,
+    ngx_array_t *status_counts)
+{
+    ngx_uint_t                                 i;
+    ngx_http_cache_purge_refresh_status_count_t *entry;
+
+    ngx_memcpy(p, ",\"status_counts\":{", sizeof(",\"status_counts\":{") - 1);
+    p += sizeof(",\"status_counts\":{") - 1;
+
+    if (status_counts != NULL && status_counts->nelts != 0) {
+        entry = status_counts->elts;
+        for (i = 0; i < status_counts->nelts; i++) {
+            if (i != 0) {
+                *p++ = ',';
+            }
+
+            p = ngx_sprintf(p, "\"%ui\":%ui", entry[i].status,
+                            entry[i].count);
+        }
+    }
+
+    *p++ = '}';
+
+    return p;
+}
+
+
+static size_t
+ngx_http_cache_purge_refresh_status_counts_log_len(ngx_array_t *status_counts)
+{
+    if (status_counts == NULL || status_counts->nelts == 0) {
+        return 0;
+    }
+
+    return ngx_http_cache_purge_refresh_status_counts_text_len(status_counts);
+}
+
+
+static u_char *
+ngx_http_cache_purge_refresh_write_status_counts_log(u_char *p,
+    ngx_array_t *status_counts)
+{
+    return ngx_http_cache_purge_refresh_write_status_counts_text(p,
+            status_counts);
+}
+
+
+static ngx_int_t
 ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
     ngx_int_t rc)
 {
@@ -4553,6 +4728,17 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
         status = r->upstream->headers_in.status_n;
     } else if (r->headers_out.status) {
         status = r->headers_out.status;
+    }
+
+    if (status != 0
+        && ngx_http_cache_purge_refresh_record_status(ctx, status) != NGX_OK)
+    {
+        ctx->errors++;
+        if (ctx->active > 0) {
+            ctx->active--;
+        }
+
+        return NGX_OK;
     }
 
     if (status == NGX_HTTP_NOT_MODIFIED) {
@@ -4653,10 +4839,10 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
             }
         }
     } else {
-        /* Error or unexpected status — keep cache (conservative) */
-        ctx->errors++;
+        /* Unexpected HTTP status — keep cache (conservative) */
+        ctx->refreshed++;
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "refresh: %ui error kept \"%V\"", status, &file->uri);
+                       "refresh: %ui kept \"%V\"", status, &file->uri);
     }
 
     if (ctx->active > 0) {
@@ -4884,16 +5070,18 @@ ngx_http_cache_purge_refresh_send_response(ngx_http_request_t *r)
 
     /* Calculate response body size */
     if (cplcf->resptype == NGX_REPONSE_TYPE_JSON) {
-        /* JSON: {"status":"refresh","total":N,"kept":N,"purged":N,"errors":N} */
+        /* JSON: {"status":"refresh","total":N,"kept":N,"purged":N,"errors":N,"status_counts":{...}} */
         len = sizeof("{\"status\":\"refresh\",\"total\":,\"kept\":,\"purged\":,\"errors\":}")
-              + 4 * NGX_INT_T_LEN;
+              + 4 * NGX_INT_T_LEN
+              + ngx_http_cache_purge_refresh_status_counts_json_len(ctx->status_counts);
 
         r->headers_out.content_type.len = ngx_http_cache_purge_content_type_json_size - 1;
         r->headers_out.content_type.data = (u_char *) ngx_http_cache_purge_content_type_json;
     } else {
-        /* Text: "Refresh: total=N kept=N purged=N errors=N\n" */
+        /* Text: "Refresh: total=N kept=N purged=N errors=N statuses={...}\n" */
         len = sizeof("Refresh: total= kept= purged= errors=\n")
-              + 4 * NGX_INT_T_LEN;
+              + 4 * NGX_INT_T_LEN
+              + ngx_http_cache_purge_refresh_status_counts_text_len(ctx->status_counts);
 
         r->headers_out.content_type.len = ngx_http_cache_purge_content_type_text_size - 1;
         r->headers_out.content_type.data = (u_char *) ngx_http_cache_purge_content_type_text;
@@ -4907,12 +5095,18 @@ ngx_http_cache_purge_refresh_send_response(ngx_http_request_t *r)
     if (cplcf->resptype == NGX_REPONSE_TYPE_JSON) {
         p = ngx_sprintf(b->pos,
             "{\"status\":\"refresh\",\"total\":%ui,\"kept\":%ui,"
-            "\"purged\":%ui,\"errors\":%ui}",
+            "\"purged\":%ui,\"errors\":%ui",
             ctx->total, ctx->refreshed, ctx->purged, ctx->errors);
+        p = ngx_http_cache_purge_refresh_write_status_counts_json(p,
+                ctx->status_counts);
+        *p++ = '}';
     } else {
         p = ngx_sprintf(b->pos,
-            "Refresh: total=%ui kept=%ui purged=%ui errors=%ui\n",
+            "Refresh: total=%ui kept=%ui purged=%ui errors=%ui",
             ctx->total, ctx->refreshed, ctx->purged, ctx->errors);
+        p = ngx_http_cache_purge_refresh_write_status_counts_text(p,
+                ctx->status_counts);
+        *p++ = '\n';
     }
 
     b->last = p;
@@ -5053,6 +5247,9 @@ ngx_http_cache_purge_refresh_finalize(ngx_http_request_t *r,
     ngx_http_cache_purge_refresh_ctx_t *ctx)
 {
     ngx_int_t rc;
+    size_t     len;
+    u_char    *msg;
+    u_char    *p;
 
     if (ctx->finalized) {
         return;
@@ -5064,10 +5261,29 @@ ngx_http_cache_purge_refresh_finalize(ngx_http_request_t *r,
         ngx_del_timer(&ctx->timeout_ev);
     }
 
-    ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
-                  "cache refresh summary uri=\"%V\" total=%ui kept=%ui purged=%ui errors=%ui timed_out=%ui",
-                  &r->uri, ctx->total, ctx->refreshed, ctx->purged,
-                  ctx->errors, ctx->timed_out ? 1 : 0);
+    len = sizeof("cache refresh summary uri=\"\" total= kept= purged= errors= timed_out=")
+          + r->uri.len + 5 * NGX_INT_T_LEN
+          + ngx_http_cache_purge_refresh_status_counts_log_len(ctx->status_counts);
+
+    msg = ngx_pnalloc(r->pool, len + 1);
+    if (msg == NULL) {
+        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
+                      "cache refresh summary uri=\"%V\" total=%ui kept=%ui purged=%ui errors=%ui timed_out=%ui",
+                      &r->uri, ctx->total, ctx->refreshed, ctx->purged,
+                      ctx->errors, ctx->timed_out ? 1 : 0);
+    } else {
+        p = ngx_sprintf(msg,
+                        "cache refresh summary uri=\"%V\" total=%ui kept=%ui purged=%ui errors=%ui timed_out=%ui",
+                        &r->uri, ctx->total, ctx->refreshed,
+                        ctx->purged, ctx->errors,
+                        ctx->timed_out ? 1 : 0);
+        p = ngx_http_cache_purge_refresh_write_status_counts_log(p,
+                ctx->status_counts);
+        *p = '\0';
+
+        ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
+                      "%s", msg);
+    }
 
     rc = ngx_http_cache_purge_refresh_send_response(r);
     ngx_http_finalize_request(r, rc);
@@ -5494,6 +5710,11 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
 
     ctx->request = r;
     ctx->cache = cache;
+    ctx->status_counts = ngx_array_create(r->pool, 4,
+                                          sizeof(ngx_http_cache_purge_refresh_status_count_t));
+    if (ctx->status_counts == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     cln = ngx_pool_cleanup_add(r->pool, 0);
     if (cln == NULL) {
