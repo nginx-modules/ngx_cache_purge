@@ -331,7 +331,7 @@ Maximum number of concurrent validator subrequests during refresh.
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- The cache key must end with the URI or request URI portion. It is not limited to `$uri$is_args$args`, but the URI/request URI must be at the tail of the key.
+- Refresh can only reconstruct the upstream request path reliably if the final segment of the cache key is the URI or request URI portion. It does not have to be literally `$uri$is_args$args`; forms such as `$request_uri` or `$host$request_uri` also work, because the tail of the key is still the request path.
 
 ### Method Routing Model
 
@@ -465,7 +465,7 @@ request URI portion.
       proxy_cache_bypass $cache_purge_refresh_bypass;
       proxy_no_cache     $cache_purge_refresh_bypass;
 
-- Do not use a cache key where the URI appears in the middle, such as `$arg_x$uri$host`. The URI or request URI must be at the end of the key.
+- Do not use a cache key where the URI appears only in the middle, such as `$arg_x$uri$host`. What matters is not whether the key contains a URI somewhere, but whether the final segment is the URI or request URI portion.
 
 - Do not try refresh on `fastcgi`, `scgi`, or `uwsgi` caches.
 
@@ -516,7 +516,7 @@ Current upstream status policy during refresh is intentionally conservative:
 - `404 Not Found` / `410 Gone`: purge the cache entry because the upstream object is gone
 - other statuses (for example `403`, `429`, `500`) and subrequest failures: keep the cache entry and count an error
 
-At the end of each refresh request, the module also emits one `error_log info`
+At the end of each refresh request, the module also emits one `error_log notice`
 summary line like:
 
     cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1>

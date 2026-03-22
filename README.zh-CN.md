@@ -18,7 +18,7 @@
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- cache key 的硬约束是：key 必须以 URI 或 request URI 结尾。不是只能写成 `$uri$is_args$args`，但 URI/request URI 必须位于 key 尾部。
+- refresh 能否正确工作，取决于 cache key 的最后一段是不是请求路径本身。它不要求固定写成 `$uri$is_args$args`；像 `$request_uri`、`$host$request_uri` 这样的写法也可以，因为 key 的尾部仍然是完整的 URI / request URI 部分。
 
 ## 动作路由说明
 
@@ -154,7 +154,7 @@ http {
 - `$request_uri$cookie_user`
 - `$arg_x$uri$host`
 
-判断标准不是“有没有包含 URI”，而是“URI / request URI 是否在 key 尾部”。
+判断标准不是“key 里有没有出现 URI”，而是“key 的最后一段是不是完整的请求路径部分”。只要 key 的尾部仍然是 URI / request URI，refresh 就能从这里反推出上游请求；如果 URI 只出现在中间，末尾又拼了别的维度，这个反推过程就不可靠。
 
 ## 常见错误配置
 
@@ -223,7 +223,7 @@ location /fcgi-refresh/ {
 
 为什么错：当前 refresh 不支持 `fastcgi` / `scgi` / `uwsgi`。
 
-### 错误六：cache key 不是以 URI / request URI 结尾
+### 错误六：cache key 的末尾不是 URI / request URI
 
 ```nginx
 location / {
@@ -234,7 +234,7 @@ location / {
 }
 ```
 
-为什么错：refresh 需要从缓存 key 反推出上游请求路径。只要 URI / request URI 不在 key 尾部，这个反推过程就不可靠。
+为什么错：refresh 需要从缓存 key 的最后一段反推出上游请求路径。只要 URI / request URI 不在 key 的末尾，这个反推过程就不可靠。
 
 ## 生产部署建议
 
@@ -253,5 +253,5 @@ location / {
 - purge / refresh 成功时都带 `X-Cache-Action` 响应头。
 - full-zone 能力错配时返回 `400 Bad Request`，优先检查是不是把 `PURGE` 发到了 `refresh_all` location，或者把 `REFRESH` 发到了 `purge_all` location。
 - refresh 当前对上游状态码的策略是保守的：`304` 保留，`200` 走正常 invalidate 路径，`404` / `410` 直接 purge，其它状态默认保留并计入 `errors`。
-- 每次 refresh 结束时，模块还会在 `error_log info` 写一条汇总日志，例如 `cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1>`；逐条条目的明细仍然只在 debug 日志中可见。
+- 每次 refresh 结束时，模块还会在 `error_log notice` 写一条汇总日志，例如 `cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1>`；逐条条目的明细仍然只在 debug 日志中可见。
 - 如果 refresh 结果异常，优先检查三件事：是否是 `proxy_cache`、refresh 链路上是否配置 bypass/no_cache、cache key 是否以 URI/request URI 结尾。

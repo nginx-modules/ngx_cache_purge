@@ -5064,7 +5064,7 @@ ngx_http_cache_purge_refresh_finalize(ngx_http_request_t *r,
         ngx_del_timer(&ctx->timeout_ev);
     }
 
-    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+    ngx_log_error(NGX_LOG_NOTICE, r->connection->log, 0,
                   "cache refresh summary uri=\"%V\" total=%ui kept=%ui purged=%ui errors=%ui timed_out=%ui",
                   &r->uri, ctx->total, ctx->refreshed, ctx->purged,
                   ctx->errors, ctx->timed_out ? 1 : 0);
