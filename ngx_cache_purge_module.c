@@ -3434,6 +3434,11 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r, ngx_str_t *status)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    if (r->method == NGX_HTTP_HEAD) {
+        rc = ngx_http_send_header(r);
+        return rc;
+    }
+
     b = ngx_create_temp_buf(r->pool, len);
     if (b == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
@@ -4838,8 +4843,13 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
                 ctx->errors++;
             }
         }
+    } else if (status == 0) {
+        /* No upstream response (connect failure, timeout, etc.) — error */
+        ctx->errors++;
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "refresh: no response, error \"%V\"", &file->uri);
     } else {
-        /* Unexpected HTTP status — keep cache (conservative) */
+        /* Other HTTP status — keep cache (conservative) */
         ctx->refreshed++;
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "refresh: %ui kept \"%V\"", status, &file->uri);
@@ -4983,6 +4993,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
     {
         pd->handled = 1;
         ctx->errors++;
+        if (ctx->active > 0) { ctx->active--; }
         return NGX_OK;
     }
 
@@ -4992,6 +5003,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
         if (h == NULL) {
             pd->handled = 1;
             ctx->errors++;
+            if (ctx->active > 0) { ctx->active--; }
             return NGX_OK;
         }
         *h = *r->headers_in.host;
@@ -5008,6 +5020,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
         if (h == NULL) {
             pd->handled = 1;
             ctx->errors++;
+            if (ctx->active > 0) { ctx->active--; }
             return NGX_OK;
         }
         h->hash = 1;
@@ -5023,6 +5036,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
         if (h == NULL) {
             pd->handled = 1;
             ctx->errors++;
+            if (ctx->active > 0) { ctx->active--; }
             return NGX_OK;
         }
         time_buf = ngx_pnalloc(r->pool,
@@ -5030,6 +5044,7 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
         if (time_buf == NULL) {
             pd->handled = 1;
             ctx->errors++;
+            if (ctx->active > 0) { ctx->active--; }
             return NGX_OK;
         }
         h->hash = 1;
@@ -5634,10 +5649,12 @@ ngx_http_cache_purge_refresh_start(ngx_http_request_t *r)
         }
 
         if (ctx->timed_out) {
-            if (ctx->queued > 0) {
-                ctx->errors += ctx->queued;
-                ctx->current = ctx->queued;
-            }
+            /*
+             * mark_timeout already counted undispatched entries via
+             * (total - dispatched), so do NOT add queued again here.
+             * Just advance current to prevent further dispatch attempts.
+             */
+            ctx->current = ctx->queued;
 
             if (ctx->active == 0) {
                 ngx_http_cache_purge_refresh_finalize(r, ctx);
