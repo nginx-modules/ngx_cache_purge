@@ -4605,6 +4605,53 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
                 ctx->errors++;
             }
         }
+    } else if (status == NGX_HTTP_NOT_FOUND || status == 410) {
+        /* 404/410 — upstream object is gone, purge through unified helper */
+        ngx_pool_t *pool;
+
+        pool = ngx_create_pool(4096, r->connection->log);
+        if (pool == NULL) {
+            ctx->errors++;
+        } else if (ngx_http_cache_purge_invalidate_item(ctx->request,
+                                                        ctx->cache,
+                                                        pool,
+                                                        &file->item,
+                                                        &invalidate_result)
+                   != NGX_OK)
+        {
+            ctx->errors++;
+            ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
+                          "refresh missing invalidate failed for \"%V\"",
+                          &file->uri);
+        } else if (invalidate_result
+                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED)
+        {
+            ctx->purged++;
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "refresh: %ui purged-missing \"%V\"",
+                           status, &file->uri);
+        } else if (invalidate_result
+                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
+                   || invalidate_result
+                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
+        {
+            ctx->refreshed++;
+            ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "refresh: %ui race-kept (%ui) \"%V\"",
+                           status, invalidate_result, &file->uri);
+        } else {
+            ctx->errors++;
+        }
+
+        if (pool != NULL) {
+            if (ngx_http_cache_purge_enqueue_temp_pool(&ctx->temp_pools,
+                    ctx->request->pool, pool)
+                != NGX_OK)
+            {
+                ngx_destroy_pool(pool);
+                ctx->errors++;
+            }
+        }
     } else {
         /* Error or unexpected status — keep cache (conservative) */
         ctx->errors++;
@@ -5016,6 +5063,11 @@ ngx_http_cache_purge_refresh_finalize(ngx_http_request_t *r,
     if (ctx->timeout_ev.timer_set) {
         ngx_del_timer(&ctx->timeout_ev);
     }
+
+    ngx_log_error(NGX_LOG_INFO, r->connection->log, 0,
+                  "cache refresh summary uri=\"%V\" total=%ui kept=%ui purged=%ui errors=%ui timed_out=%ui",
+                  &r->uri, ctx->total, ctx->refreshed, ctx->purged,
+                  ctx->errors, ctx->timed_out ? 1 : 0);
 
     rc = ngx_http_cache_purge_refresh_send_response(r);
     ngx_http_finalize_request(r, rc);
