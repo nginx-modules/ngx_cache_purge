@@ -2968,24 +2968,26 @@ ngx_http_cache_purge_open_temp_cache(ngx_http_request_t *r,
     ngx_http_file_cache_t *cache, ngx_pool_t *pool, ngx_str_t *cache_key,
     ngx_http_cache_t *c)
 {
-    ngx_http_request_t  tr;
+    ngx_http_request_t *tr;
     ngx_str_t          *key;
 
     ngx_memzero(c, sizeof(ngx_http_cache_t));
 
     /*
-     * Shallow-copy the request struct so we can override pool and cache
-     * without mutating the original.  ngx_http_file_cache_create_key and
-     * ngx_http_file_cache_open read r->cache, r->pool, r->connection->log,
-     * and loc_conf pointers — all of which remain valid through the shallow
-     * copy.  This is fragile if nginx internals change; keep the scope of
-     * tr usage minimal and do not pass &tr to anything beyond these two
-     * cache API calls.
+     * Allocate a shallow copy of the request on the temp pool so that
+     * any cleanup registered by ngx_http_file_cache_open (which holds
+     * a pointer to tr->cache) remains valid for the lifetime of the pool.
+     * A stack-allocated copy would become a dangling pointer after this
+     * function returns, risking use-after-free when the pool cleanup runs.
      */
-    ngx_memcpy(&tr, r, sizeof(ngx_http_request_t));
+    tr = ngx_palloc(pool, sizeof(ngx_http_request_t));
+    if (tr == NULL) {
+        return NGX_ERROR;
+    }
+    ngx_memcpy(tr, r, sizeof(ngx_http_request_t));
 
-    tr.pool = pool;
-    tr.cache = c;
+    tr->pool = pool;
+    tr->cache = c;
 
     if (ngx_array_init(&c->keys, pool, 1, sizeof(ngx_str_t)) != NGX_OK) {
         return NGX_ERROR;
@@ -3001,9 +3003,9 @@ ngx_http_cache_purge_open_temp_cache(ngx_http_request_t *r,
     c->file_cache = cache;
     c->file.log = r->connection->log;
 
-    ngx_http_file_cache_create_key(&tr);
+    ngx_http_file_cache_create_key(tr);
 
-    switch (ngx_http_file_cache_open(&tr)) {
+    switch (ngx_http_file_cache_open(tr)) {
     case NGX_OK:
     case NGX_HTTP_CACHE_STALE:
 #  if (nginx_version >= 8001) \
@@ -4684,6 +4686,63 @@ ngx_http_cache_purge_refresh_write_status_counts_log(u_char *p,
 }
 
 
+/*
+ * Common helper for invalidating a cache entry during refresh.
+ * Used by both the 200 (content changed) and 404/410 (upstream gone) paths.
+ * Updates ctx->purged, ctx->refreshed, or ctx->errors based on the result.
+ */
+static void
+ngx_http_cache_purge_refresh_do_invalidate(
+    ngx_http_request_t *r,
+    ngx_http_cache_purge_refresh_ctx_t *ctx,
+    ngx_http_cache_purge_refresh_file_t *file,
+    ngx_uint_t status)
+{
+    ngx_pool_t                                *pool;
+    ngx_http_cache_purge_invalidate_result_e   invalidate_result;
+
+    pool = ngx_create_pool(4096, r->connection->log);
+    if (pool == NULL) {
+        ctx->errors++;
+        return;
+    }
+
+    if (ngx_http_cache_purge_invalidate_item(ctx->request, ctx->cache,
+                                             pool, &file->item,
+                                             &invalidate_result)
+        != NGX_OK)
+    {
+        ctx->errors++;
+        ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
+                      "refresh invalidate failed (%ui) for \"%V\"",
+                      status, &file->uri);
+    } else if (invalidate_result == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED) {
+        ctx->purged++;
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "refresh: %ui purged \"%V\"", status, &file->uri);
+    } else if (invalidate_result
+               == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
+               || invalidate_result
+               == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
+    {
+        ctx->refreshed++;
+        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "refresh: %ui race-kept (%ui) \"%V\"",
+                       status, invalidate_result, &file->uri);
+    } else {
+        ctx->errors++;
+    }
+
+    if (ngx_http_cache_purge_enqueue_temp_pool(&ctx->temp_pools,
+            ctx->request->pool, pool)
+        != NGX_OK)
+    {
+        ngx_destroy_pool(pool);
+        ctx->errors++;
+    }
+}
+
+
 static ngx_int_t
 ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
     ngx_int_t rc)
@@ -4691,7 +4750,6 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
     ngx_http_cache_purge_refresh_post_data_t *pd;
     ngx_http_cache_purge_refresh_ctx_t       *ctx;
     ngx_http_cache_purge_refresh_file_t      *file;
-    ngx_http_cache_purge_invalidate_result_e  invalidate_result;
     ngx_uint_t                                status;
 
     pd = data;
@@ -4753,96 +4811,10 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
                        "refresh: 304 kept \"%V\"", &file->uri);
     } else if (status == NGX_HTTP_OK) {
         /* 200 — content changed, invalidate through unified helper */
-        ngx_pool_t *pool;
-
-        pool = ngx_create_pool(4096, r->connection->log);
-        if (pool == NULL) {
-            ctx->errors++;
-        } else if (ngx_http_cache_purge_invalidate_item(ctx->request,
-                                                        ctx->cache,
-                                                        pool,
-                                                        &file->item,
-                                                        &invalidate_result)
-                   != NGX_OK)
-        {
-            ctx->errors++;
-            ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
-                          "refresh invalidate failed for \"%V\"", &file->uri);
-        } else if (invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED)
-        {
-            ctx->purged++;
-            ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                           "refresh: 200 purged \"%V\"", &file->uri);
-        } else if (invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
-                   || invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
-        {
-            ctx->refreshed++;
-            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                           "refresh: 200 race-kept (%ui) \"%V\"",
-                           invalidate_result, &file->uri);
-        } else {
-            ctx->errors++;
-        }
-
-        if (pool != NULL) {
-            if (ngx_http_cache_purge_enqueue_temp_pool(&ctx->temp_pools,
-                    ctx->request->pool, pool)
-                != NGX_OK)
-            {
-                ngx_destroy_pool(pool);
-                ctx->errors++;
-            }
-        }
+        ngx_http_cache_purge_refresh_do_invalidate(r, ctx, file, status);
     } else if (status == NGX_HTTP_NOT_FOUND || status == 410) {
         /* 404/410 — upstream object is gone, purge through unified helper */
-        ngx_pool_t *pool;
-
-        pool = ngx_create_pool(4096, r->connection->log);
-        if (pool == NULL) {
-            ctx->errors++;
-        } else if (ngx_http_cache_purge_invalidate_item(ctx->request,
-                                                        ctx->cache,
-                                                        pool,
-                                                        &file->item,
-                                                        &invalidate_result)
-                   != NGX_OK)
-        {
-            ctx->errors++;
-            ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
-                          "refresh missing invalidate failed for \"%V\"",
-                          &file->uri);
-        } else if (invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED)
-        {
-            ctx->purged++;
-            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                           "refresh: %ui purged-missing \"%V\"",
-                           status, &file->uri);
-        } else if (invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
-                   || invalidate_result
-                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
-        {
-            ctx->refreshed++;
-            ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                           "refresh: %ui race-kept (%ui) \"%V\"",
-                           status, invalidate_result, &file->uri);
-        } else {
-            ctx->errors++;
-        }
-
-        if (pool != NULL) {
-            if (ngx_http_cache_purge_enqueue_temp_pool(&ctx->temp_pools,
-                    ctx->request->pool, pool)
-                != NGX_OK)
-            {
-                ngx_destroy_pool(pool);
-                ctx->errors++;
-            }
-        }
+        ngx_http_cache_purge_refresh_do_invalidate(r, ctx, file, status);
     } else if (status == 0) {
         /* No upstream response (connect failure, timeout, etc.) — error */
         ctx->errors++;
