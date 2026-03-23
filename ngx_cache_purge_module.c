@@ -305,6 +305,10 @@ static ngx_int_t ngx_http_cache_purge_add_action_header(
     ngx_http_request_t *r, ngx_uint_t refresh);
 static ngx_int_t ngx_http_cache_purge_send_capability_error(
     ngx_http_request_t *r, ngx_uint_t refresh);
+static ngx_int_t ngx_http_cache_purge_send_cache_key_error(
+    ngx_http_request_t *r);
+static ngx_flag_t ngx_http_cache_purge_refresh_key_is_request_target(
+    ngx_str_t *key);
 # if (nginx_version >= 1007009)
 ngx_int_t  ngx_http_cache_purge_cache_get(ngx_http_request_t *r,
                ngx_http_upstream_t *u, ngx_http_file_cache_t **cache);
@@ -3360,6 +3364,66 @@ ngx_http_cache_purge_send_capability_error(ngx_http_request_t *r,
 }
 
 
+static ngx_int_t
+ngx_http_cache_purge_send_cache_key_error(ngx_http_request_t *r)
+{
+    ngx_buf_t    *b;
+    ngx_chain_t   out;
+    ngx_int_t     rc;
+    size_t        len;
+    const char   *msg;
+
+    msg = "refresh requires proxy_cache_key to end with uri or request_uri, or evaluate to uri/request_uri itself\n";
+    len = ngx_strlen(msg);
+
+    r->headers_out.status = NGX_HTTP_BAD_REQUEST;
+    r->headers_out.content_type.len = ngx_http_cache_purge_content_type_text_size - 1;
+    r->headers_out.content_type.data = (u_char *) ngx_http_cache_purge_content_type_text;
+    r->headers_out.content_length_n = len;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+
+    b = ngx_create_temp_buf(r->pool, len);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    b->last = ngx_cpymem(b->pos, msg, len);
+    b->last_buf = 1;
+    b->last_in_chain = 1;
+
+    out.buf = b;
+    out.next = NULL;
+
+    return ngx_http_output_filter(r, &out);
+}
+
+
+static ngx_flag_t
+ngx_http_cache_purge_refresh_key_is_request_target(ngx_str_t *key)
+{
+    size_t   i;
+    u_char   ch;
+
+    if (key->len == 0 || key->data[0] != '/') {
+        return 0;
+    }
+
+    for (i = 0; i < key->len; i++) {
+        ch = key->data[i];
+
+        if (ch < 0x21 || ch == '|') {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
 /* -- response builder --------------------------------------------------- */
 
 ngx_int_t
@@ -4095,7 +4159,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_uint_value(conf->refresh_concurrency,
                               prev->refresh_concurrency, 32);
     ngx_conf_merge_msec_value(conf->refresh_timeout,
-                              prev->refresh_timeout, 300000);
+                              prev->refresh_timeout, 600000);
 
 # if (NGX_HTTP_FASTCGI)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
@@ -4966,6 +5030,9 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
         pd->handled = 1;
         ctx->errors++;
         if (ctx->active > 0) { ctx->active--; }
+        if (ngx_http_post_request(ctx->request, NULL) != NGX_OK) {
+            return NGX_ERROR;
+        }
         return NGX_OK;
     }
 
@@ -4976,6 +5043,9 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
             pd->handled = 1;
             ctx->errors++;
             if (ctx->active > 0) { ctx->active--; }
+            if (ngx_http_post_request(ctx->request, NULL) != NGX_OK) {
+                return NGX_ERROR;
+            }
             return NGX_OK;
         }
         *h = *r->headers_in.host;
@@ -4993,6 +5063,9 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
             pd->handled = 1;
             ctx->errors++;
             if (ctx->active > 0) { ctx->active--; }
+            if (ngx_http_post_request(ctx->request, NULL) != NGX_OK) {
+                return NGX_ERROR;
+            }
             return NGX_OK;
         }
         h->hash = 1;
@@ -5009,6 +5082,9 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
             pd->handled = 1;
             ctx->errors++;
             if (ctx->active > 0) { ctx->active--; }
+            if (ngx_http_post_request(ctx->request, NULL) != NGX_OK) {
+                return NGX_ERROR;
+            }
             return NGX_OK;
         }
         time_buf = ngx_pnalloc(r->pool,
@@ -5017,6 +5093,9 @@ ngx_http_cache_purge_refresh_fire_subrequest(ngx_http_request_t *r,
             pd->handled = 1;
             ctx->errors++;
             if (ctx->active > 0) { ctx->active--; }
+            if (ngx_http_post_request(ctx->request, NULL) != NGX_OK) {
+                return NGX_ERROR;
+            }
             return NGX_OK;
         }
         h->hash = 1;
@@ -5774,6 +5853,9 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
             ctx->key_prefix_len = key.len - tail.len;
 
         } else {
+            if (!ngx_http_cache_purge_refresh_key_is_request_target(&key)) {
+                return ngx_http_cache_purge_send_cache_key_error(r);
+            }
             ctx->key_prefix_len = 0;
         }
     }

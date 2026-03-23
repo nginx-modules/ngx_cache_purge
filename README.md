@@ -299,7 +299,7 @@ the same `location`. If you need both actions, expose separate endpoints such as
 
 ```
 Syntax:  cache_purge_refresh_timeout <time>
-Default: 300s
+Default: 600s
 Context: http, server, location
 ```
 
@@ -331,7 +331,7 @@ Maximum number of concurrent validator subrequests during refresh.
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- Refresh can only reconstruct the upstream request path reliably if the final segment of the cache key is the URI or request URI portion. It does not have to be literally `$uri$is_args$args`; forms such as `$request_uri` or `$host$request_uri` also work, because the tail of the key is still the request path.
+- Refresh can only reconstruct the upstream request path safely when the evaluated cache key makes the request-path tail unambiguous. The safest shapes are keys where the whole key is already the request path (for example `$uri$is_args$args` or `$request_uri`), or keys whose tail still clearly preserves the URI/request-URI portion (for example same-location refresh with `$host$request_uri`). If refresh cannot determine that tail reliably, it now rejects the request with `400 Bad Request` instead of guessing and risking a wrong purge.
 
 ### Method Routing Model
 
@@ -465,7 +465,7 @@ request URI portion.
       proxy_cache_bypass $cache_purge_refresh_bypass;
       proxy_no_cache     $cache_purge_refresh_bypass;
 
-- Do not use a cache key where the URI appears only in the middle, such as `$arg_x$uri$host`. What matters is not whether the key contains a URI somewhere, but whether the final segment is the URI or request URI portion.
+- Do not use a cache key where the URI appears only in the middle, such as `$arg_x$uri$host` or `$uri|suffix`. The real question is not "does this key contain a URI somewhere?" but "can refresh still identify the request-path tail from the final key shape?" If the answer is no, refresh now rejects the request with `400 Bad Request` instead of attempting to invalidate cache entries from a guessed URI.
 
 - Do not try refresh on `fastcgi`, `scgi`, or `uwsgi` caches.
 

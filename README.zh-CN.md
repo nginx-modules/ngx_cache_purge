@@ -18,7 +18,7 @@
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- refresh 能否正确工作，取决于 cache key 的最后一段是不是请求路径本身。它不要求固定写成 `$uri$is_args$args`；像 `$request_uri`、`$host$request_uri` 这样的写法也可以，因为 key 的尾部仍然是完整的 URI / request URI 部分。
+- refresh 能否正确工作，关键在于它能不能从“实际展开后的 cache key”里明确找出请求路径那一段。最稳妥的写法，是让 key 本身就是请求路径（例如 `$uri$is_args$args`、`$request_uri`），或者至少让 key 的最后一段仍然清楚地保留完整的 URI / request URI（例如同 location 场景下的 `$host$request_uri`）。如果 refresh 不能可靠判断这一段，它现在会直接返回 `400 Bad Request`，而不是继续猜测并误删缓存。
 
 ## 动作路由说明
 
@@ -76,7 +76,7 @@ http {
             proxy_no_cache     $cache_purge_refresh_bypass;
 
             proxy_cache_refresh            app_cache $scheme$proxy_host$1$is_args$args;
-            cache_purge_refresh_timeout     60s;
+            cache_purge_refresh_timeout     600s;
             cache_purge_refresh_concurrency 32;
         }
     }
@@ -119,7 +119,7 @@ http {
 
 注意：单入口 method 兼容不等于 full-zone 也能兼容。`REFRESH /*` 仍然需要一个显式配置了 `proxy_cache_refresh ... refresh_all ...` 的 location。
 
-还要特别注意：单入口渐进迁移只解决“入口不想立刻拆分”的问题，不会自动豁免 refresh 的基础前提。如果请求最终按 `REFRESH` 路由执行，那么参与 refresh 请求链路的 proxy 配置仍然必须满足 bypass/no_cache 约束，cache key 仍然必须以 URI / request URI 结尾。
+还要特别注意：单入口渐进迁移只解决“入口不想立刻拆分”的问题，不会自动豁免 refresh 的基础前提。如果请求最终按 `REFRESH` 路由执行，那么参与 refresh 请求链路的 proxy 配置仍然必须满足 bypass/no_cache 约束，cache key 也仍然必须让 refresh 能可靠识别出 URI / request URI 这一段。
 
 `cache_purge_refresh_timeout` 也只是 refresh 的总体软截止时间：超时后会停止继续派发新的校验子请求，但已经在途的子请求会自然收尾，而不是被粗暴中断。
 
@@ -154,7 +154,7 @@ http {
 - `$request_uri$cookie_user`
 - `$arg_x$uri$host`
 
-判断标准不是“key 里有没有出现 URI”，而是“key 的最后一段是不是完整的请求路径部分”。只要 key 的尾部仍然是 URI / request URI，refresh 就能从这里反推出上游请求；如果 URI 只出现在中间，末尾又拼了别的维度，这个反推过程就不可靠。
+判断标准不是“key 里有没有出现 URI”，而是“refresh 能不能从最终 key 里明确识别出请求路径的最后一段”。像 `$arg_x$uri$host`、`$uri|suffix` 这种写法虽然也包含 URI，但 URI 只出现在中间，或者尾部又拼了别的维度，refresh 就无法安全反推出上游请求。遇到这种情况，当前实现会直接拒绝 refresh（`400 Bad Request`），而不是冒险继续执行。
 
 ## 常见错误配置
 
