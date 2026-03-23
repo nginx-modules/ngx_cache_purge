@@ -474,18 +474,26 @@ request URI portion.
 Refresh success responses return `200 OK`. The exact body format depends on
 `cache_purge_response_type`, but refresh currently supports only JSON or text
 output. If `cache_purge_response_type` is `json`, refresh returns JSON like
-`{"status":"refresh",...,"status_counts":{"200":190,"301":1,"304":15375}}`;
+`{"status":"refresh",...,"total_bytes":12345,"kept_bytes":6789,"purged_bytes":5556,"status_counts":{"200":190,"301":1,"304":15375},"status_bytes":{"200":1048576,"301":512,"304":2097152}}`;
 all other values fall back to text. In the default text format, the body looks
 like:
 
-    Refresh: total=<N> kept=<K> purged=<P> errors=<E> statuses={200:<N>,304:<N>,...}
+    Refresh: total=<N> kept=<K> purged=<P> errors=<E> total_bytes=<B> kept_bytes=<KB> purged_bytes=<PB> statuses={200:<N>,304:<N>,...} status_bytes={200:<BYTES>,304:<BYTES>,...}
 
 Where:
 - `total`: number of matched cache entries scanned
 - `kept`: entries whose final action was to retain the cache entry (for example upstream `304`, `301`, `403`, `500`, or a race-kept result)
 - `purged`: entries whose final action was to invalidate the cache entry (currently upstream `200`, `404`, or `410` when invalidate succeeds)
 - `errors`: true refresh failures only (for example subrequest creation failure, timeout, transport failure, or internal invalidate/helper failure)
+- `total_bytes`: total cached file size of all matched entries, based on the scan-stage `fs_size` snapshot
+- `kept_bytes`: scan-stage cached file size total for entries whose final action was keep
+- `purged_bytes`: scan-stage cached file size total for entries whose final action was purge/invalidate
 - `statuses={...}`: dynamic upstream HTTP status counts for this refresh request; only observed HTTP statuses are listed
+- `status_bytes={...}`: dynamic upstream HTTP status bytes for this refresh request; each value is the scan-stage cached file size total for entries that produced that upstream status
+
+The `*_bytes` fields are intentionally based on the cache entry size observed
+during refresh scanning (`fs_size`). Under concurrent races they are best-effort
+accounting, not a guaranteed post-action view of the final on-disk state.
 
 Successful purge and refresh responses also include:
 
@@ -523,7 +531,7 @@ Current upstream status policy during refresh is intentionally conservative:
 At the end of each refresh request, the module also emits one `error_log notice`
 summary line like:
 
-    cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1> statuses={200:190,301:1,304:15375}
+    cache refresh summary uri="/path/*" total=<N> kept=<K> purged=<P> errors=<E> timed_out=<0|1> total_bytes=<B> kept_bytes=<KB> purged_bytes=<PB> statuses={200:190,301:1,304:15375} status_bytes={200:1048576,301:512,304:2097152}
 
 Per-entry decisions remain debug-level logs.
 
