@@ -307,8 +307,9 @@ static ngx_int_t ngx_http_cache_purge_send_capability_error(
     ngx_http_request_t *r, ngx_uint_t refresh);
 static ngx_int_t ngx_http_cache_purge_send_cache_key_error(
     ngx_http_request_t *r);
-static ngx_flag_t ngx_http_cache_purge_refresh_key_is_request_target(
-    ngx_str_t *key);
+static ngx_flag_t ngx_http_cache_purge_refresh_infer_key_prefix_len(
+    ngx_str_t *key, ngx_str_t *targets, ngx_uint_t ntargets,
+    ngx_uint_t *prefix_len);
 # if (nginx_version >= 1007009)
 ngx_int_t  ngx_http_cache_purge_cache_get(ngx_http_request_t *r,
                ngx_http_upstream_t *u, ngx_http_file_cache_t **cache);
@@ -3419,24 +3420,82 @@ ngx_http_cache_purge_send_cache_key_error(ngx_http_request_t *r)
 
 
 static ngx_flag_t
-ngx_http_cache_purge_refresh_key_is_request_target(ngx_str_t *key)
+ngx_http_cache_purge_refresh_infer_key_prefix_len(ngx_str_t *key,
+        ngx_str_t *targets, ngx_uint_t ntargets, ngx_uint_t *prefix_len)
 {
-    size_t   i;
-    u_char   ch;
+    ngx_uint_t  i;
+    size_t      j;
+    ngx_str_t   tail;
+    u_char      ch;
 
-    if (key->len == 0 || key->data[0] != '/') {
-        return 0;
-    }
-
-    for (i = 0; i < key->len; i++) {
-        ch = key->data[i];
-
-        if (ch < 0x21 || ch == '|') {
-            return 0;
+    for (i = 0; i < ntargets; i++) {
+        if (targets[i].len > 0 && key->len >= targets[i].len
+            && ngx_strncmp(key->data + key->len - targets[i].len,
+                           targets[i].data, targets[i].len) == 0)
+        {
+            *prefix_len = key->len - targets[i].len;
+            return 1;
         }
     }
 
-    return 1;
+    if (key->len > 0 && key->data[0] == '/') {
+        for (j = 0; j < key->len; j++) {
+            ch = key->data[j];
+
+            if (ch < 0x21 || ch == '|') {
+                return 0;
+            }
+        }
+
+        *prefix_len = 0;
+        return 1;
+    }
+
+    for (j = 1; j < key->len; j++) {
+        if (key->data[j] != '/') {
+            continue;
+        }
+
+        tail.len = key->len - j;
+        tail.data = key->data + j;
+
+        if (tail.len == 0) {
+            continue;
+        }
+
+        if (tail.data[0] != '/') {
+            continue;
+        }
+
+        for (i = 0; i < j; i++) {
+            ch = key->data[i];
+
+            if (ch < 0x21 || ch == '|' || ch == '/' || ch == '?' || ch == '#') {
+                break;
+            }
+        }
+
+        if (i != j) {
+            continue;
+        }
+
+        for (i = 0; i < tail.len; i++) {
+            ch = tail.data[i];
+
+            if (ch < 0x21 || ch == '|') {
+                break;
+            }
+        }
+
+        if (i != tail.len) {
+            continue;
+        }
+
+        *prefix_len = j;
+        return 1;
+    }
+
+    return 0;
 }
 
 
@@ -5924,8 +5983,10 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ngx_http_cache_purge_loc_conf_t     *cplcf;
     ngx_pool_cleanup_t                  *cln;
     ngx_str_t                           *keys;
+    ngx_str_t                            targets[2];
     ngx_str_t                            key;
     ngx_str_t                            tail;
+    ngx_uint_t                           ntargets;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                   "cache purge refresh in %s", cache->path->name.data);
@@ -5989,38 +6050,36 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
 
     /*
      * Infer the non-URI prefix in cache key.
-     * We first try unparsed_uri (keeps args), then uri.
-     * If neither is at key tail, fall back to 0.
+     * We first try unparsed_uri (keeps args), then uri, and finally
+     * conservatively accept only cache key shapes whose tail still clearly
+     * looks like a request target (for example $host$request_uri).
      */
     tail = r->unparsed_uri;
     if (!ctx->exact && tail.len > 0 && tail.data[tail.len - 1] == '*') {
         tail.len--;
     }
 
-    if (tail.len > 0 && key.len >= tail.len
-        && ngx_strncmp(key.data + key.len - tail.len, tail.data,
-                       tail.len) == 0)
-    {
-        ctx->key_prefix_len = key.len - tail.len;
+    if (tail.len > 0) {
+        targets[0] = tail;
+        ntargets = 1;
 
     } else {
-        tail = r->uri;
-        if (!ctx->exact && tail.len > 0 && tail.data[tail.len - 1] == '*') {
-            tail.len--;
-        }
+        ntargets = 0;
+    }
 
-        if (tail.len > 0 && key.len >= tail.len
-            && ngx_strncmp(key.data + key.len - tail.len, tail.data,
-                           tail.len) == 0)
-        {
-            ctx->key_prefix_len = key.len - tail.len;
+    tail = r->uri;
+    if (!ctx->exact && tail.len > 0 && tail.data[tail.len - 1] == '*') {
+        tail.len--;
+    }
 
-        } else {
-            if (!ngx_http_cache_purge_refresh_key_is_request_target(&key)) {
-                return ngx_http_cache_purge_send_cache_key_error(r);
-            }
-            ctx->key_prefix_len = 0;
-        }
+    if (tail.len > 0) {
+        targets[ntargets++] = tail;
+    }
+
+    if (!ngx_http_cache_purge_refresh_infer_key_prefix_len(&key, targets,
+            ntargets, &ctx->key_prefix_len))
+    {
+        return ngx_http_cache_purge_send_cache_key_error(r);
     }
 
     /* Set module context on the request */
