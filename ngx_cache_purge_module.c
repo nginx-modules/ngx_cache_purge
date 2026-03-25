@@ -310,6 +310,9 @@ static ngx_int_t ngx_http_cache_purge_send_cache_key_error(
 static ngx_flag_t ngx_http_cache_purge_refresh_infer_key_prefix_len(
     ngx_str_t *key, ngx_str_t *targets, ngx_uint_t ntargets,
     ngx_uint_t *prefix_len);
+static ngx_int_t ngx_http_cache_purge_refresh_collect_target_tails(
+    ngx_http_request_t *r, ngx_str_t *targets, ngx_uint_t max_targets,
+    ngx_uint_t *ntargets, ngx_flag_t partial);
 # if (nginx_version >= 1007009)
 ngx_int_t  ngx_http_cache_purge_cache_get(ngx_http_request_t *r,
                ngx_http_upstream_t *u, ngx_http_file_cache_t **cache);
@@ -3479,23 +3482,90 @@ ngx_http_cache_purge_refresh_infer_key_prefix_len(ngx_str_t *key,
             continue;
         }
 
-        for (i = 0; i < tail.len; i++) {
-            ch = tail.data[i];
-
-            if (ch < 0x21 || ch == '|') {
-                break;
+        for (i = 0; i < ntargets; i++) {
+            if (targets[i].len == tail.len
+                && ngx_strncmp(tail.data, targets[i].data, tail.len) == 0)
+            {
+                *prefix_len = j;
+                return 1;
             }
         }
 
-        if (i != tail.len) {
-            continue;
-        }
-
-        *prefix_len = j;
-        return 1;
+        continue;
     }
 
     return 0;
+}
+
+static ngx_int_t
+ngx_http_cache_purge_refresh_collect_target_tails(ngx_http_request_t *r,
+        ngx_str_t *targets, ngx_uint_t max_targets, ngx_uint_t *ntargets,
+        ngx_flag_t partial)
+{
+    ngx_str_t    tail, capture;
+    ngx_uint_t   i, ncaptures;
+    u_char      *p, *data;
+
+    *ntargets = 0;
+
+    tail = r->unparsed_uri;
+
+    if (partial && tail.len > 0 && tail.data[tail.len - 1] == '*') {
+        tail.len--;
+    }
+
+    if (tail.len > 0 && *ntargets < max_targets) {
+        targets[(*ntargets)++] = tail;
+    }
+
+    tail = r->uri;
+
+    if (partial && tail.len > 0 && tail.data[tail.len - 1] == '*') {
+        tail.len--;
+    }
+
+    if (tail.len > 0 && *ntargets < max_targets
+            && (*ntargets == 0 || targets[0].len != tail.len
+                || ngx_strncmp(targets[0].data, tail.data, tail.len) != 0))
+    {
+        targets[(*ntargets)++] = tail;
+    }
+
+    if (r->captures == NULL || r->captures_data == NULL || r->ncaptures < 2) {
+        return NGX_OK;
+    }
+
+    data = r->captures_data;
+    ncaptures = r->ncaptures / 2;
+
+    for (i = 0; i < ncaptures && *ntargets < max_targets; i++) {
+        capture.data = &data[r->captures[i * 2]];
+        capture.len = r->captures[i * 2 + 1] - r->captures[i * 2];
+
+        if (capture.len == 0 || capture.data[0] != '/') {
+            continue;
+        }
+
+        if (r->args.len == 0) {
+            targets[(*ntargets)++] = capture;
+            continue;
+        }
+
+        p = ngx_pnalloc(r->pool, capture.len + 1 + r->args.len);
+        if (p == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(p, capture.data, capture.len);
+        p[capture.len] = '?';
+        ngx_memcpy(p + capture.len + 1, r->args.data, r->args.len);
+
+        tail.data = p;
+        tail.len = capture.len + 1 + r->args.len;
+        targets[(*ntargets)++] = tail;
+    }
+
+    return NGX_OK;
 }
 
 
@@ -5983,9 +6053,8 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ngx_http_cache_purge_loc_conf_t     *cplcf;
     ngx_pool_cleanup_t                  *cln;
     ngx_str_t                           *keys;
-    ngx_str_t                            targets[2];
+    ngx_str_t                            targets[4];
     ngx_str_t                            key;
-    ngx_str_t                            tail;
     ngx_uint_t                           ntargets;
 
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
@@ -6054,26 +6123,11 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
      * conservatively accept only cache key shapes whose tail still clearly
      * looks like a request target (for example $host$request_uri).
      */
-    tail = r->unparsed_uri;
-    if (!ctx->exact && tail.len > 0 && tail.data[tail.len - 1] == '*') {
-        tail.len--;
-    }
-
-    if (tail.len > 0) {
-        targets[0] = tail;
-        ntargets = 1;
-
-    } else {
-        ntargets = 0;
-    }
-
-    tail = r->uri;
-    if (!ctx->exact && tail.len > 0 && tail.data[tail.len - 1] == '*') {
-        tail.len--;
-    }
-
-    if (tail.len > 0) {
-        targets[ntargets++] = tail;
+    if (ngx_http_cache_purge_refresh_collect_target_tails(r, targets,
+            sizeof(targets) / sizeof(targets[0]), &ntargets, !ctx->exact)
+        != NGX_OK)
+    {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     if (!ngx_http_cache_purge_refresh_infer_key_prefix_len(&key, targets,
