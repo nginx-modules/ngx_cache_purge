@@ -331,7 +331,7 @@ Maximum number of concurrent validator subrequests during refresh.
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- Refresh can only reconstruct the upstream request path safely when the evaluated cache key makes the request-path tail unambiguous. The safest shapes are keys where the whole key is already the request path (for example `$uri$is_args$args` or `$request_uri`), or keys whose tail still clearly preserves the URI/request-URI portion (for example same-location refresh with `$host$request_uri`). If refresh cannot determine that tail reliably, it now rejects the request with `400 Bad Request` instead of guessing and risking a wrong purge.
+- Refresh can only reconstruct the upstream request path safely when the evaluated cache key makes the request-path tail unambiguous. The safest shapes are keys where the whole key is already the request path (for example `$uri$is_args$args` or `$request_uri`), keys whose tail still clearly preserves the URI/request-URI portion (for example `$host$request_uri`, `$scheme$proxy_host$request_uri`, or `$host$uri$is_args$args`), or exact literal-path keys such as `proxy_cache_key /dir01/file1.txt;`. This also applies to separate-location partial refresh: safe prefixed tails still work as long as the final key tail remains the request target. If refresh cannot determine that tail reliably, it now rejects the request with `400 Bad Request` instead of guessing and risking a wrong purge.
 
 ### Method Routing Model
 
@@ -465,7 +465,7 @@ request URI portion.
       proxy_cache_bypass $cache_purge_refresh_bypass;
       proxy_no_cache     $cache_purge_refresh_bypass;
 
-- Do not use a cache key where the URI appears only in the middle, such as `$arg_x$uri$host` or `$uri|suffix`. The real question is not "does this key contain a URI somewhere?" but "can refresh still identify the request-path tail from the final key shape?" If the answer is no, refresh now rejects the request with `400 Bad Request` instead of attempting to invalidate cache entries from a guessed URI.
+- Do not use a cache key where the URI appears only in the middle, or where the request target is followed by extra suffix data, such as `$arg_x$uri$host`, `$uri|suffix`, `$request_uri$host`, or `$host$request_uri$arg_v`. The real question is not "does this key contain a URI somewhere?" but "can refresh still identify the request-path tail from the final key shape?" If the answer is no, refresh now rejects the request with `400 Bad Request` instead of attempting to invalidate cache entries from a guessed URI.
 
 - Do not try refresh on `fastcgi`, `scgi`, or `uwsgi` caches.
 

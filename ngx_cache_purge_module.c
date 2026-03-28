@@ -3445,7 +3445,7 @@ ngx_http_cache_purge_refresh_infer_key_prefix_len(ngx_str_t *key,
         for (j = 0; j < key->len; j++) {
             ch = key->data[j];
 
-            if (ch < 0x21 || ch == '|') {
+            if (ch < 0x21 || ch == '|' || ch == '?' || ch == '#') {
                 return 0;
             }
         }
@@ -3544,6 +3544,12 @@ ngx_http_cache_purge_refresh_collect_target_tails(ngx_http_request_t *r,
 
         if (capture.len == 0 || capture.data[0] != '/') {
             continue;
+        }
+
+        if (partial && capture.len > 0
+            && capture.data[capture.len - 1] == '*')
+        {
+            capture.len--;
         }
 
         if (r->args.len == 0) {
