@@ -3961,9 +3961,17 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
 ngx_int_t
 ngx_http_cache_purge_is_partial(ngx_http_request_t *r)
 {
-    ngx_http_cache_t *c   = r->cache;
-    ngx_str_t        *key = c->keys.elts;
+    ngx_http_cache_t *c;
+    ngx_str_t        *key;
 
+    if (r->uri.len > 0 && r->uri.data[r->uri.len - 1] == '*') {
+        return 1;
+    }
+
+    c = r->cache;
+    key = c->keys.elts;
+
+    /* Only check the first key */
     return c->keys.nelts > 0
         && key[0].len > 0
         && key[0].data[key[0].len - 1] == '*';
@@ -6096,6 +6104,16 @@ ngx_http_cache_purge_refresh(ngx_http_request_t *r,
     ctx->timeout_enabled = (cplcf->refresh_timeout != 0);
     ctx->deadline = ngx_current_msec + cplcf->refresh_timeout;
     ctx->chunk_limit = cplcf->refresh_concurrency * 4;
+
+    /*
+     * Partial refresh with query args would leave the wildcard in the middle
+     * of the evaluated request target (for example /dir/file*?v=1), which we
+     * cannot map back to a safe cache-scan prefix.
+     */
+    if (!ctx->exact && r->args.len > 0) {
+        return ngx_http_cache_purge_send_cache_key_error(r);
+    }
+
     if (ctx->chunk_limit == 0) {
         ctx->chunk_limit = 4;
     }

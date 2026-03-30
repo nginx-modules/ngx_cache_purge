@@ -18,7 +18,8 @@
       proxy_cache_bypass  $cache_purge_refresh_bypass;
       proxy_no_cache      $cache_purge_refresh_bypass;
 
-- refresh 能否正确工作，关键在于它能不能从“实际展开后的 cache key”里明确找出请求路径那一段。最稳妥的写法，是让 key 本身就是请求路径（例如 `$uri$is_args$args`、`$request_uri`），或者至少让 key 的最后一段仍然清楚地保留完整的 URI / request URI（例如 `$host$request_uri`、`$scheme$proxy_host$request_uri`、`$host$uri$is_args$args`），或者干脆就是精确字面路径（例如 `proxy_cache_key /dir01/file1.txt;`）。这条规则对 separate-location partial refresh 也一样成立：只要最终 key 的尾部仍然是可识别的请求目标，就可以安全工作。如果 refresh 不能可靠判断这一段，它现在会直接返回 `400 Bad Request`，而不是继续猜测并误删缓存。
+- refresh 能否正确工作，关键在于它能不能从“实际展开后的 cache key”里明确找出请求路径那一段。最稳妥的写法，是让 key 本身就是请求路径（例如 `$uri$is_args$args`、`$request_uri`），或者至少让 key 的最后一段仍然清楚地保留完整的 URI / request URI（例如 `$host$request_uri`、`$scheme$host$request_uri`、`$host$uri$is_args$args`），或者干脆就是精确字面路径（例如 `proxy_cache_key /dir01/file1.txt;`）。这条规则对 separate-location partial refresh 也一样成立：只要最终 key 的尾部仍然是可识别的请求目标，就可以安全工作。如果 refresh 不能可靠判断这一段，它现在会直接返回 `400 Bad Request`，而不是继续猜测并误删缓存。
+- partial refresh 如果再带 query 参数（例如 `REFRESH /refresh/path*?v=1`），当前实现也会直接返回 `400 Bad Request`。因为这时 `*` 会落在 `?args` 前面，最终请求目标已经不能再安全映射回扫描前缀。
 
 ## 动作路由说明
 
@@ -56,7 +57,7 @@ http {
         location / {
             proxy_pass         http://127.0.0.1:8000;
             proxy_cache        app_cache;
-            proxy_cache_key    "$scheme$proxy_host$request_uri";
+            proxy_cache_key    "$scheme$host$request_uri";
             proxy_cache_bypass $cache_purge_refresh_bypass;
             proxy_no_cache     $cache_purge_refresh_bypass;
         }
@@ -64,7 +65,7 @@ http {
         location ~ /purge(/.*) {
             allow              127.0.0.1;
             deny               all;
-            proxy_cache_purge  app_cache $scheme$proxy_host$1$is_args$args;
+            proxy_cache_purge  app_cache $scheme$host$1$is_args$args;
         }
 
         location ~ /refresh(/.*) {
@@ -75,7 +76,7 @@ http {
             proxy_cache_bypass $cache_purge_refresh_bypass;
             proxy_no_cache     $cache_purge_refresh_bypass;
 
-            proxy_cache_refresh            app_cache $scheme$proxy_host$1$is_args$args;
+            proxy_cache_refresh            app_cache $scheme$host$1$is_args$args;
             cache_purge_refresh_timeout     600s;
             cache_purge_refresh_concurrency 32;
         }
@@ -147,7 +148,7 @@ http {
 - `$uri$is_args$args`
 - `$host$uri$is_args$args`
 - `$host$request_uri`
-- `$scheme$proxy_host$request_uri`
+- `$scheme$host$request_uri`
 - 精确字面路径，例如 `proxy_cache_key /dir01/file1.txt;`
 
 不可靠的典型 key：
@@ -157,6 +158,7 @@ http {
 - `$request_uri$host`
 - `$host$request_uri$arg_v`
 - `$arg_x$uri$host`
+- partial refresh 请求里再拼 `?args`，例如 `REFRESH /refresh/path*?v=1`
 
 判断标准不是“key 里有没有出现 URI”，而是“refresh 能不能从最终 key 里明确识别出请求路径的最后一段”。像 `$arg_x$uri$host`、`$uri|suffix` 这种写法虽然也包含 URI，但 URI 只出现在中间，或者尾部又拼了别的维度，refresh 就无法安全反推出上游请求。遇到这种情况，当前实现会直接拒绝 refresh（`400 Bad Request`），而不是冒险继续执行。
 
