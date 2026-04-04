@@ -219,8 +219,9 @@ that is not in the cache:
 | `on`  | `412 Precondition Failed` |
 | `off` | `404 Not Found`           |
 
-Default is `on` (412) for backwards compatibility with the original FRiCKLE
-module. Set to `off` for RFC-correct behaviour.
+Default is `on` (412) for backwards compatibility with earlier releases.
+Set to `off` to return `404 Not Found`, the correct HTTP status for a
+resource that does not exist (RFC 9110 §15.5.5).
 
 
 ### `cache_purge_vary_aware`
