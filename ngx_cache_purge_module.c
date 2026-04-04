@@ -291,7 +291,7 @@ void       ngx_http_cache_purge_handler(ngx_http_request_t *r);
 ngx_int_t  ngx_http_file_cache_purge(ngx_http_request_t *r);
 void       ngx_http_cache_purge_all(ngx_http_request_t *r,
                ngx_http_file_cache_t *cache);
-void       ngx_http_cache_purge_partial(ngx_http_request_t *r,
+ngx_uint_t ngx_http_cache_purge_partial(ngx_http_request_t *r,
                ngx_http_file_cache_t *cache);
 ngx_int_t  ngx_http_cache_purge_is_partial(ngx_http_request_t *r);
 char      *ngx_http_cache_purge_conf(ngx_conf_t *cf,
@@ -1370,8 +1370,30 @@ ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r)
 
     if (cplcf->conf->purge_all) {
         ngx_http_cache_purge_all(r, cache);
-    } else if (ngx_http_cache_purge_is_partial(r)) {
-        ngx_http_cache_purge_partial(r, cache);
+        /* purge_all empties the zone — always report 200 regardless of
+         * how many files existed.  Skip ngx_http_cache_purge_handler()
+         * so we never attempt an exact-key lookup on a bulk operation. */
+        r->main->count++;
+        ngx_http_finalize_request(r,
+            ngx_http_cache_purge_send_response(r, &status));
+        return NGX_DONE;
+    }
+
+    if (ngx_http_cache_purge_is_partial(r)) {
+        ngx_uint_t deleted = ngx_http_cache_purge_partial(r, cache);
+        /* Return 200 only when at least one matching file was deleted.
+         * On a complete miss return 412/404 per cache_purge_legacy_status. */
+        r->main->count++;
+        if (deleted > 0) {
+            ngx_http_finalize_request(r,
+                ngx_http_cache_purge_send_response(r, &status));
+        } else {
+            ngx_http_finalize_request(r,
+                (cmcf != NULL && cmcf->legacy_status_codes)
+                         ? NGX_HTTP_PRECONDITION_FAILED
+                         : NGX_HTTP_NOT_FOUND);
+        }
+        return NGX_DONE;
     }
 
     r->main->count++;
@@ -1737,8 +1759,25 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r)
 
     if (cplcf->conf->purge_all) {
         ngx_http_cache_purge_all(r, cache);
-    } else if (ngx_http_cache_purge_is_partial(r)) {
-        ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        ngx_http_finalize_request(r,
+            ngx_http_cache_purge_send_response(r, &status));
+        return NGX_DONE;
+    }
+
+    if (ngx_http_cache_purge_is_partial(r)) {
+        ngx_uint_t deleted = ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        if (deleted > 0) {
+            ngx_http_finalize_request(r,
+                ngx_http_cache_purge_send_response(r, &status));
+        } else {
+            ngx_http_finalize_request(r,
+                (cmcf != NULL && cmcf->legacy_status_codes)
+                         ? NGX_HTTP_PRECONDITION_FAILED
+                         : NGX_HTTP_NOT_FOUND);
+        }
+        return NGX_DONE;
     }
 
     r->main->count++;
@@ -1948,8 +1987,25 @@ ngx_http_scgi_cache_purge_handler(ngx_http_request_t *r)
 
     if (cplcf->conf->purge_all) {
         ngx_http_cache_purge_all(r, cache);
-    } else if (ngx_http_cache_purge_is_partial(r)) {
-        ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        ngx_http_finalize_request(r,
+            ngx_http_cache_purge_send_response(r, &status));
+        return NGX_DONE;
+    }
+
+    if (ngx_http_cache_purge_is_partial(r)) {
+        ngx_uint_t deleted = ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        if (deleted > 0) {
+            ngx_http_finalize_request(r,
+                ngx_http_cache_purge_send_response(r, &status));
+        } else {
+            ngx_http_finalize_request(r,
+                (cmcf != NULL && cmcf->legacy_status_codes)
+                         ? NGX_HTTP_PRECONDITION_FAILED
+                         : NGX_HTTP_NOT_FOUND);
+        }
+        return NGX_DONE;
     }
 
     r->main->count++;
@@ -2183,8 +2239,25 @@ ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r)
 
     if (cplcf->conf->purge_all) {
         ngx_http_cache_purge_all(r, cache);
-    } else if (ngx_http_cache_purge_is_partial(r)) {
-        ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        ngx_http_finalize_request(r,
+            ngx_http_cache_purge_send_response(r, &status));
+        return NGX_DONE;
+    }
+
+    if (ngx_http_cache_purge_is_partial(r)) {
+        ngx_uint_t deleted = ngx_http_cache_purge_partial(r, cache);
+        r->main->count++;
+        if (deleted > 0) {
+            ngx_http_finalize_request(r,
+                ngx_http_cache_purge_send_response(r, &status));
+        } else {
+            ngx_http_finalize_request(r,
+                (cmcf != NULL && cmcf->legacy_status_codes)
+                         ? NGX_HTTP_PRECONDITION_FAILED
+                         : NGX_HTTP_NOT_FOUND);
+        }
+        return NGX_DONE;
     }
 
     r->main->count++;
@@ -2680,7 +2753,7 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     ngx_walk_tree(&tree, &cache->path->name);
 }
 
-void
+ngx_uint_t
 ngx_http_cache_purge_partial(ngx_http_request_t *r,
     ngx_http_file_cache_t *cache)
 {
@@ -2710,6 +2783,8 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     tree.log               = ngx_cycle->log;
 
     ngx_walk_tree(&tree, &cache->path->name);
+
+    return ctx.files_deleted;
 }
 
 ngx_int_t
