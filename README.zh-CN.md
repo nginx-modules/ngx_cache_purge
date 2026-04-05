@@ -20,6 +20,8 @@
 
 - refresh 能否正确工作，关键在于它能不能从“实际展开后的 cache key”里明确找出请求路径那一段。最稳妥的写法，是让 key 本身就是请求路径（例如 `$uri$is_args$args`、`$request_uri`），或者至少让 key 的最后一段仍然清楚地保留完整的 URI / request URI（例如 `$host$request_uri`、`$scheme$host$request_uri`、`$host$uri$is_args$args`），或者干脆就是精确字面路径（例如 `proxy_cache_key /dir01/file1.txt;`）。这条规则对 separate-location partial refresh 也一样成立：只要最终 key 的尾部仍然是可识别的请求目标，就可以安全工作。如果 refresh 不能可靠判断这一段，它现在会直接返回 `400 Bad Request`，而不是继续猜测并误删缓存。
 - partial refresh 如果再带 query 参数（例如 `REFRESH /refresh/path*?v=1`），当前实现也会直接返回 `400 Bad Request`。因为这时 `*` 会落在 `?args` 前面，最终请求目标已经不能再安全映射回扫描前缀。
+- 现在 batch / refresh invalidate 在单个对象处理完成后会立即销毁该对象的临时 cache-open pool，不再把这批 pool 一直拖到整个大请求结束再统一释放。
+- 这样可以避免大规模 refresh / batch invalidate 时 worker 文件描述符长时间堆积，同时不破坏并发 refresh 的稳定性。
 
 ## 动作路由说明
 

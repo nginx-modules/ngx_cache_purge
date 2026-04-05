@@ -363,8 +363,6 @@ typedef struct {
 static ngx_int_t ngx_http_cache_purge_read_item(ngx_pool_t *pool,
     ngx_log_t *log, ngx_str_t *path,
     ngx_http_cache_purge_invalidate_item_t *item);
-static ngx_int_t ngx_http_cache_purge_enqueue_temp_pool(ngx_queue_t *queue,
-    ngx_pool_t *owner_pool, ngx_pool_t *pool);
 static void ngx_http_cache_purge_drain_temp_pools(ngx_queue_t *queue);
 static ngx_int_t ngx_http_cache_purge_invalidate_opened_cache(ngx_log_t *log,
     ngx_http_file_cache_t *cache, ngx_http_cache_t *c,
@@ -2747,12 +2745,7 @@ ngx_http_cache_purge_invalidate_file(ngx_tree_ctx_t *ctx, ngx_str_t *path)
         }
     }
 
-    if (ngx_http_cache_purge_enqueue_temp_pool(&data->temp_pools,
-                                               data->request->pool, pool)
-        != NGX_OK)
-    {
-        ngx_destroy_pool(pool);
-    }
+    ngx_destroy_pool(pool);
 
     return NGX_OK;
 }
@@ -2793,35 +2786,7 @@ ngx_http_cache_purge_invalidate_partial_file(ngx_tree_ctx_t *ctx,
         }
     }
 
-    if (ngx_http_cache_purge_enqueue_temp_pool(&data->temp_pools,
-                                               data->request->pool, pool)
-        != NGX_OK)
-    {
-        ngx_destroy_pool(pool);
-    }
-
-    return NGX_OK;
-}
-
-
-static ngx_int_t
-ngx_http_cache_purge_enqueue_temp_pool(ngx_queue_t *queue,
-    ngx_pool_t *owner_pool, ngx_pool_t *pool)
-{
-    ngx_http_cache_purge_refresh_temp_pool_t  *entry;
-
-    if (pool == NULL) {
-        return NGX_OK;
-    }
-
-    entry = ngx_palloc(owner_pool,
-                       sizeof(ngx_http_cache_purge_refresh_temp_pool_t));
-    if (entry == NULL) {
-        return NGX_ERROR;
-    }
-
-    entry->pool = pool;
-    ngx_queue_insert_tail(queue, &entry->queue);
+    ngx_destroy_pool(pool);
 
     return NGX_OK;
 }
@@ -5085,13 +5050,7 @@ ngx_http_cache_purge_refresh_do_invalidate(
         ctx->errors++;
     }
 
-    if (ngx_http_cache_purge_enqueue_temp_pool(&ctx->temp_pools,
-            ctx->request->pool, pool)
-        != NGX_OK)
-    {
-        ngx_destroy_pool(pool);
-        ctx->errors++;
-    }
+    ngx_destroy_pool(pool);
 }
 
 

@@ -326,6 +326,8 @@ Maximum number of concurrent validator subrequests during refresh.
 - `purge_all` belongs to `proxy_cache_purge`; `refresh_all` belongs to `proxy_cache_refresh`.
 - `proxy_cache_refresh ... purge_all ...` is invalid configuration and is rejected at config load time.
 - Refresh is `proxy_cache` only. It is not available for `fastcgi_cache`, `scgi_cache`, or `uwsgi_cache`.
+- Batch/refresh invalidation now destroys each item's temporary cache-open pool immediately after that item finishes invalidation, so cache-file cleanup is not deferred until the very end of a large request.
+- This avoids worker file descriptor buildup during large refresh / batch invalidate runs while preserving concurrent refresh safety.
 - Any proxy location that participates in the refresh request path must include both:
 
       proxy_cache_bypass  $cache_purge_refresh_bypass;
