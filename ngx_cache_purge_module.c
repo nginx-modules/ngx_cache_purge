@@ -3467,8 +3467,9 @@ ngx_http_cache_purge_refresh_collect_target_tails(ngx_http_request_t *r,
         ngx_str_t *targets, ngx_uint_t max_targets, ngx_uint_t *ntargets,
         ngx_flag_t partial)
 {
-    ngx_str_t    tail, capture;
+    ngx_str_t    tail, capture, capture_source;
     ngx_uint_t   i, ncaptures;
+    intptr_t     start, end;
     u_char      *p, *data;
 
     *ntargets = 0;
@@ -3500,12 +3501,29 @@ ngx_http_cache_purge_refresh_collect_target_tails(ngx_http_request_t *r,
         return NGX_OK;
     }
 
-    data = r->captures_data;
+    capture_source = r->unparsed_uri;
+    if (r->captures_data == r->uri.data) {
+        capture_source = r->uri;
+
+    } else if (r->captures_data != r->unparsed_uri.data) {
+        return NGX_OK;
+    }
+
+    data = capture_source.data;
     ncaptures = r->ncaptures / 2;
 
     for (i = 0; i < ncaptures && *ntargets < max_targets; i++) {
-        capture.data = &data[r->captures[i * 2]];
-        capture.len = r->captures[i * 2 + 1] - r->captures[i * 2];
+        start = r->captures[i * 2];
+        end = r->captures[i * 2 + 1];
+
+        if (start < 0 || end < start
+            || (size_t) end > capture_source.len)
+        {
+            continue;
+        }
+
+        capture.data = &data[start];
+        capture.len = (size_t) (end - start);
 
         if (capture.len == 0 || capture.data[0] != '/') {
             continue;
