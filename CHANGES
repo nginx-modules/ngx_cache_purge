@@ -1,3 +1,11 @@
+2026-04-14    VERSION 2.6.0
+    * feat: add soft purge support for exact-key, wildcard, purge_all, and separate-location syntax
+    * fix: soft purge now expires matching cache entries in place instead of deleting them outright
+    * fix: wildcard and purge_all soft purges now expire both the on-disk cache header and the shared-memory cache node consistently
+    * fix: propagate soft-purge disk-header update failures instead of reporting false success
+    * test/docs: add proxy soft-purge coverage, docker validation config, and updated validation commands
+    * ci: switch to GitHub Actions and add docker-based test helpers
+
 2020-06-27    VERSION 2.5.1
     * fix: empty key check - it coredumps when cache key is empty, Tuğrul Topuz
     * fix: purge report calloc fix - Report template has not cache file path but it's length is use in buffer memory allocation, Tuğrul Topuz

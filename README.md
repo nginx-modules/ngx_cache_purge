@@ -15,11 +15,41 @@ Status
 This module is production-ready.
 
 
+Docker Build Environment
+========================
+The repository includes a containerized build environment with:
+
+- Debian-based build tooling for NGINX modules
+- downloaded NGINX source in `/opt/nginx-src/nginx-$NGINX_VERSION`
+- `Test::Nginx` installed from `openresty/test-nginx`
+
+Open a shell in the container with the repository mounted at `/workspace`:
+
+    make shell
+
+Configure and build NGINX with this module in your current environment. Use a
+shell inside the development container if you want the containerized toolchain.
+
+    make nginx-build
+
+Print the resulting `nginx -V`:
+
+    make nginx-version
+
+Format the module source file:
+
+    make format
+
+Run the test suite after building:
+
+    make test
+
+
 Configuration directives (same location syntax)
 ===============================================
 fastcgi_cache_purge
 -------------------
-* **syntax**: `fastcgi_cache_purge on|off|<method> [purge_all] [from all|<ip> [.. <ip>]]`
+* **syntax**: `fastcgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
 * **default**: `none`
 * **context**: `http`, `server`, `location`
 
@@ -28,7 +58,7 @@ Allow purging of selected pages from `FastCGI`'s cache.
 
 proxy_cache_purge
 -----------------
-* **syntax**: `proxy_cache_purge on|off|<method> [purge_all] [from all|<ip> [.. <ip>]]`
+* **syntax**: `proxy_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
 * **default**: `none`
 * **context**: `http`, `server`, `location`
 
@@ -37,7 +67,7 @@ Allow purging of selected pages from `proxy`'s cache.
 
 scgi_cache_purge
 ----------------
-* **syntax**: `scgi_cache_purge on|off|<method> [purge_all] [from all|<ip> [.. <ip>]]`
+* **syntax**: `scgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
 * **default**: `none`
 * **context**: `http`, `server`, `location`
 
@@ -46,7 +76,7 @@ Allow purging of selected pages from `SCGI`'s cache.
 
 uwsgi_cache_purge
 -----------------
-* **syntax**: `uwsgi_cache_purge on|off|<method> [purge_all] [from all|<ip> [.. <ip>]]`
+* **syntax**: `uwsgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
 * **default**: `none`
 * **context**: `http`, `server`, `location`
 
@@ -57,7 +87,7 @@ Configuration directives (separate location syntax)
 ===================================================
 fastcgi_cache_purge
 -------------------
-* **syntax**: `fastcgi_cache_purge zone_name key`
+* **syntax**: `fastcgi_cache_purge zone_name key [soft]`
 * **default**: `none`
 * **context**: `location`
 
@@ -66,7 +96,7 @@ Sets area and key used for purging selected pages from `FastCGI`'s cache.
 
 proxy_cache_purge
 -----------------
-* **syntax**: `proxy_cache_purge zone_name key`
+* **syntax**: `proxy_cache_purge zone_name key [soft]`
 * **default**: `none`
 * **context**: `location`
 
@@ -75,7 +105,7 @@ Sets area and key used for purging selected pages from `proxy`'s cache.
 
 scgi_cache_purge
 ----------------
-* **syntax**: `scgi_cache_purge zone_name key`
+* **syntax**: `scgi_cache_purge zone_name key [soft]`
 * **default**: `none`
 * **context**: `location`
 
@@ -84,7 +114,7 @@ Sets area and key used for purging selected pages from `SCGI`'s cache.
 
 uwsgi_cache_purge
 -----------------
-* **syntax**: `uwsgi_cache_purge zone_name key`
+* **syntax**: `uwsgi_cache_purge zone_name key [soft]`
 * **default**: `none`
 * **context**: `location`
 
@@ -113,6 +143,22 @@ You can specify a partial key adding an asterisk at the end of the URL.
 The asterisk must be the last character of the key, so you **must** put the $uri variable at the end.
 
 
+Soft Purge
+==========
+Adding the `soft` parameter expires matching cached entries in place instead of
+deleting them outright.
+
+- Exact-key soft purge marks the cached entry as expired, so the next request is
+    handled as `EXPIRED` rather than a deletion-driven `MISS`.
+- Wildcard soft purge applies the same expiration behavior to all matching keys.
+- `purge_all` can also be combined with `soft` to expire every cached entry in a
+    zone without removing the underlying cache files immediately.
+
+For wildcard and `purge_all` soft purges, the module expires both the cache-file
+header on disk and the matching shared-memory cache node so the next lookup is
+treated as expired consistently.
+
+
 
 Sample configuration (same location syntax)
 ===========================================
@@ -125,6 +171,22 @@ Sample configuration (same location syntax)
                 proxy_cache        tmpcache;
                 proxy_cache_key    "$uri$is_args$args";
                 proxy_cache_purge  PURGE from 127.0.0.1;
+            }
+        }
+    }
+
+
+Sample configuration (same location syntax - soft purge)
+========================================================
+    http {
+        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
+
+        server {
+            location / {
+                proxy_pass         http://127.0.0.1:8000;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$uri$is_args$args";
+                proxy_cache_purge  PURGE soft from 127.0.0.1;
             }
         }
     }
@@ -163,6 +225,27 @@ Sample configuration (separate location syntax)
                 deny               all;
                 proxy_cache        tmpcache;
                 proxy_cache_key    "$1$is_args$args";
+            }
+        }
+    }
+
+
+Sample configuration (separate location syntax - soft purge)
+============================================================
+    http {
+        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
+
+        server {
+            location / {
+                proxy_pass         http://127.0.0.1:8000;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$uri$is_args$args";
+            }
+
+            location ~ /purge(/.*) {
+                allow              127.0.0.1;
+                deny               all;
+                proxy_cache_purge  tmpcache "$1$is_args$args" soft;
             }
         }
     }
@@ -238,7 +321,84 @@ Testing
 
 You can test it by running:
 
-`$ prove`
+`$ make test`
+
+
+Docker Validation Config
+========================
+For manual validation inside the development container, the repository includes
+an example nginx configuration at `examples/docker-validation.conf`.
+
+It provides separate locations for these behaviors:
+
+- exact-key soft purge (`/soft`)
+- soft purge with `proxy_cache_use_stale` on upstream `500` (`/stale`)
+- wildcard soft purge (`/wild`)
+- `purge_all` soft purge (`/purge_all`)
+- separate-location `zone key soft` syntax (`/separate` and `/purge_separate/...`)
+
+Start it inside the container after building nginx:
+
+    make shell
+    make nginx-build
+    rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp
+    mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
+    /opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+
+Exact-key soft purge flow:
+
+    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+    curl -i -X PURGE 'http://127.0.0.1:8080/soft/item?t=soft'
+    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+
+Expected `X-Cache-Status` values are `MISS`, `HIT`, purge `200`, `EXPIRED`,
+then `HIT`.
+
+`proxy_cache_use_stale` flow:
+
+    curl -i 'http://127.0.0.1:8080/stale/item?t=demo'
+    curl -i -X PURGE 'http://127.0.0.1:8080/stale/item?t=demo'
+    curl -i -H 'X-Origin-Fail: 1' 'http://127.0.0.1:8080/stale/item?t=demo'
+
+The final request should return cached content with `X-Cache-Status: STALE`
+because the expired entry exists but the origin is forced to return `500`.
+
+Wildcard soft purge flow:
+
+    curl -i 'http://127.0.0.1:8080/wild/pass-one'
+    curl -i 'http://127.0.0.1:8080/wild/pass-two'
+    curl -i 'http://127.0.0.1:8080/wild/other'
+    curl -i -X PURGE 'http://127.0.0.1:8080/wild/pass*'
+    curl -i 'http://127.0.0.1:8080/wild/pass-one'
+    curl -i 'http://127.0.0.1:8080/wild/pass-two'
+    curl -i 'http://127.0.0.1:8080/wild/other'
+
+The two `pass*` entries should come back as `EXPIRED`, while `/wild/other`
+should remain `HIT`.
+
+`purge_all` soft purge flow:
+
+    curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
+    curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
+    curl -i -X PURGE 'http://127.0.0.1:8080/purge_all/anything'
+    curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
+    curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
+
+The post-purge requests should return `X-Cache-Status: EXPIRED`.
+
+Separate-location soft purge flow:
+
+    curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
+    curl -i -X PURGE 'http://127.0.0.1:8080/purge_separate/separate/item?t=sep'
+    curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
+
+The final request should return `X-Cache-Status: EXPIRED`.
+
+Stop the validation nginx instance with:
+
+    kill "$(cat /tmp/ngx-cache-purge-validation.pid)"
 
 
 License

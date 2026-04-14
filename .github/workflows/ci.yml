@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version:
+          - "1.26.3"
+          - "1.28.3"
+          - "1.29.8"
+
+    env:
+      NGINX_VERSION: ${{ matrix.nginx_version }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Build docker image
+        run: docker compose build
+
+      - name: Lint code
+        run: |
+          docker compose run --rm dev make format
+          git diff --exit-code -- ngx_cache_purge_module.c
+
+      - name: Run tests
+        run: docker compose run --rm dev make test
