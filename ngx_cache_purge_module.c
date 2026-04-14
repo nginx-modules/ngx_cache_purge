@@ -32,6 +32,14 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#if (NGX_LINUX)
+#include <sqlite3.h>
+#include <sys/inotify.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+#endif
+
 
 #ifndef nginx_version
     #error This module cannot be build against an unknown nginx version.
@@ -69,6 +77,9 @@ static size_t ngx_http_cache_purge_body_templ_text_size = sizeof(ngx_http_cache_
 typedef struct ngx_http_cache_purge_partial_ctx_s
     ngx_http_cache_purge_partial_ctx_t;
 
+typedef struct ngx_http_cache_tag_zone_s
+    ngx_http_cache_tag_zone_t;
+
 typedef struct {
     ngx_flag_t                    enable;
     ngx_str_t                     method;
@@ -97,7 +108,41 @@ typedef struct {
     ngx_http_handler_pt           original_handler;
 
     ngx_uint_t                    resptype; /* response content-type */
+    ngx_flag_t                    cache_tag_watch;
+    ngx_array_t                  *cache_tag_headers; /* array of ngx_str_t */
 } ngx_http_cache_purge_loc_conf_t;
+
+typedef struct {
+    ngx_str_t                     sqlite_path;
+    ngx_array_t                  *zones; /* array of ngx_http_cache_tag_zone_t */
+} ngx_http_cache_purge_main_conf_t;
+
+struct ngx_http_cache_tag_zone_s {
+    ngx_str_t                     zone_name;
+    ngx_http_file_cache_t        *cache;
+};
+
+#if (NGX_LINUX)
+typedef struct {
+    ngx_str_t                     zone_name;
+    ngx_http_file_cache_t        *cache;
+    ngx_str_t                     path;
+    int                           wd;
+} ngx_http_cache_tag_watch_t;
+
+typedef struct {
+    ngx_uint_t                    initialized;
+    ngx_uint_t                    active;
+    ngx_uint_t                    owner;
+    int                           inotify_fd;
+    sqlite3                      *db;
+    ngx_event_t                   timer;
+    ngx_cycle_t                  *cycle;
+    ngx_array_t                  *watches; /* array of ngx_http_cache_tag_watch_t */
+} ngx_http_cache_tag_runtime_t;
+
+static ngx_http_cache_tag_runtime_t ngx_http_cache_tag_runtime;
+#endif
 
 # if (NGX_HTTP_FASTCGI)
 char       *ngx_http_fastcgi_cache_purge_conf(ngx_conf_t *cf,
@@ -125,6 +170,12 @@ ngx_int_t   ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r);
 
 char        *ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf,
         ngx_command_t *cmd, void *conf);
+char        *ngx_http_cache_tag_index_conf(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf);
+char        *ngx_http_cache_tag_headers_conf(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf);
+char        *ngx_http_cache_tag_watch_conf(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf);
 static ngx_int_t
 ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx, ngx_str_t *path);
 static ngx_int_t
@@ -149,6 +200,17 @@ ngx_http_cache_purge_partial_match(ngx_http_cache_purge_partial_ctx_t *data,
 ngx_int_t   ngx_http_cache_purge_access_handler(ngx_http_request_t *r);
 ngx_int_t   ngx_http_cache_purge_access(ngx_array_t *a, ngx_array_t *a6,
                                         struct sockaddr *s);
+ngx_int_t   ngx_http_cache_purge_by_path(ngx_http_file_cache_t *cache,
+                                         ngx_str_t *path, ngx_flag_t soft,
+                                         ngx_log_t *log);
+ngx_int_t   ngx_http_cache_tag_purge(ngx_http_request_t *r,
+                                     ngx_http_file_cache_t *cache);
+ngx_int_t   ngx_http_cache_tag_request_headers(ngx_http_request_t *r,
+        ngx_array_t **tags);
+ngx_flag_t  ngx_http_cache_tag_location_enabled(
+        ngx_http_cache_purge_loc_conf_t *cplcf);
+ngx_int_t   ngx_http_cache_tag_register_cache(ngx_conf_t *cf,
+        ngx_http_file_cache_t *cache);
 
 ngx_int_t   ngx_http_cache_purge_send_response(ngx_http_request_t *r);
 # if (nginx_version >= 1007009)
@@ -170,11 +232,78 @@ ngx_int_t   ngx_http_cache_purge_is_partial(ngx_http_request_t *r);
 char       *ngx_http_cache_purge_conf(ngx_conf_t *cf,
                                       ngx_http_cache_purge_conf_t *cpcf);
 
+void       *ngx_http_cache_purge_create_main_conf(ngx_conf_t *cf);
+char       *ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf);
 void       *ngx_http_cache_purge_create_loc_conf(ngx_conf_t *cf);
 char       *ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf,
         void *parent, void *child);
+ngx_int_t   ngx_http_cache_purge_init_process(ngx_cycle_t *cycle);
+void        ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle);
+
+#if (NGX_LINUX)
+static void ngx_http_cache_tag_timer_handler(ngx_event_t *ev);
+static ngx_int_t ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
+        ngx_http_cache_purge_main_conf_t *pmcf);
+static void ngx_http_cache_tag_shutdown_runtime(void);
+static ngx_int_t ngx_http_cache_tag_sqlite_init(sqlite3 *db, ngx_log_t *log);
+static sqlite3 *ngx_http_cache_tag_db_open(ngx_str_t *path, int flags,
+        ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_db_delete_file(sqlite3 *db,
+        ngx_str_t *zone_name, ngx_str_t *path, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_db_replace(sqlite3 *db,
+        ngx_str_t *zone_name, ngx_str_t *path, time_t mtime, off_t size,
+        ngx_array_t *tags, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_db_collect_paths(sqlite3 *db,
+        ngx_pool_t *pool, ngx_str_t *zone_name, ngx_array_t *tags,
+        ngx_array_t **paths, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_add_watch_recursive(sqlite3 *db,
+        ngx_http_cache_tag_zone_t *zone, ngx_str_t *path, ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_cache_tag_add_watch(sqlite3 *db,
+        ngx_http_cache_tag_zone_t *zone, ngx_str_t *path, ngx_cycle_t *cycle);
+static ngx_http_cache_tag_watch_t *ngx_http_cache_tag_find_watch(int wd);
+static ngx_int_t ngx_http_cache_tag_remove_watch(int wd, ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_cache_tag_process_events(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_cache_tag_process_file(sqlite3 *db,
+        ngx_str_t *zone_name, ngx_str_t *path, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_parse_file(ngx_pool_t *pool,
+        ngx_str_t *path, ngx_array_t *headers, ngx_array_t **tags,
+        time_t *mtime, off_t *size, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_extract_tokens(ngx_pool_t *pool,
+        u_char *value, size_t len, ngx_array_t *tags);
+static ngx_int_t ngx_http_cache_tag_push_unique(ngx_pool_t *pool,
+        ngx_array_t *tags, u_char *data, size_t len);
+static ngx_int_t ngx_http_cache_tag_join_path(ngx_pool_t *pool,
+        ngx_str_t *base, const char *name, ngx_str_t *out);
+static ngx_int_t ngx_http_cache_tag_path_known(ngx_str_t *path);
+static ngx_http_cache_tag_zone_t *ngx_http_cache_tag_lookup_zone(
+        ngx_http_file_cache_t *cache);
+#endif
 
 static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
+    {
+        ngx_string("cache_tag_index"),
+        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+        ngx_http_cache_tag_index_conf,
+        NGX_HTTP_MAIN_CONF_OFFSET,
+        0,
+        NULL
+    },
+    {
+        ngx_string("cache_tag_headers"),
+        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
+        ngx_http_cache_tag_headers_conf,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL
+    },
+    {
+        ngx_string("cache_tag_watch"),
+        NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
+        ngx_http_cache_tag_watch_conf,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL
+    },
 
 # if (NGX_HTTP_FASTCGI)
     {
@@ -237,8 +366,8 @@ static ngx_http_module_t  ngx_http_cache_purge_module_ctx = {
     NULL,                                  /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
-    NULL,                                  /* init main configuration */
+    ngx_http_cache_purge_create_main_conf, /* create main configuration */
+    ngx_http_cache_purge_init_main_conf,   /* init main configuration */
 
     NULL,                                  /* create server configuration */
     NULL,                                  /* merge server configuration */
@@ -254,10 +383,10 @@ ngx_module_t  ngx_http_cache_purge_module = {
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_http_cache_purge_init_process,     /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_http_cache_purge_exit_process,     /* exit process */
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -489,7 +618,9 @@ ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (ngx_http_cache_tag_location_enabled(cplcf)) {
+        rc = ngx_http_cache_tag_purge(r, cache);
+    } else if (cplcf->conf->purge_all) {
         rc = ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -796,7 +927,9 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (ngx_http_cache_tag_location_enabled(cplcf)) {
+        rc = ngx_http_cache_tag_purge(r, cache);
+    } else if (cplcf->conf->purge_all) {
         rc = ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -1033,7 +1166,9 @@ ngx_http_scgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (ngx_http_cache_tag_location_enabled(cplcf)) {
+        rc = ngx_http_cache_tag_purge(r, cache);
+    } else if (cplcf->conf->purge_all) {
         rc = ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -1297,7 +1432,9 @@ ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r) {
 
     /* Purge-all option */
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    if (cplcf->conf->purge_all) {
+    if (ngx_http_cache_tag_location_enabled(cplcf)) {
+        rc = ngx_http_cache_tag_purge(r, cache);
+    } else if (cplcf->conf->purge_all) {
         rc = ngx_http_cache_purge_all(r, cache);
     } else {
         if (ngx_http_cache_purge_is_partial(r)) {
@@ -1369,6 +1506,87 @@ ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, ngx_command_t *cmd, void
     }
 
     return NGX_CONF_OK;
+}
+
+char *
+ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_cache_purge_main_conf_t  *pmcf;
+    ngx_str_t                         *value;
+
+    pmcf = conf;
+    value = cf->args->elts;
+
+    if (pmcf->sqlite_path.data != NULL) {
+        return "is duplicate";
+    }
+
+    if (ngx_strcmp(value[1].data, "sqlite") != 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "invalid cache_tag_index backend \"%V\"", &value[1]);
+        return NGX_CONF_ERROR;
+    }
+
+#if !(NGX_LINUX)
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "cache_tag_index requires Linux inotify support");
+    return NGX_CONF_ERROR;
+#else
+    pmcf->sqlite_path = value[2];
+    return NGX_CONF_OK;
+#endif
+}
+
+char *
+ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_str_t                        *value, *header;
+    ngx_uint_t                        i;
+
+    cplcf = conf;
+
+    if (cplcf->cache_tag_headers != NULL && cf->cmd_type == NGX_HTTP_LOC_CONF) {
+        return "is duplicate";
+    }
+
+    cplcf->cache_tag_headers = ngx_array_create(cf->pool, cf->args->nelts - 1,
+                                                sizeof(ngx_str_t));
+    if (cplcf->cache_tag_headers == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    value = cf->args->elts;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        header = ngx_array_push(cplcf->cache_tag_headers);
+        if (header == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        *header = value[i];
+    }
+
+    return NGX_CONF_OK;
+}
+
+char *
+ngx_http_cache_tag_watch_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_str_t                        *value;
+
+    cplcf = conf;
+    value = cf->args->elts;
+
+    if (ngx_strcmp(value[1].data, "on") == 0) {
+        cplcf->cache_tag_watch = 1;
+        return NGX_CONF_OK;
+    }
+
+    if (ngx_strcmp(value[1].data, "off") == 0) {
+        cplcf->cache_tag_watch = 0;
+        return NGX_CONF_OK;
+    }
+
+    return "invalid value";
 }
 
 static ngx_int_t
@@ -1863,6 +2081,960 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
     return ngx_http_output_filter(r, &out);
 }
 
+ngx_flag_t
+ngx_http_cache_tag_location_enabled(ngx_http_cache_purge_loc_conf_t *cplcf) {
+    return cplcf->cache_tag_watch && cplcf->cache_tag_headers != NULL;
+}
+
+ngx_int_t
+ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
+    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_list_part_t                  *part;
+    ngx_table_elt_t                  *header;
+    ngx_str_t                        *wanted;
+    ngx_uint_t                        i, j;
+    ngx_array_t                      *result;
+
+    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
+
+    if (!ngx_http_cache_tag_location_enabled(cplcf)) {
+        *tags = NULL;
+        return NGX_DECLINED;
+    }
+
+    result = ngx_array_create(r->pool, 4, sizeof(ngx_str_t));
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    part = &r->headers_in.headers.part;
+    header = part->elts;
+    wanted = cplcf->cache_tag_headers->elts;
+
+    for (i = 0; ; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        for (j = 0; j < cplcf->cache_tag_headers->nelts; j++) {
+            if (header[i].key.len != wanted[j].len) {
+                continue;
+            }
+
+            if (ngx_strncasecmp(header[i].key.data, wanted[j].data,
+                                wanted[j].len) != 0) {
+                continue;
+            }
+
+            if (ngx_http_cache_tag_extract_tokens(r->pool, header[i].value.data,
+                                                  header[i].value.len, result)
+                    != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    *tags = result;
+
+    return result->nelts > 0 ? NGX_OK : NGX_DECLINED;
+}
+
+ngx_int_t
+ngx_http_cache_purge_by_path(ngx_http_file_cache_t *cache, ngx_str_t *path,
+                             ngx_flag_t soft, ngx_log_t *log) {
+    ngx_http_file_cache_node_t  *node;
+    ngx_file_info_t              fi;
+    u_char                       key[NGX_HTTP_CACHE_KEY_LEN];
+
+    if (soft) {
+        return ngx_http_cache_purge_soft_path(cache, path, log);
+    }
+
+    if (ngx_file_info(path->data, &fi) == NGX_FILE_ERROR) {
+        return ngx_errno == NGX_ENOENT ? NGX_DECLINED : NGX_ERROR;
+    }
+
+    if (ngx_http_cache_purge_filename_key(path, key) == NGX_OK) {
+        ngx_shmtx_lock(&cache->shpool->mutex);
+
+        node = ngx_http_cache_purge_lookup(cache, key);
+        if (node != NULL && node->exists) {
+#  if (nginx_version >= 1000001)
+            cache->sh->size -= node->fs_size;
+            node->fs_size = 0;
+#  else
+            cache->sh->size -= (node->length + cache->bsize - 1) / cache->bsize;
+            node->length = 0;
+#  endif
+            node->exists = 0;
+#  if (nginx_version >= 8001) \
+       || ((nginx_version < 8000) && (nginx_version >= 7060))
+            node->updating = 0;
+#  endif
+        }
+
+        ngx_shmtx_unlock(&cache->shpool->mutex);
+    }
+
+    if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
+        if (ngx_errno == NGX_ENOENT) {
+            return NGX_DECLINED;
+        }
+
+        ngx_log_error(NGX_LOG_CRIT, log, ngx_errno,
+                      ngx_delete_file_n " \"%s\" failed", path->data);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+ngx_int_t
+ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache) {
+    ngx_http_cache_purge_main_conf_t  *pmcf;
+    ngx_http_cache_tag_zone_t         *zones, *zone;
+    ngx_uint_t                         i;
+
+    if (cache == NULL) {
+        return NGX_OK;
+    }
+
+    pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_purge_module);
+    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+        return NGX_OK;
+    }
+
+    zones = pmcf->zones->elts;
+    for (i = 0; i < pmcf->zones->nelts; i++) {
+        if (zones[i].cache == cache) {
+            return NGX_OK;
+        }
+    }
+
+    zone = ngx_array_push(pmcf->zones);
+    if (zone == NULL) {
+        return NGX_ERROR;
+    }
+
+    zone->cache = cache;
+    zone->zone_name = cache->shm_zone->shm.name;
+
+    return NGX_OK;
+}
+
+#if (NGX_LINUX)
+static sqlite3 *
+ngx_http_cache_tag_db_open(ngx_str_t *path, int flags, ngx_log_t *log) {
+    sqlite3  *db;
+    int       rc;
+
+    db = NULL;
+    rc = sqlite3_open_v2((const char *) path->data, &db, flags, NULL);
+    if (rc != SQLITE_OK) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite open failed for \"%V\": %s", path,
+                      db != NULL ? sqlite3_errmsg(db) : "unknown");
+        if (db != NULL) {
+            sqlite3_close(db);
+        }
+        return NULL;
+    }
+
+    return db;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_sqlite_init(sqlite3 *db, ngx_log_t *log) {
+    static const char *schema[] = {
+        "PRAGMA journal_mode=WAL;",
+        "PRAGMA synchronous=NORMAL;",
+        "CREATE TABLE IF NOT EXISTS cache_tag_entries ("
+        " zone TEXT NOT NULL,"
+        " tag TEXT NOT NULL,"
+        " path TEXT NOT NULL,"
+        " mtime INTEGER NOT NULL,"
+        " size INTEGER NOT NULL,"
+        " PRIMARY KEY(zone, tag, path)"
+        ");",
+        "CREATE INDEX IF NOT EXISTS cache_tag_entries_lookup "
+        "ON cache_tag_entries(zone, tag);"
+    };
+    char        *errmsg;
+    ngx_uint_t   i;
+
+    for (i = 0; i < sizeof(schema) / sizeof(schema[0]); i++) {
+        errmsg = NULL;
+        if (sqlite3_exec(db, schema[i], NULL, NULL, &errmsg) != SQLITE_OK) {
+            ngx_log_error(NGX_LOG_ERR, log, 0,
+                          "sqlite schema init failed: %s",
+                          errmsg != NULL ? errmsg : "unknown");
+            if (errmsg != NULL) {
+                sqlite3_free(errmsg);
+            }
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_db_delete_file(sqlite3 *db, ngx_str_t *zone_name,
+                                  ngx_str_t *path, ngx_log_t *log) {
+    sqlite3_stmt  *stmt;
+    int            rc;
+
+    stmt = NULL;
+    rc = sqlite3_prepare_v2(db,
+                            "DELETE FROM cache_tag_entries "
+                            "WHERE zone = ?1 AND path = ?2",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite prepare delete failed: %s",
+                      sqlite3_errmsg(db));
+        return NGX_ERROR;
+    }
+
+    sqlite3_bind_text(stmt, 1, (const char *) zone_name->data, zone_name->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, (const char *) path->data, path->len,
+                      SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite delete failed: %s", sqlite3_errmsg(db));
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_db_replace(sqlite3 *db, ngx_str_t *zone_name, ngx_str_t *path,
+                              time_t mtime, off_t size, ngx_array_t *tags,
+                              ngx_log_t *log) {
+    sqlite3_stmt  *stmt;
+    ngx_str_t     *tag;
+    ngx_uint_t     i;
+    int            rc;
+
+    if (ngx_http_cache_tag_db_delete_file(db, zone_name, path, log) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (tags == NULL || tags->nelts == 0) {
+        return NGX_OK;
+    }
+
+    rc = sqlite3_prepare_v2(db,
+                            "INSERT OR REPLACE INTO cache_tag_entries "
+                            "(zone, tag, path, mtime, size) "
+                            "VALUES (?1, ?2, ?3, ?4, ?5)",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite prepare insert failed: %s",
+                      sqlite3_errmsg(db));
+        return NGX_ERROR;
+    }
+
+    tag = tags->elts;
+    for (i = 0; i < tags->nelts; i++) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        sqlite3_bind_text(stmt, 1, (const char *) zone_name->data, zone_name->len,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, (const char *) tag[i].data, tag[i].len,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, (const char *) path->data, path->len,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 4, (sqlite3_int64) mtime);
+        sqlite3_bind_int64(stmt, 5, (sqlite3_int64) size);
+
+        rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) {
+            ngx_log_error(NGX_LOG_ERR, log, 0,
+                          "sqlite insert failed: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            return NGX_ERROR;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_db_collect_paths(sqlite3 *db, ngx_pool_t *pool,
+                                    ngx_str_t *zone_name, ngx_array_t *tags,
+                                    ngx_array_t **paths, ngx_log_t *log) {
+    sqlite3_stmt  *stmt;
+    ngx_array_t   *result;
+    ngx_str_t     *tag;
+    const u_char  *text;
+    ngx_str_t     *path;
+    ngx_uint_t     i, j;
+    int            rc;
+    size_t         len;
+
+    result = ngx_array_create(pool, 8, sizeof(ngx_str_t));
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    rc = sqlite3_prepare_v2(db,
+                            "SELECT path FROM cache_tag_entries "
+                            "WHERE zone = ?1 AND tag = ?2",
+                            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite prepare lookup failed: %s", sqlite3_errmsg(db));
+        return NGX_ERROR;
+    }
+
+    tag = tags->elts;
+    for (i = 0; i < tags->nelts; i++) {
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        sqlite3_bind_text(stmt, 1, (const char *) zone_name->data, zone_name->len,
+                          SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, (const char *) tag[i].data, tag[i].len,
+                          SQLITE_TRANSIENT);
+
+        while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+            text = sqlite3_column_text(stmt, 0);
+            if (text == NULL) {
+                continue;
+            }
+
+            len = ngx_strlen(text);
+            path = result->elts;
+            for (j = 0; j < result->nelts; j++) {
+                if (path[j].len == len
+                        && ngx_strncmp(path[j].data, text, len) == 0) {
+                    break;
+                }
+            }
+
+            if (j != result->nelts) {
+                continue;
+            }
+
+            path = ngx_array_push(result);
+            if (path == NULL) {
+                sqlite3_finalize(stmt);
+                return NGX_ERROR;
+            }
+
+            path->data = ngx_pnalloc(pool, len + 1);
+            if (path->data == NULL) {
+                sqlite3_finalize(stmt);
+                return NGX_ERROR;
+            }
+
+            ngx_memcpy(path->data, text, len);
+            path->len = len;
+            path->data[len] = '\0';
+        }
+
+        if (rc != SQLITE_DONE) {
+            ngx_log_error(NGX_LOG_ERR, log, 0,
+                          "sqlite lookup failed: %s", sqlite3_errmsg(db));
+            sqlite3_finalize(stmt);
+            return NGX_ERROR;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+    *paths = result;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_push_unique(ngx_pool_t *pool, ngx_array_t *tags,
+                               u_char *data, size_t len) {
+    ngx_str_t   *tag;
+    ngx_uint_t   i;
+
+    if (len == 0) {
+        return NGX_OK;
+    }
+
+    tag = tags->elts;
+    for (i = 0; i < tags->nelts; i++) {
+        if (tag[i].len == len
+                && ngx_strncasecmp(tag[i].data, data, len) == 0) {
+            return NGX_OK;
+        }
+    }
+
+    tag = ngx_array_push(tags);
+    if (tag == NULL) {
+        return NGX_ERROR;
+    }
+
+    tag->data = ngx_pnalloc(pool, len);
+    if (tag->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(tag->data, data, len);
+    tag->len = len;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_extract_tokens(ngx_pool_t *pool, u_char *value, size_t len,
+                                  ngx_array_t *tags) {
+    size_t   i, start, end;
+
+    i = 0;
+    while (i < len) {
+        while (i < len && (value[i] == ' ' || value[i] == '\t'
+                           || value[i] == '\r' || value[i] == '\n'
+                           || value[i] == ',')) {
+            i++;
+        }
+
+        start = i;
+
+        while (i < len && value[i] != ' ' && value[i] != '\t'
+                && value[i] != '\r' && value[i] != '\n'
+                && value[i] != ',') {
+            i++;
+        }
+
+        end = i;
+        if (end > start
+                && ngx_http_cache_tag_push_unique(pool, tags, value + start,
+                                                  end - start) != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_join_path(ngx_pool_t *pool, ngx_str_t *base,
+                             const char *name, ngx_str_t *out) {
+    size_t  name_len;
+
+    name_len = ngx_strlen(name);
+    out->len = base->len + 1 + name_len;
+    out->data = ngx_pnalloc(pool, out->len + 1);
+    if (out->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_snprintf(out->data, out->len + 1, "%V/%s%Z", base, name);
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_path_known(ngx_str_t *path) {
+    u_char  *p;
+
+    p = path->data + path->len;
+    while (p > path->data && p[-1] != '/') {
+        p--;
+    }
+
+    return (size_t) (path->data + path->len - p) == 2 * NGX_HTTP_CACHE_KEY_LEN;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_parse_file(ngx_pool_t *pool, ngx_str_t *path,
+                              ngx_array_t *headers, ngx_array_t **tags,
+                              time_t *mtime, off_t *size, ngx_log_t *log) {
+    ngx_file_info_t  fi;
+    ngx_file_t       file;
+    u_char          *buf;
+    ssize_t          n;
+    size_t           max_read, i, j, line_end, value_start;
+    ngx_array_t     *result;
+    ngx_str_t       *header;
+
+    if (!ngx_http_cache_tag_path_known(path)) {
+        return NGX_DECLINED;
+    }
+
+    if (ngx_file_info(path->data, &fi) == NGX_FILE_ERROR) {
+        return NGX_DECLINED;
+    }
+
+    max_read = (size_t) ngx_min((off_t) 65536, ngx_file_size(&fi));
+    if (max_read == 0) {
+        return NGX_DECLINED;
+    }
+
+    buf = ngx_pnalloc(pool, max_read);
+    if (buf == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&file, sizeof(ngx_file_t));
+    file.name = *path;
+    file.log = log;
+    file.fd = ngx_open_file(path->data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (file.fd == NGX_INVALID_FILE) {
+        return NGX_DECLINED;
+    }
+
+    n = ngx_read_file(&file, buf, max_read, 0);
+    ngx_close_file(file.fd);
+
+    if (n == NGX_ERROR || n <= 0) {
+        return NGX_DECLINED;
+    }
+
+    result = ngx_array_create(pool, 4, sizeof(ngx_str_t));
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    header = headers->elts;
+    for (i = 0; i < (size_t) n; i++) {
+        if (i != 0 && buf[i - 1] != '\n') {
+            continue;
+        }
+
+        for (j = 0; j < headers->nelts; j++) {
+            if (i + header[j].len + 1 >= (size_t) n) {
+                continue;
+            }
+
+            if (ngx_strncasecmp(buf + i, header[j].data, header[j].len) != 0
+                    || buf[i + header[j].len] != ':') {
+                continue;
+            }
+
+            value_start = i + header[j].len + 1;
+            while (value_start < (size_t) n
+                    && (buf[value_start] == ' ' || buf[value_start] == '\t')) {
+                value_start++;
+            }
+
+            line_end = value_start;
+            while (line_end < (size_t) n && buf[line_end] != '\n'
+                    && buf[line_end] != '\r') {
+                line_end++;
+            }
+
+            if (ngx_http_cache_tag_extract_tokens(pool, buf + value_start,
+                                                  line_end - value_start,
+                                                  result) != NGX_OK) {
+                return NGX_ERROR;
+            }
+        }
+    }
+
+    *mtime = ngx_file_mtime(&fi);
+    *size = ngx_file_size(&fi);
+    *tags = result;
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_process_file(sqlite3 *db, ngx_str_t *zone_name, ngx_str_t *path,
+                                ngx_log_t *log) {
+    ngx_array_t  *headers;
+    ngx_array_t  *tags;
+    ngx_str_t    *header;
+    time_t        mtime;
+    off_t         size;
+    ngx_int_t     rc;
+    ngx_pool_t   *pool;
+
+    pool = ngx_create_pool(4096, log);
+    if (pool == NULL) {
+        return NGX_ERROR;
+    }
+
+    headers = ngx_array_create(pool, 2, sizeof(ngx_str_t));
+    if (headers == NULL) {
+        ngx_destroy_pool(pool);
+        return NGX_ERROR;
+    }
+
+    header = ngx_array_push(headers);
+    if (header == NULL) {
+        ngx_destroy_pool(pool);
+        return NGX_ERROR;
+    }
+    ngx_str_set(header, "Surrogate-Key");
+
+    header = ngx_array_push(headers);
+    if (header == NULL) {
+        ngx_destroy_pool(pool);
+        return NGX_ERROR;
+    }
+    ngx_str_set(header, "Cache-Tag");
+
+    if (ngx_http_cache_tag_parse_file(pool, path, headers,
+                                      &tags, &mtime, &size, log) != NGX_OK) {
+        ngx_destroy_pool(pool);
+        return ngx_http_cache_tag_db_delete_file(db, zone_name, path, log);
+    }
+
+    rc = ngx_http_cache_tag_db_replace(db, zone_name, path, mtime, size,
+                                       tags, log);
+    ngx_destroy_pool(pool);
+
+    return rc;
+}
+
+static ngx_http_cache_tag_watch_t *
+ngx_http_cache_tag_find_watch(int wd) {
+    ngx_http_cache_tag_watch_t  *watch;
+    ngx_uint_t                   i;
+
+    if (ngx_http_cache_tag_runtime.watches == NULL) {
+        return NULL;
+    }
+
+    watch = ngx_http_cache_tag_runtime.watches->elts;
+    for (i = 0; i < ngx_http_cache_tag_runtime.watches->nelts; i++) {
+        if (watch[i].wd == wd) {
+            return &watch[i];
+        }
+    }
+
+    return NULL;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_remove_watch(int wd, ngx_cycle_t *cycle) {
+    ngx_http_cache_tag_watch_t  *watch;
+    ngx_uint_t                   i;
+
+    if (ngx_http_cache_tag_runtime.watches == NULL) {
+        return NGX_OK;
+    }
+
+    watch = ngx_http_cache_tag_runtime.watches->elts;
+    for (i = 0; i < ngx_http_cache_tag_runtime.watches->nelts; i++) {
+        if (watch[i].wd == wd) {
+            inotify_rm_watch(ngx_http_cache_tag_runtime.inotify_fd, wd);
+            if (i + 1 < ngx_http_cache_tag_runtime.watches->nelts) {
+                watch[i] = watch[ngx_http_cache_tag_runtime.watches->nelts - 1];
+            }
+            ngx_http_cache_tag_runtime.watches->nelts--;
+            return NGX_OK;
+        }
+    }
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_add_watch(sqlite3 *db, ngx_http_cache_tag_zone_t *zone,
+                             ngx_str_t *path, ngx_cycle_t *cycle) {
+    ngx_http_cache_tag_watch_t  *watch;
+    int                          wd;
+
+    (void) db;
+
+    if (ngx_http_cache_tag_runtime.watches == NULL) {
+        ngx_http_cache_tag_runtime.watches = ngx_array_create(
+            cycle->pool, 16, sizeof(ngx_http_cache_tag_watch_t));
+        if (ngx_http_cache_tag_runtime.watches == NULL) {
+            return NGX_ERROR;
+        }
+    }
+
+    if (ngx_http_cache_tag_runtime.inotify_fd <= 0) {
+        return NGX_DECLINED;
+    }
+
+    wd = inotify_add_watch(ngx_http_cache_tag_runtime.inotify_fd,
+                           (const char *) path->data,
+                           IN_CREATE|IN_MOVED_TO|IN_CLOSE_WRITE|IN_DELETE
+                           |IN_MOVED_FROM|IN_DELETE_SELF|IN_ONLYDIR);
+    if (wd == -1) {
+        ngx_log_error(NGX_LOG_WARN, cycle->log, ngx_errno,
+                      "inotify_add_watch failed for \"%V\"", path);
+        return NGX_DECLINED;
+    }
+
+    watch = ngx_http_cache_tag_find_watch(wd);
+    if (watch != NULL) {
+        return NGX_OK;
+    }
+
+    watch = ngx_array_push(ngx_http_cache_tag_runtime.watches);
+    if (watch == NULL) {
+        return NGX_ERROR;
+    }
+
+    watch->wd = wd;
+    watch->cache = zone->cache;
+    watch->zone_name = zone->zone_name;
+    watch->path.len = path->len;
+    watch->path.data = ngx_pnalloc(cycle->pool, path->len + 1);
+    if (watch->path.data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(watch->path.data, path->data, path->len);
+    watch->path.data[path->len] = '\0';
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_add_watch_recursive(sqlite3 *db, ngx_http_cache_tag_zone_t *zone,
+                                       ngx_str_t *path, ngx_cycle_t *cycle) {
+    DIR            *dir;
+    struct dirent  *entry;
+    ngx_str_t       child;
+
+    if (ngx_http_cache_tag_add_watch(db, zone, path, cycle) == NGX_ERROR) {
+        return NGX_ERROR;
+    }
+
+    dir = opendir((const char *) path->data);
+    if (dir == NULL) {
+        return NGX_DECLINED;
+    }
+
+    while ((entry = readdir(dir)) != NULL) {
+        if (ngx_strcmp(entry->d_name, ".") == 0
+                || ngx_strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        if (ngx_http_cache_tag_join_path(cycle->pool, path, entry->d_name, &child)
+                != NGX_OK) {
+            closedir(dir);
+            return NGX_ERROR;
+        }
+
+        if (entry->d_type == DT_DIR) {
+            if (ngx_http_cache_tag_add_watch_recursive(db, zone, &child, cycle)
+                    != NGX_OK) {
+                continue;
+            }
+            continue;
+        }
+
+        if (entry->d_type == DT_REG || entry->d_type == DT_UNKNOWN) {
+            if (ngx_http_cache_tag_process_file(db, &zone->zone_name, &child,
+                                                cycle->log)
+                    != NGX_OK) {
+                continue;
+            }
+        }
+    }
+
+    closedir(dir);
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_process_events(ngx_cycle_t *cycle) {
+    u_char                      buf[8192];
+    ssize_t                     n;
+    size_t                      offset;
+    struct inotify_event       *event;
+    ngx_http_cache_tag_watch_t *watch;
+    ngx_str_t                   path;
+    ngx_pool_t                 *pool;
+
+    for ( ;; ) {
+        n = read(ngx_http_cache_tag_runtime.inotify_fd, buf, sizeof(buf));
+        if (n == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return NGX_OK;
+            }
+            return NGX_ERROR;
+        }
+
+        if (n == 0) {
+            return NGX_OK;
+        }
+
+        pool = ngx_create_pool(4096, cycle->log);
+        if (pool == NULL) {
+            return NGX_ERROR;
+        }
+
+        offset = 0;
+        while (offset < (size_t) n) {
+            event = (struct inotify_event *) (buf + offset);
+            watch = ngx_http_cache_tag_find_watch(event->wd);
+            if (watch != NULL) {
+                if (event->mask & (IN_DELETE_SELF|IN_IGNORED)) {
+                    ngx_http_cache_tag_remove_watch(event->wd, cycle);
+                } else if (event->len > 0
+                           && ngx_http_cache_tag_join_path(pool, &watch->path,
+                                                           event->name, &path) == NGX_OK) {
+                    if (event->mask & IN_ISDIR) {
+                        if (event->mask & (IN_CREATE|IN_MOVED_TO)) {
+                            ngx_http_cache_tag_zone_t zone;
+                            zone.zone_name = watch->zone_name;
+                            zone.cache = watch->cache;
+                            ngx_http_cache_tag_add_watch_recursive(
+                                ngx_http_cache_tag_runtime.db, &zone, &path, cycle);
+                        }
+                    } else if (event->mask & (IN_CREATE|IN_MOVED_TO|IN_CLOSE_WRITE)) {
+                        ngx_http_cache_tag_process_file(ngx_http_cache_tag_runtime.db,
+                                                        &watch->zone_name, &path,
+                                                        cycle->log);
+                    } else if (event->mask & (IN_DELETE|IN_MOVED_FROM)) {
+                        ngx_http_cache_tag_db_delete_file(ngx_http_cache_tag_runtime.db,
+                                                          &watch->zone_name, &path,
+                                                          cycle->log);
+                    }
+                }
+            }
+
+            offset += sizeof(struct inotify_event) + event->len;
+        }
+
+        ngx_destroy_pool(pool);
+    }
+}
+
+static void
+ngx_http_cache_tag_timer_handler(ngx_event_t *ev) {
+    if (ngx_exiting || ngx_quit || ngx_terminate) {
+        return;
+    }
+
+    if (ngx_http_cache_tag_process_events(ngx_http_cache_tag_runtime.cycle) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, ngx_http_cache_tag_runtime.cycle->log, 0,
+                      "cache_tag watcher processing failed");
+    }
+
+    ngx_add_timer(ev, 250);
+}
+
+static ngx_int_t
+ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
+                                ngx_http_cache_purge_main_conf_t *pmcf) {
+    ngx_http_cache_tag_zone_t  *zone;
+    ngx_uint_t                  i;
+
+    ngx_memzero(&ngx_http_cache_tag_runtime, sizeof(ngx_http_cache_tag_runtime));
+
+    ngx_http_cache_tag_runtime.owner = (ngx_process == NGX_PROCESS_WORKER && ngx_worker == 0);
+    if (!ngx_http_cache_tag_runtime.owner || pmcf->zones->nelts == 0) {
+        return NGX_OK;
+    }
+
+    ngx_http_cache_tag_runtime.inotify_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (ngx_http_cache_tag_runtime.inotify_fd == -1) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                      "inotify_init1 failed");
+        return NGX_ERROR;
+    }
+
+    ngx_http_cache_tag_runtime.db = ngx_http_cache_tag_db_open(
+        &pmcf->sqlite_path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, cycle->log);
+    if (ngx_http_cache_tag_runtime.db == NULL) {
+        close(ngx_http_cache_tag_runtime.inotify_fd);
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_sqlite_init(ngx_http_cache_tag_runtime.db, cycle->log)
+            != NGX_OK) {
+        ngx_http_cache_tag_shutdown_runtime();
+        return NGX_ERROR;
+    }
+
+    ngx_http_cache_tag_runtime.watches = ngx_array_create(cycle->pool, 16,
+                                                          sizeof(ngx_http_cache_tag_watch_t));
+    if (ngx_http_cache_tag_runtime.watches == NULL) {
+        ngx_http_cache_tag_shutdown_runtime();
+        return NGX_ERROR;
+    }
+
+    zone = pmcf->zones->elts;
+    for (i = 0; i < pmcf->zones->nelts; i++) {
+        if (zone[i].cache == NULL || zone[i].cache->path == NULL) {
+            continue;
+        }
+
+        if (ngx_http_cache_tag_add_watch_recursive(ngx_http_cache_tag_runtime.db,
+                                                   &zone[i], &zone[i].cache->path->name,
+                                                   cycle) == NGX_ERROR) {
+            ngx_http_cache_tag_shutdown_runtime();
+            return NGX_ERROR;
+        }
+    }
+
+    ngx_http_cache_tag_runtime.cycle = cycle;
+    ngx_http_cache_tag_runtime.timer.handler = ngx_http_cache_tag_timer_handler;
+    ngx_http_cache_tag_runtime.timer.log = cycle->log;
+    ngx_http_cache_tag_runtime.timer.data = NULL;
+    ngx_http_cache_tag_runtime.timer.cancelable = 1;
+    ngx_add_timer(&ngx_http_cache_tag_runtime.timer, 250);
+
+    ngx_http_cache_tag_runtime.initialized = 1;
+    ngx_http_cache_tag_runtime.active = 1;
+
+    return NGX_OK;
+}
+
+static void
+ngx_http_cache_tag_shutdown_runtime(void) {
+    if (ngx_http_cache_tag_runtime.timer.timer_set) {
+        ngx_del_timer(&ngx_http_cache_tag_runtime.timer);
+    }
+
+    if (ngx_http_cache_tag_runtime.db != NULL) {
+        sqlite3_close(ngx_http_cache_tag_runtime.db);
+    }
+
+    if (ngx_http_cache_tag_runtime.inotify_fd > 0) {
+        close(ngx_http_cache_tag_runtime.inotify_fd);
+    }
+
+    ngx_memzero(&ngx_http_cache_tag_runtime, sizeof(ngx_http_cache_tag_runtime));
+}
+
+static ngx_http_cache_tag_zone_t *
+ngx_http_cache_tag_lookup_zone(ngx_http_file_cache_t *cache) {
+    ngx_http_conf_ctx_t              *http_ctx;
+    ngx_http_cache_purge_main_conf_t *pmcf;
+    ngx_http_cache_tag_zone_t        *zone;
+    ngx_uint_t                        i;
+
+    http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+               ngx_http_module);
+    pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
+    if (pmcf == NULL || pmcf->zones == NULL) {
+        return NULL;
+    }
+
+    zone = pmcf->zones->elts;
+    for (i = 0; i < pmcf->zones->nelts; i++) {
+        if (zone[i].cache == cache) {
+            return &zone[i];
+        }
+    }
+
+    return NULL;
+}
+#endif
+
 # if (nginx_version >= 1007009)
 
 /*
@@ -1912,6 +3084,103 @@ ngx_http_cache_purge_cache_get(ngx_http_request_t *r, ngx_http_upstream_t *u,
 # endif /* nginx_version >= 1007009 */
 
 ngx_int_t
+ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
+    ngx_http_conf_ctx_t              *http_ctx;
+    ngx_http_cache_purge_main_conf_t *pmcf;
+    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_http_cache_tag_zone_t        *zone;
+    ngx_array_t                      *tags, *paths;
+    ngx_str_t                        *path;
+    ngx_uint_t                        i;
+    ngx_int_t                         rc, purged;
+#if (NGX_LINUX)
+    sqlite3                          *db;
+#endif
+
+    rc = ngx_http_cache_tag_request_headers(r, &tags);
+    if (rc != NGX_OK) {
+        return NGX_DECLINED;
+    }
+
+    http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
+               ngx_http_module);
+    pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
+    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+        return NGX_DECLINED;
+    }
+
+    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
+    zone = NULL;
+#if (NGX_LINUX)
+    zone = ngx_http_cache_tag_lookup_zone(cache);
+#endif
+    if (zone == NULL) {
+        zone = ngx_pcalloc(r->pool, sizeof(ngx_http_cache_tag_zone_t));
+        if (zone == NULL) {
+            return NGX_ERROR;
+        }
+        zone->cache = cache;
+        zone->zone_name = cache->shm_zone->shm.name;
+    }
+
+#if !(NGX_LINUX)
+    return NGX_DECLINED;
+#else
+    db = ngx_http_cache_tag_db_open(&pmcf->sqlite_path,
+                                    SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE,
+                                    r->connection->log);
+    if (db == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_sqlite_init(db, r->connection->log) != NGX_OK) {
+        sqlite3_close(db);
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_db_collect_paths(db, r->pool, &zone->zone_name,
+                                            tags, &paths, r->connection->log)
+            != NGX_OK) {
+        sqlite3_close(db);
+        return NGX_ERROR;
+    }
+
+    if (paths->nelts == 0 && cache->path != NULL) {
+        ngx_http_cache_tag_add_watch_recursive(db, zone, &cache->path->name,
+                                               (ngx_cycle_t *) ngx_cycle);
+        if (ngx_http_cache_tag_db_collect_paths(db, r->pool, &zone->zone_name,
+                                                tags, &paths, r->connection->log)
+                != NGX_OK) {
+            sqlite3_close(db);
+            return NGX_ERROR;
+        }
+    }
+
+    purged = 0;
+    path = paths->elts;
+    for (i = 0; i < paths->nelts; i++) {
+        rc = ngx_http_cache_purge_by_path(cache, &path[i], cplcf->conf->soft,
+                                          r->connection->log);
+        if (rc == NGX_OK) {
+            purged++;
+            ngx_http_cache_tag_db_delete_file(db, &zone->zone_name, &path[i],
+                                              r->connection->log);
+        } else if (rc == NGX_DECLINED) {
+            ngx_http_cache_tag_db_delete_file(db, &zone->zone_name, &path[i],
+                                              r->connection->log);
+        } else {
+            sqlite3_close(db);
+            return NGX_ERROR;
+        }
+    }
+
+    sqlite3_close(db);
+
+    return purged > 0 ? NGX_OK : NGX_DECLINED;
+#endif
+}
+
+ngx_int_t
 ngx_http_cache_purge_init(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
                           ngx_http_complex_value_t *cache_key) {
     ngx_http_cache_t  *c;
@@ -1953,10 +3222,42 @@ ngx_http_cache_purge_init(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
     return NGX_OK;
 }
 
+ngx_int_t
+ngx_http_cache_purge_init_process(ngx_cycle_t *cycle) {
+    ngx_http_conf_ctx_t              *http_ctx;
+    ngx_http_cache_purge_main_conf_t *pmcf;
+
+#if !(NGX_LINUX)
+    return NGX_OK;
+#else
+    http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(cycle->conf_ctx,
+               ngx_http_module);
+    if (http_ctx == NULL) {
+        return NGX_OK;
+    }
+
+    pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
+    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+        return NGX_OK;
+    }
+
+    return ngx_http_cache_tag_init_runtime(cycle, pmcf);
+#endif
+}
+
+void
+ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle) {
+    (void) cycle;
+#if (NGX_LINUX)
+    ngx_http_cache_tag_shutdown_runtime();
+#endif
+}
+
 void
 ngx_http_cache_purge_handler(ngx_http_request_t *r) {
     ngx_http_cache_purge_loc_conf_t     *cplcf;
     ngx_int_t  rc;
+    ngx_array_t *tags;
 
 #  if (NGX_HAVE_FILE_AIO)
     if (r->aio) {
@@ -1966,7 +3267,14 @@ ngx_http_cache_purge_handler(ngx_http_request_t *r) {
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
     rc = NGX_OK;
-    if (!cplcf->conf->purge_all && !ngx_http_cache_purge_is_partial(r)) {
+    tags = NULL;
+
+    if (ngx_http_cache_tag_location_enabled(cplcf)
+            && ngx_http_cache_tag_request_headers(r, &tags) == NGX_OK
+            && tags != NULL
+            && tags->nelts > 0) {
+        rc = NGX_OK;
+    } else if (!cplcf->conf->purge_all && !ngx_http_cache_purge_is_partial(r)) {
         if (cplcf->conf->soft) {
             rc = ngx_http_file_cache_purge_soft(r);
         } else {
@@ -2356,6 +3664,34 @@ ngx_http_cache_purge_merge_conf(ngx_http_cache_purge_conf_t *conf,
 }
 
 void *
+ngx_http_cache_purge_create_main_conf(ngx_conf_t *cf) {
+    ngx_http_cache_purge_main_conf_t  *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_cache_purge_main_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    conf->zones = ngx_array_create(cf->pool, 4, sizeof(ngx_http_cache_tag_zone_t));
+    if (conf->zones == NULL) {
+        return NULL;
+    }
+
+    return conf;
+}
+
+char *
+ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf) {
+    ngx_http_cache_purge_main_conf_t  *pmcf = conf;
+
+    if (pmcf->sqlite_path.data == NULL) {
+        pmcf->sqlite_path.len = 0;
+    }
+
+    return NGX_CONF_OK;
+}
+
+void *
 ngx_http_cache_purge_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_cache_purge_loc_conf_t  *conf;
 
@@ -2388,6 +3724,7 @@ ngx_http_cache_purge_create_loc_conf(ngx_conf_t *cf) {
 # endif /* NGX_HTTP_UWSGI */
 
     conf->resptype = NGX_CONF_UNSET_UINT;
+    conf->cache_tag_watch = NGX_CONF_UNSET;
 
     conf->conf = NGX_CONF_UNSET_PTR;
 
@@ -2399,6 +3736,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_cache_purge_loc_conf_t  *prev = parent;
     ngx_http_cache_purge_loc_conf_t  *conf = child;
     ngx_http_core_loc_conf_t         *clcf;
+    ngx_str_t                        *header;
 # if (NGX_HTTP_FASTCGI)
     ngx_http_fastcgi_loc_conf_t      *flcf;
 # endif /* NGX_HTTP_FASTCGI */
@@ -2415,6 +3753,30 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
     ngx_conf_merge_uint_value(conf->resptype, prev->resptype, NGX_REPONSE_TYPE_HTML);
+    ngx_conf_merge_value(conf->cache_tag_watch, prev->cache_tag_watch, 0);
+
+    if (conf->cache_tag_headers == NULL) {
+        conf->cache_tag_headers = prev->cache_tag_headers;
+    }
+
+    if (conf->cache_tag_headers == NULL) {
+        conf->cache_tag_headers = ngx_array_create(cf->pool, 2, sizeof(ngx_str_t));
+        if (conf->cache_tag_headers == NULL) {
+            return NGX_CONF_ERROR;
+        }
+
+        header = ngx_array_push(conf->cache_tag_headers);
+        if (header == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        ngx_str_set(header, "Surrogate-Key");
+
+        header = ngx_array_push(conf->cache_tag_headers);
+        if (header == NULL) {
+            return NGX_CONF_ERROR;
+        }
+        ngx_str_set(header, "Cache-Tag");
+    }
 
 # if (NGX_HTTP_FASTCGI)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
@@ -2429,6 +3791,16 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
             conf->original_handler = clcf->handler;
 
             clcf->handler = ngx_http_cache_purge_access_handler;
+
+            if (conf->cache_tag_watch && ngx_http_cache_tag_register_cache(cf,
+#  if (nginx_version >= 1007009)
+                    flcf->upstream.cache_zone ? flcf->upstream.cache_zone->data : NULL
+#  else
+                    flcf->upstream.cache ? flcf->upstream.cache->data : NULL
+#  endif
+                                                                          ) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
 
             return NGX_CONF_OK;
         }
@@ -2449,6 +3821,16 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
             clcf->handler = ngx_http_cache_purge_access_handler;
 
+            if (conf->cache_tag_watch && ngx_http_cache_tag_register_cache(cf,
+#  if (nginx_version >= 1007009)
+                    plcf->upstream.cache_zone ? plcf->upstream.cache_zone->data : NULL
+#  else
+                    plcf->upstream.cache ? plcf->upstream.cache->data : NULL
+#  endif
+                                                                          ) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
+
             return NGX_CONF_OK;
         }
     }
@@ -2466,6 +3848,16 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
                             ? ngx_http_scgi_cache_purge_handler : NULL;
             conf->original_handler = clcf->handler;
             clcf->handler = ngx_http_cache_purge_access_handler;
+
+            if (conf->cache_tag_watch && ngx_http_cache_tag_register_cache(cf,
+#  if (nginx_version >= 1007009)
+                    slcf->upstream.cache_zone ? slcf->upstream.cache_zone->data : NULL
+#  else
+                    slcf->upstream.cache ? slcf->upstream.cache->data : NULL
+#  endif
+                                                                          ) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
 
             return NGX_CONF_OK;
         }
@@ -2485,6 +3877,16 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
             conf->original_handler = clcf->handler;
 
             clcf->handler = ngx_http_cache_purge_access_handler;
+
+            if (conf->cache_tag_watch && ngx_http_cache_tag_register_cache(cf,
+#  if (nginx_version >= 1007009)
+                    ulcf->upstream.cache_zone ? ulcf->upstream.cache_zone->data : NULL
+#  else
+                    ulcf->upstream.cache ? ulcf->upstream.cache->data : NULL
+#  endif
+                                                                          ) != NGX_OK) {
+                return NGX_CONF_ERROR;
+            }
 
             return NGX_CONF_OK;
         }
