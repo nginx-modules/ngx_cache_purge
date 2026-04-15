@@ -132,6 +132,37 @@ cache_purge_response_type
 Sets a response type of purging result.
 
 
+cache_tag_index
+-----------------
+* **syntax**: `cache_tag_index sqlite <path>`
+* **default**: `none`
+* **context**: `http`
+
+Enables cache-tag indexing backed by a SQLite database. This feature is
+currently Linux-only and requires a writable database path.
+
+
+cache_tag_headers
+-----------------
+* **syntax**: `cache_tag_headers <header> [header ...]`
+* **default**: `Surrogate-Key Cache-Tag`
+* **context**: `http`, `server`, `location`
+
+Sets the request and cached-response headers used for cache-tag extraction and
+tag purge matching.
+
+
+cache_tag_watch
+-----------------
+* **syntax**: `cache_tag_watch on|off`
+* **default**: `off`
+* **context**: `http`, `server`, `location`
+
+Enables cache-tag indexing for the cache used by the current purge-enabled
+location. When enabled, the module watches the cache directory, indexes tags
+found in cached response headers, and allows tag-based `PURGE` requests.
+
+
 
 Partial Keys
 ============
@@ -157,6 +188,47 @@ deleting them outright.
 For wildcard and `purge_all` soft purges, the module expires both the cache-file
 header on disk and the matching shared-memory cache node so the next lookup is
 treated as expired consistently.
+
+
+Cache Tags
+==========
+The module can also purge cached objects by cache tag, similar to
+`Surrogate-Key` or `Cache-Tag` support in other reverse proxies.
+
+When `cache_tag_index` and `cache_tag_watch` are enabled:
+
+- Cached response files are parsed for the headers listed in
+    `cache_tag_headers`.
+- `Surrogate-Key` values are parsed as whitespace-delimited tags.
+- `Cache-Tag` values are parsed as comma- or whitespace-delimited tags.
+- The module stores a tag-to-cache-file index in SQLite.
+- On Linux, a worker-owned `inotify` watcher keeps the index up to date as
+    cache files are created, replaced, or removed.
+
+To purge by tag, send a normal `PURGE` request and include one or more tag
+headers:
+
+    curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' \
+        'http://127.0.0.1/tagged/item'
+
+or:
+
+    curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' \
+        'http://127.0.0.1/tagged/item'
+
+All supplied tags are matched with OR semantics. If any cached file is indexed
+under any supplied tag, it will be purged.
+
+If the purge location uses `soft`, tag purges also behave as soft purges: the
+matching cache entries are marked expired in place instead of being deleted.
+
+Notes:
+
+- Cache-tag support currently requires Linux.
+- SQLite is the only supported tag index backend.
+- The cache watcher keeps the index fresh during normal operation.
+- A cold-start bootstrap fallback scans the configured cache tree if a tag
+    purge arrives before a zone has been indexed.
 
 
 
@@ -309,6 +381,40 @@ Sample configuration (Optional)
     }
 
 
+Sample configuration (cache tags)
+=================================
+    http {
+        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
+        cache_tag_index   sqlite /tmp/ngx_cache_purge_tags.sqlite;
+
+        server {
+            location /tagged/ {
+                proxy_pass         http://127.0.0.1:8000;
+                proxy_cache        tmpcache;
+                proxy_cache_key    "$uri$is_args$args";
+                proxy_cache_valid  3m;
+                add_header         X-Cache-Status $upstream_cache_status;
+
+                proxy_cache_purge  PURGE soft from 127.0.0.1;
+                cache_tag_watch    on;
+            }
+        }
+    }
+
+The origin responses cached through `/tagged/` should emit `Surrogate-Key`,
+`Cache-Tag`, or both. The module reads those headers from the cached response
+file and indexes the tags automatically.
+
+Example tag purge:
+
+    curl -i -X PURGE -H 'Surrogate-Key: group-one' \
+        'http://127.0.0.1/tagged/item'
+
+Any cached object in the same cache zone indexed under `group-one` will be
+expired or deleted depending on whether the purge location is configured with
+`soft`.
+
+
 
 Solve problems
 ==============
@@ -336,6 +442,7 @@ It provides separate locations for these behaviors:
 - wildcard soft purge (`/wild`)
 - `purge_all` soft purge (`/purge_all`)
 - separate-location `zone key soft` syntax (`/separate` and `/purge_separate/...`)
+- cache-tag soft purge (`t/proxy_tag.t` exercises the automated path)
 
 Start it inside the container after building nginx:
 
