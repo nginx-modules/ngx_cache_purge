@@ -1,333 +1,355 @@
-About
-=====
-`ngx_cache_purge` is `nginx` module which adds ability to purge content from
-`FastCGI`, `proxy`, `SCGI` and `uWSGI` caches. A purge operation removes the 
-content with the same cache key as the purge request has.
+# ngx_cache_purge
 
+`ngx_cache_purge` is an `nginx` module that adds cache purge support for `FastCGI`, `proxy`, `SCGI`, and `uWSGI` caches. A purge operation removes or expires cached content that matches the cache key, wildcard key, or configured cache tags for the request.
 
-Sponsors
-========
-Work on the original patch was fully funded by [yo.se](http://yo.se).
+_This module is not distributed with the NGINX source. See [Installation Instructions](#installation-instructions)._
 
+## Status
 
-Status
-======
-This module is production-ready.
+This is a fork of the [`ngx_cache_purge` module](https://github.com/nginx-modules/ngx_cache_purge) to add support for soft purgaging and cache tags (also known as surrogate keys).
 
+## Quick Start
 
-Docker Build Environment
-========================
+`ngx_cache_purge` supports multiple purge styles depending on how you want to address cached content:
+
+- exact URI purge
+- wildcard URI purge using a trailing `*`
+- cache-tag purge
+- surrogate-key purge
+
+For most users, the simplest starting point is a cached location plus a `PURGE` method restricted to trusted clients.
+
+```nginx
+http {
+    proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+
+    server {
+        listen 8080;
+
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$uri$is_args$args";
+            proxy_cache_purge  PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+That allows requests such as:
+
+```bash
+curl -i -X PURGE 'http://127.0.0.1:8080/path?query=1'
+```
+
+If the configured cache key ends with `$uri`, you can also purge by wildcard URI using a trailing `*`:
+
+```bash
+curl -i -X PURGE 'http://127.0.0.1:8080/articles/2026/*'
+```
+
+If you want cache-tag purging, enable the SQLite-backed index and watch the cache directory:
+
+```nginx
+http {
+    proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+    cache_tag_index  sqlite /tmp/ngx_cache_purge_tags.sqlite;
+
+    server {
+        location /tagged/ {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$uri$is_args$args";
+            proxy_cache_purge  PURGE soft from 127.0.0.1;
+            cache_tag_watch    on;
+        }
+    }
+}
+```
+
+That unlocks tag-based requests such as:
+
+```bash
+curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' 'http://127.0.0.1:8080/tagged/item'
+```
+
+Or surrogate-key requests such as:
+
+```bash
+curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' 'http://127.0.0.1:8080/tagged/item'
+```
+
+## Installation Instructions
+
+You need to build NGINX with this repository as an extra module via `--add-module`; it is not bundled with upstream NGINX.
+
+### Recommended: use the included development container
+
+- The repository includes a Debian-based build environment with NGINX source, SQLite development headers, and `Test::Nginx`.
+- Open a shell in the container with the repository mounted at `/workspace`.
+- Configure and build NGINX with this module.
+- Print the resulting build flags if you want to verify the build.
+
+```bash
+make shell
+make nginx-build
+make nginx-version
+```
+
+### Alternative: build against your own NGINX source tree
+
+- Download and extract the NGINX source version you want to build against.
+- Install the usual NGINX build dependencies plus SQLite development headers.
+- Run `./configure` from the NGINX source tree and point `--add-module` at this repository.
+
+```bash
+./configure \
+    --with-debug \
+    --with-http_ssl_module \
+    --add-module=/path/to/ngx_cache_purge
+make
+make install
+```
+
+The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library.
+
+If you want formatting, tests, or the manual validation setup, see [Development](#development).
+
+## Configuration Reference
+
+### Same-location syntax
+
+#### `fastcgi_cache_purge`
+
+- **syntax**: `fastcgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **default**: `none`
+- **context**: `http`, `server`, `location`
+
+Allow purging of selected pages from `FastCGI` cache.
+
+#### `proxy_cache_purge`
+
+- **syntax**: `proxy_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **default**: `none`
+- **context**: `http`, `server`, `location`
+
+Allow purging of selected pages from `proxy` cache.
+
+#### `scgi_cache_purge`
+
+- **syntax**: `scgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **default**: `none`
+- **context**: `http`, `server`, `location`
+
+Allow purging of selected pages from `SCGI` cache.
+
+#### `uwsgi_cache_purge`
+
+- **syntax**: `uwsgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **default**: `none`
+- **context**: `http`, `server`, `location`
+
+Allow purging of selected pages from `uWSGI` cache.
+
+### Separate-location syntax
+
+#### `fastcgi_cache_purge`
+
+- **syntax**: `fastcgi_cache_purge zone_name key [soft]`
+- **default**: `none`
+- **context**: `location`
+
+Set the cache zone and key used for purging selected pages from `FastCGI` cache.
+
+#### `proxy_cache_purge`
+
+- **syntax**: `proxy_cache_purge zone_name key [soft]`
+- **default**: `none`
+- **context**: `location`
+
+Set the cache zone and key used for purging selected pages from `proxy` cache.
+
+#### `scgi_cache_purge`
+
+- **syntax**: `scgi_cache_purge zone_name key [soft]`
+- **default**: `none`
+- **context**: `location`
+
+Set the cache zone and key used for purging selected pages from `SCGI` cache.
+
+#### `uwsgi_cache_purge`
+
+- **syntax**: `uwsgi_cache_purge zone_name key [soft]`
+- **default**: `none`
+- **context**: `location`
+
+Set the cache zone and key used for purging selected pages from `uWSGI` cache.
+
+### Optional directives
+
+#### `cache_purge_response_type`
+
+- **syntax**: `cache_purge_response_type html|json|xml|text`
+- **default**: `html`
+- **context**: `http`, `server`, `location`
+
+Set the response type returned after a purge.
+
+#### `cache_tag_index`
+
+- **syntax**: `cache_tag_index sqlite <path>`
+- **default**: `none`
+- **context**: `http`
+
+Enable cache-tag indexing backed by a SQLite database. This feature is currently Linux-only and requires a writable database path.
+
+#### `cache_tag_headers`
+
+- **syntax**: `cache_tag_headers <header> [header ...]`
+- **default**: `Surrogate-Key Cache-Tag`
+- **context**: `http`, `server`, `location`
+
+Set the request and cached-response headers used for cache-tag extraction and tag purge matching.
+
+All watched locations that share the same cache zone must use the same `cache_tag_headers` list.
+
+#### `cache_tag_watch`
+
+- **syntax**: `cache_tag_watch on|off`
+- **default**: `off`
+- **context**: `http`, `server`, `location`
+
+Enable cache-tag indexing for the cache used by the current purge-enabled location. When enabled, the module watches the cache directory, indexes tags found in cached response headers, and allows tag-based `PURGE` requests.
+
+## Partial Keys
+
+Sometimes it is not possible to pass the exact cache key to purge a page. For example, parts of the key may depend on cookies or query parameters. You can specify a partial key by adding an asterisk at the end of the URL.
+
+```bash
+curl -X PURGE /page*
+```
+
+The asterisk must be the last character of the key, so you must put the `$uri` variable at the end of the configured cache key.
+
+## Soft Purge
+
+Adding the `soft` parameter expires matching cached entries in place instead of deleting them outright.
+
+- Exact-key soft purge marks the cached entry as expired, so the next request is handled as `EXPIRED` rather than a deletion-driven `MISS`.
+- Wildcard soft purge applies the same expiration behavior to all matching keys.
+- `purge_all` can also be combined with `soft` to expire every cached entry in a zone without removing the underlying cache files immediately.
+
+For wildcard and `purge_all` soft purges, the module expires both the cache-file header on disk and the matching shared-memory cache node so the next lookup is treated as expired consistently.
+
+## Cache Tags
+
+The module can also purge cached objects by cache tag, similar to `Surrogate-Key` or `Cache-Tag` support in other reverse proxies.
+
+When `cache_tag_index` and `cache_tag_watch` are enabled:
+
+- cached response files are parsed for the headers listed in `cache_tag_headers`
+- `Surrogate-Key` values are parsed as whitespace-delimited tags
+- `Cache-Tag` values are parsed as comma- or whitespace-delimited tags
+- the module stores a tag-to-cache-file index in SQLite
+- on Linux, a worker-owned `inotify` watcher keeps the index up to date as cache files are created, replaced, or removed
+
+To purge by tag, send a normal `PURGE` request and include one or more tag headers:
+
+```bash
+curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' 'http://127.0.0.1/tagged/item'
+curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' 'http://127.0.0.1/tagged/item'
+```
+
+All supplied tags are matched with OR semantics. If any cached file is indexed under any supplied tag, it will be purged.
+
+If a watched purge location receives a plain `PURGE` request without any of the configured tag headers, the module falls back to the normal key-based purge behavior for that location.
+
+If the purge location uses `soft`, tag purges also behave as soft purges: the matching cache entries are marked expired in place instead of being deleted.
+
+Notes:
+
+- Cache-tag support currently requires Linux.
+- SQLite is the only supported tag index backend.
+- The cache watcher keeps the index fresh during normal operation.
+- A cold-start bootstrap fallback scans the configured cache tree if a tag purge arrives before a zone has been indexed.
+
+## Configuration Examples
+
+Use these as compact starting points after Quick Start.
+
+### Same-location syntax
+
+```nginx
+http {
+    proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+
+    server {
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$uri$is_args$args";
+            proxy_cache_purge  PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+Use `soft` if you want matching entries to expire in place, or add `purge_all` if you want a purge request to target every cached entry in the zone.
+
+### Separate-location syntax
+
+```nginx
+http {
+    proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+
+    server {
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$uri$is_args$args";
+        }
+
+        location ~ /purge(/.*) {
+            allow              127.0.0.1;
+            deny               all;
+            proxy_cache_purge  tmpcache "$1$is_args$args";
+        }
+    }
+}
+```
+
+### Response types
+
+Use `cache_purge_response_type` to switch between `html`, `json`, `xml`, and `text` responses in the scope where the purge response is generated.
+
+### Cache tags
+
+The minimal cache-tag setup is already shown in Quick Start. Use that pattern whenever you want to purge by `Cache-Tag` or `Surrogate-Key` headers.
+
+## Troubleshooting
+
+- Enabling [`gzip_vary`](https://nginx.org/r/gzip_vary) can lead to different results when clearing. For reliable operation, you can disable [`gzip_vary`](https://nginx.org/r/gzip_vary) inside the location [#20](https://github.com/nginx-modules/ngx_cache_purge/issues/20).
+
+## Development
+
+Use this section if you are hacking on the module, running the automated test suite, or validating behavior inside the included container.
+
 The repository includes a containerized build environment with:
 
 - Debian-based build tooling for NGINX modules
 - downloaded NGINX source in `/opt/nginx-src/nginx-$NGINX_VERSION`
 - `Test::Nginx` installed from `openresty/test-nginx`
 
-Open a shell in the container with the repository mounted at `/workspace`:
+### Common development commands
 
-    make shell
+```bash
+make format
+make test
+```
 
-Configure and build NGINX with this module in your current environment. Use a
-shell inside the development container if you want the containerized toolchain.
+### Docker Validation Config
 
-    make nginx-build
-
-Print the resulting `nginx -V`:
-
-    make nginx-version
-
-Format the module source file:
-
-    make format
-
-Run the test suite after building:
-
-    make test
-
-
-Configuration directives (same location syntax)
-===============================================
-fastcgi_cache_purge
--------------------
-* **syntax**: `fastcgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
-* **default**: `none`
-* **context**: `http`, `server`, `location`
-
-Allow purging of selected pages from `FastCGI`'s cache.
-
-
-proxy_cache_purge
------------------
-* **syntax**: `proxy_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
-* **default**: `none`
-* **context**: `http`, `server`, `location`
-
-Allow purging of selected pages from `proxy`'s cache.
-
-
-scgi_cache_purge
-----------------
-* **syntax**: `scgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
-* **default**: `none`
-* **context**: `http`, `server`, `location`
-
-Allow purging of selected pages from `SCGI`'s cache.
-
-
-uwsgi_cache_purge
------------------
-* **syntax**: `uwsgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
-* **default**: `none`
-* **context**: `http`, `server`, `location`
-
-Allow purging of selected pages from `uWSGI`'s cache.
-
-
-Configuration directives (separate location syntax)
-===================================================
-fastcgi_cache_purge
--------------------
-* **syntax**: `fastcgi_cache_purge zone_name key [soft]`
-* **default**: `none`
-* **context**: `location`
-
-Sets area and key used for purging selected pages from `FastCGI`'s cache.
-
-
-proxy_cache_purge
------------------
-* **syntax**: `proxy_cache_purge zone_name key [soft]`
-* **default**: `none`
-* **context**: `location`
-
-Sets area and key used for purging selected pages from `proxy`'s cache.
-
-
-scgi_cache_purge
-----------------
-* **syntax**: `scgi_cache_purge zone_name key [soft]`
-* **default**: `none`
-* **context**: `location`
-
-Sets area and key used for purging selected pages from `SCGI`'s cache.
-
-
-uwsgi_cache_purge
------------------
-* **syntax**: `uwsgi_cache_purge zone_name key [soft]`
-* **default**: `none`
-* **context**: `location`
-
-Sets area and key used for purging selected pages from `uWSGI`'s cache.
-
-Configuration directives (Optional)
-===================================================
-
-cache_purge_response_type
------------------
-* **syntax**: `cache_purge_response_type html|json|xml|text`
-* **default**: `html`
-* **context**: `http`, `server`, `location`
-
-Sets a response type of purging result.
-
-
-
-Partial Keys
-============
-Sometimes it's not possible to pass the exact key cache to purge a page. For example; when the content of a cookie or the params are part of the key.
-You can specify a partial key adding an asterisk at the end of the URL.
-
-    curl -X PURGE /page*
-
-The asterisk must be the last character of the key, so you **must** put the $uri variable at the end.
-
-
-Soft Purge
-==========
-Adding the `soft` parameter expires matching cached entries in place instead of
-deleting them outright.
-
-- Exact-key soft purge marks the cached entry as expired, so the next request is
-    handled as `EXPIRED` rather than a deletion-driven `MISS`.
-- Wildcard soft purge applies the same expiration behavior to all matching keys.
-- `purge_all` can also be combined with `soft` to expire every cached entry in a
-    zone without removing the underlying cache files immediately.
-
-For wildcard and `purge_all` soft purges, the module expires both the cache-file
-header on disk and the matching shared-memory cache node so the next lookup is
-treated as expired consistently.
-
-
-
-Sample configuration (same location syntax)
-===========================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-                proxy_cache_purge  PURGE from 127.0.0.1;
-            }
-        }
-    }
-
-
-Sample configuration (same location syntax - soft purge)
-========================================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-                proxy_cache_purge  PURGE soft from 127.0.0.1;
-            }
-        }
-    }
-
-
-Sample configuration (same location syntax - purge all cached files)
-====================================================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-                proxy_cache_purge  PURGE purge_all from 127.0.0.1 192.168.0.0/8;
-            }
-        }
-    }
-
-
-Sample configuration (separate location syntax)
-===============================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-            }
-
-            location ~ /purge(/.*) {
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$1$is_args$args";
-            }
-        }
-    }
-
-
-Sample configuration (separate location syntax - soft purge)
-============================================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-            }
-
-            location ~ /purge(/.*) {
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache_purge  tmpcache "$1$is_args$args" soft;
-            }
-        }
-    }
-
-Sample configuration (Optional)
-===============================================
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
-
-        cache_purge_response_type text;
-
-        server {
-
-            cache_purge_response_type json;
-
-            location / { #json
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-            }
-
-            location ~ /purge(/.*) { #xml
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$1$is_args$args";
-                cache_purge_response_type xml;
-            }
-
-            location ~ /purge2(/.*) { # json
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$1$is_args$args";
-            }
-        }
-
-        server {
-
-            location / { #text
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$uri$is_args$args";
-            }
-
-            location ~ /purge(/.*) { #text
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$1$is_args$args";
-            }
-
-            location ~ /purge2(/.*) { #html
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$1$is_args$args";
-                cache_purge_response_type html;
-            }
-        }
-    }
-
-
-
-Solve problems
-==============
-* Enabling [`gzip_vary`](https://nginx.org/r/gzip_vary) can lead to different results when clearing, when enabling it, you may have problems clearing the cache. For reliable operation, you can disable [`gzip_vary`](https://nginx.org/r/gzip_vary) inside the location [#20](https://github.com/nginx-modules/ngx_cache_purge/issues/20).
-
-
-Testing
-=======
-`ngx_cache_purge` comes with complete test suite based on [Test::Nginx](http://github.com/agentzh/test-nginx).
-
-You can test it by running:
-
-`$ make test`
-
-
-Docker Validation Config
-========================
-For manual validation inside the development container, the repository includes
-an example nginx configuration at `examples/docker-validation.conf`.
+For manual validation inside the development container, the repository includes an example nginx configuration at `examples/docker-validation.conf`.
 
 It provides separate locations for these behaviors:
 
@@ -336,104 +358,144 @@ It provides separate locations for these behaviors:
 - wildcard soft purge (`/wild`)
 - `purge_all` soft purge (`/purge_all`)
 - separate-location `zone key soft` syntax (`/separate` and `/purge_separate/...`)
+- cache-tag soft purge by `Surrogate-Key` or `Cache-Tag` (`/tagged/...`)
 
 Start it inside the container after building nginx:
 
-    make shell
-    make nginx-build
-    rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp
-    mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
-    /opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+```bash
+make shell
+make nginx-build
+rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_demo_tags.sqlite
+mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
+/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+```
 
 Exact-key soft purge flow:
 
-    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
-    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
-    curl -i -X PURGE 'http://127.0.0.1:8080/soft/item?t=soft'
-    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
-    curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+```bash
+curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+curl -i -X PURGE 'http://127.0.0.1:8080/soft/item?t=soft'
+curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+curl -i 'http://127.0.0.1:8080/soft/item?t=soft'
+```
 
-Expected `X-Cache-Status` values are `MISS`, `HIT`, purge `200`, `EXPIRED`,
-then `HIT`.
+Expected `X-Cache-Status` values are `MISS`, `HIT`, purge `200`, `EXPIRED`, then `HIT`.
 
 `proxy_cache_use_stale` flow:
 
-    curl -i 'http://127.0.0.1:8080/stale/item?t=demo'
-    curl -i -X PURGE 'http://127.0.0.1:8080/stale/item?t=demo'
-    curl -i -H 'X-Origin-Fail: 1' 'http://127.0.0.1:8080/stale/item?t=demo'
+```bash
+curl -i 'http://127.0.0.1:8080/stale/item?t=demo'
+curl -i -X PURGE 'http://127.0.0.1:8080/stale/item?t=demo'
+curl -i -H 'X-Origin-Fail: 1' 'http://127.0.0.1:8080/stale/item?t=demo'
+```
 
-The final request should return cached content with `X-Cache-Status: STALE`
-because the expired entry exists but the origin is forced to return `500`.
+The final request should return cached content with `X-Cache-Status: STALE` because the expired entry exists but the origin is forced to return `500`.
 
 Wildcard soft purge flow:
 
-    curl -i 'http://127.0.0.1:8080/wild/pass-one'
-    curl -i 'http://127.0.0.1:8080/wild/pass-two'
-    curl -i 'http://127.0.0.1:8080/wild/other'
-    curl -i -X PURGE 'http://127.0.0.1:8080/wild/pass*'
-    curl -i 'http://127.0.0.1:8080/wild/pass-one'
-    curl -i 'http://127.0.0.1:8080/wild/pass-two'
-    curl -i 'http://127.0.0.1:8080/wild/other'
+```bash
+curl -i 'http://127.0.0.1:8080/wild/pass-one'
+curl -i 'http://127.0.0.1:8080/wild/pass-two'
+curl -i 'http://127.0.0.1:8080/wild/other'
+curl -i -X PURGE 'http://127.0.0.1:8080/wild/pass*'
+curl -i 'http://127.0.0.1:8080/wild/pass-one'
+curl -i 'http://127.0.0.1:8080/wild/pass-two'
+curl -i 'http://127.0.0.1:8080/wild/other'
+```
 
-The two `pass*` entries should come back as `EXPIRED`, while `/wild/other`
-should remain `HIT`.
+The two `pass*` entries should come back as `EXPIRED`, while `/wild/other` should remain `HIT`.
 
 `purge_all` soft purge flow:
 
-    curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
-    curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
-    curl -i -X PURGE 'http://127.0.0.1:8080/purge_all/anything'
-    curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
-    curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
+```bash
+curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
+curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
+curl -i -X PURGE 'http://127.0.0.1:8080/purge_all/anything'
+curl -i 'http://127.0.0.1:8080/purge_all/one?t=1'
+curl -i 'http://127.0.0.1:8080/purge_all/two?t=2'
+```
 
 The post-purge requests should return `X-Cache-Status: EXPIRED`.
 
 Separate-location soft purge flow:
 
-    curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
-    curl -i -X PURGE 'http://127.0.0.1:8080/purge_separate/separate/item?t=sep'
-    curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
+```bash
+curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
+curl -i -X PURGE 'http://127.0.0.1:8080/purge_separate/separate/item?t=sep'
+curl -i 'http://127.0.0.1:8080/separate/item?t=sep'
+```
 
 The final request should return `X-Cache-Status: EXPIRED`.
 
+Cache-tag soft purge flow using `Surrogate-Key`:
+
+```bash
+curl -i 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/b'
+curl -i 'http://127.0.0.1:8080/tagged/c'
+curl -i -X PURGE -H 'Surrogate-Key: group-one' 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/b'
+curl -i 'http://127.0.0.1:8080/tagged/c'
+```
+
+The two `group-one` entries should come back as `EXPIRED`, while `/tagged/c` should remain `HIT`.
+
+Cache-tag soft purge flow using `Cache-Tag`:
+
+```bash
+curl -i 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/b'
+curl -i 'http://127.0.0.1:8080/tagged/c'
+curl -i -X PURGE -H 'Cache-Tag: shared' 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/a'
+curl -i 'http://127.0.0.1:8080/tagged/b'
+curl -i 'http://127.0.0.1:8080/tagged/c'
+```
+
+The two `shared` entries should come back as `EXPIRED`, while `/tagged/c` should remain `HIT`.
+
 Stop the validation nginx instance with:
 
-    kill "$(cat /tmp/ngx-cache-purge-validation.pid)"
+```bash
+kill "$(cat /tmp/ngx-cache-purge-validation.pid)"
+```
 
+## License
 
-License
-=======
-    Copyright (c) 2009-2014, FRiCKLE <info@frickle.com>
-    Copyright (c) 2009-2014, Piotr Sikora <piotr.sikora@frickle.com>
-    All rights reserved.
+```text
+Copyright (c) 2009-2014, FRiCKLE <info@frickle.com>
+Copyright (c) 2009-2014, Piotr Sikora <piotr.sikora@frickle.com>
+All rights reserved.
 
-    This project was fully funded by yo.se.
+This project was fully funded by yo.se.
 
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-    1. Redistributions of source code must retain the above copyright
-       notice, this list of conditions and the following disclaimer.
-    2. Redistributions in binary form must reproduce the above copyright
-       notice, this list of conditions and the following disclaimer in the
-       documentation and/or other materials provided with the distribution.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+1. Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+2. Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
 
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+HOLDERS OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
 
+## See Also
 
-See also
-========
-- [ngx_slowfs_cache](http://github.com/FRiCKLE/ngx_slowfs_cache).
+- [ngx_slowfs_cache](http://github.com/FRiCKLE/ngx_slowfs_cache)
 - http://nginx.org/en/docs/http/ngx_http_fastcgi_module.html#purger
 - http://nginx.org/en/docs/http/ngx_http_fastcgi_module.html#fastcgi_cache_purge
 - https://github.com/wandenberg/nginx-selective-cache-purge-module

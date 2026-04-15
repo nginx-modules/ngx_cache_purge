@@ -20,6 +20,7 @@ RUN apt-get update \
         dos2unix \
         git \
         libpcre3-dev \
+        libsqlite3-dev \
         libssl-dev \
         perl \
         zlib1g-dev \

@@ -40,7 +40,7 @@ jobs:
       - name: Lint code
         run: |
           docker compose run --rm dev make format
-          git diff --exit-code -- ngx_cache_purge_module.c
+          git diff --exit-code -- *.c
 
       - name: Run tests
         run: docker compose run --rm dev make test
