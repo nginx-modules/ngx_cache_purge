@@ -19,7 +19,7 @@ CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_module.c \
 $ngx_addon_dir/ngx_cache_purge_tag.c \
 $ngx_addon_dir/ngx_cache_purge_tag_store_sqlite.c \
 $ngx_addon_dir/ngx_cache_purge_tag_watch_linux.c"
-CORE_LIBS="$CORE_LIBS -lsqlite3"
+ngx_module_libs="-lsqlite3"
 
 if [ -n "$ngx_module_link" ]; then
     ngx_module_type=HTTP
@@ -28,6 +28,7 @@ if [ -n "$ngx_module_link" ]; then
 
     . auto/module
 else
+    CORE_LIBS="$CORE_LIBS $ngx_module_libs"
     HTTP_MODULES="$HTTP_MODULES $ngx_addon_name"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $CACHE_PURGE_SRCS"
 fi

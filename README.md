@@ -81,26 +81,38 @@ curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' 'http://127.0.0.1:8080/t
 
 ## Installation Instructions
 
-You need to build NGINX with this repository as an extra module via `--add-module`; it is not bundled with upstream NGINX.
+You need to build NGINX with this repository as an extra module via `--add-module` or `--add-dynamic-module`; it is not bundled with upstream NGINX.
 
-### Recommended: use the included development container
+For most users, the recommended installation path is to build a dynamic module against the exact NGINX version already installed on the target system.
 
-- The repository includes a Debian-based build environment with NGINX source, SQLite development headers, and `Test::Nginx`.
-- Open a shell in the container with the repository mounted at `/workspace`.
-- Configure and build NGINX with this module.
-- Print the resulting build flags if you want to verify the build.
+### Recommended: build a dynamic module for your installed NGINX version
+
+- Check the target version with `nginx -v`.
+- Download the matching NGINX source release.
+- Build this repository as a dynamic module against that exact source tree.
+- Copy the resulting `.so` into your NGINX modules directory and load it with `load_module`.
+
+For example, if `nginx -v` reports `nginx/1.28.1`:
 
 ```bash
-make shell
-make nginx-build
-make nginx-version
+cd ~/build/nginx-cache-purge
+wget https://nginx.org/download/nginx-1.28.1.tar.gz
+tar xf nginx-1.28.1.tar.gz
+cd nginx-1.28.1
+
+./configure \
+    --with-compat \
+    --with-ld-opt="-lsqlite3" \
+    --add-dynamic-module=../ngx_cache_purge
+
+make modules
 ```
 
-### Alternative: build against your own NGINX source tree
+This produces `objs/ngx_http_cache_purge_module.so`, which you can then copy into your nginx modules directory and load with `load_module`.
 
-- Download and extract the NGINX source version you want to build against.
-- Install the usual NGINX build dependencies plus SQLite development headers.
-- Run `./configure` from the NGINX source tree and point `--add-module` at this repository.
+### Alternative: build NGINX from source with this module
+
+If you are building your own NGINX binary from source, point `./configure` at this repository with `--add-module` for a static build or `--add-dynamic-module` for a dynamic build.
 
 ```bash
 ./configure \
@@ -111,9 +123,11 @@ make
 make install
 ```
 
-The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library.
+For a dynamic module build in this workflow, replace `--add-module` with `--add-dynamic-module` and use `make modules`.
 
-If you want formatting, tests, or the manual validation setup, see [Development](#development).
+The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library. The resulting dynamic module also depends on the system `libsqlite3` at runtime.
+
+If you want the included containerized build environment, tests, or the manual validation setup, see [Development](#development).
 
 ## Configuration Reference
 
@@ -339,6 +353,16 @@ The repository includes a containerized build environment with:
 - Debian-based build tooling for NGINX modules
 - downloaded NGINX source in `/opt/nginx-src/nginx-$NGINX_VERSION`
 - `Test::Nginx` installed from `openresty/test-nginx`
+
+### Development container
+
+Use the included container for development, testing, and manual validation. It is not the primary installation path for matching a system-provided NGINX package.
+
+```bash
+make shell
+make nginx-build
+make nginx-version
+```
 
 ### Common development commands
 
