@@ -19,6 +19,18 @@ our $http_config_hard = <<'_EOC_';
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_hard.sqlite;
 _EOC_
 
+our $http_config_cache_tag = <<'_EOC_';
+    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_cache_tag.sqlite;
+_EOC_
+
+our $http_config_override = <<'_EOC_';
+    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_override.sqlite;
+_EOC_
+
 our $http_config_restart = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
@@ -45,6 +57,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE soft from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -55,6 +68,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE soft from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -65,6 +79,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE soft from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -95,6 +110,7 @@ our $config_hard = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -113,6 +129,7 @@ our $config_forbidden = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE soft from 1.0.0.0/8;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -131,6 +148,7 @@ our $config_plain = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE soft from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
 
@@ -149,6 +167,7 @@ our $config_custom = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  PURGE from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
         cache_tag_headers  Edge-Tag Custom-Group;
     }
@@ -213,7 +232,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 4: soft purge by surrogate key with bootstrap lookup
+=== TEST 4: headerless surrogate-key purge on soft location uses configured mode
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -275,11 +294,41 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 8: soft purge by cache-tag comma parsing
---- http_config eval: $::http_config
+=== TEST 8: prepare cache-tag alpha entry on fresh index
+--- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
-PURGE /proxy/a
+GET /proxy/a?t=cache-tag
+--- error_code: 200
+--- response_headers
+X-Cache-Status: MISS
+--- response_body: origin-a
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 9: prepare cache-tag beta entry on fresh index
+--- http_config eval: $::http_config_cache_tag
+--- config eval: $::config_soft
+--- request
+GET /proxy/b?t=cache-tag
+--- error_code: 200
+--- response_headers
+X-Cache-Status: MISS
+--- response_body: origin-b
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 10: headerless cache-tag purge on soft location uses configured mode
+--- http_config eval: $::http_config_cache_tag
+--- config eval: $::config_soft
+--- request
+PURGE /proxy/a?t=cache-tag
 --- more_headers
 Cache-Tag: alpha, missing-tag
 --- error_code: 200
@@ -292,11 +341,11 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 9: cache-tag purge expires matching alpha entry
---- http_config eval: $::http_config
+=== TEST 11: headerless cache-tag purge expires matching alpha entry
+--- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
-GET /proxy/a
+GET /proxy/a?t=cache-tag
 --- error_code: 200
 --- response_headers
 X-Cache-Status: EXPIRED
@@ -307,11 +356,11 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 10: cache-tag purge does not touch unrelated beta entry
---- http_config eval: $::http_config
+=== TEST 12: cache-tag purge does not touch unrelated beta entry
+--- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
-GET /proxy/b
+GET /proxy/b?t=cache-tag
 --- error_code: 200
 --- response_headers
 X-Cache-Status: HIT
@@ -384,7 +433,55 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 15: prepare forbidden tag purge entry
+=== TEST 15: prepare hard-tagged cache entry for soft override
+--- http_config eval: $::http_config_override
+--- config eval: $::config_hard
+--- request
+GET /proxy/a?t=hard-soft
+--- error_code: 200
+--- response_headers
+X-Cache-Status: MISS
+--- response_body: origin-a
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 16: override header softens hard cache-tag purge
+--- http_config eval: $::http_config_override
+--- config eval: $::config_hard
+--- request
+PURGE /proxy/a?t=hard-soft
+--- more_headers
+Cache-Tag: hard-only
+X-Purge-Mode: soft
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 17: soft-overridden hard cache-tag purge expires the entry
+--- http_config eval: $::http_config_override
+--- config eval: $::config_hard
+--- request
+GET /proxy/a?t=hard-soft
+--- error_code: 200
+--- response_headers
+X-Cache-Status: EXPIRED
+--- response_body: origin-a
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 18: prepare forbidden tag purge entry
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
@@ -399,7 +496,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 16: forbidden tag purge is rejected
+=== TEST 19: forbidden tag purge is rejected
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
@@ -416,7 +513,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 17: forbidden tag purge leaves cached entry as hit
+=== TEST 20: forbidden tag purge leaves cached entry as hit
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
@@ -431,7 +528,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 18: prepare restart-tagged entry for persisted bootstrap test
+=== TEST 21: prepare restart-tagged entry for persisted bootstrap test
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
@@ -446,13 +543,14 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 19: first tag purge bootstraps the zone index
+=== TEST 22: first tag purge bootstraps the zone index
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
 PURGE /proxy/a?t=restart
 --- more_headers
 Surrogate-Key: group-one
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_body_like: Successful purge
 --- grep_error_log eval
@@ -464,13 +562,14 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 20: second tag purge reuses persisted index after restart
+=== TEST 23: second tag purge reuses persisted index after restart
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
 PURGE /proxy/a?t=restart
 --- more_headers
 Surrogate-Key: group-one
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_body_like: Successful purge
 --- grep_error_log eval
@@ -482,7 +581,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 21: prepare watched entry for plain purge fallback
+=== TEST 24: prepare watched entry for plain purge fallback
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -497,7 +596,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 22: plain PURGE still works when cache_tag_watch is enabled
+=== TEST 25: plain PURGE without override header still works when cache_tag_watch is enabled
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -512,7 +611,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 23: plain PURGE fallback performs the configured soft purge
+=== TEST 26: plain PURGE fallback uses configured soft mode by default
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -527,7 +626,54 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 24: prepare custom-header tagged cache entry
+=== TEST 27: prepare watched entry for soft override fallback
+--- http_config eval: $::http_config_plain
+--- config eval: $::config_plain
+--- request
+GET /proxy/plain?t=soft
+--- error_code: 200
+--- response_headers
+X-Cache-Status: MISS
+--- response_body: origin-plain
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 28: explicit soft override preserves plain PURGE fallback behavior
+--- http_config eval: $::http_config_plain
+--- config eval: $::config_plain
+--- request
+PURGE /proxy/plain?t=soft
+--- more_headers
+X-Purge-Mode: soft
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 29: plain PURGE fallback honors explicit soft override
+--- http_config eval: $::http_config_plain
+--- config eval: $::config_plain
+--- request
+GET /proxy/plain?t=soft
+--- error_code: 200
+--- response_headers
+X-Cache-Status: EXPIRED
+--- response_body: origin-plain
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+
+
+
+=== TEST 30: prepare custom-header tagged cache entry
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -542,7 +688,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 25: serve custom-header tagged entry from cache
+=== TEST 31: serve custom-header tagged entry from cache
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -557,7 +703,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 26: custom cache_tag_headers are matched during purge
+=== TEST 32: custom cache_tag_headers are matched during purge
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -574,7 +720,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 27: custom cache_tag_headers are used for cached-response indexing
+=== TEST 33: custom cache_tag_headers are used for cached-response indexing
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request

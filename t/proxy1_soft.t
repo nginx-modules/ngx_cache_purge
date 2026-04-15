@@ -28,33 +28,40 @@ our $config = <<'_EOC_';
 
     location ~ /purge_proxy(/.*) {
         proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  html;
     }
 
     location ~ /purge_proxy_json(/.*) {
         proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_proxy_xml(/.*) {
         proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  xml;
     }
 
     location ~ /purge_proxy_text(/.*) {
         proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  text;
     }
 
     location ~ /purge_fastcgi(/.*) {
         fastcgi_cache_purge        fastcgi_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_scgi(/.*) {
         scgi_cache_purge           scgi_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_uwsgi(/.*) {
         uwsgi_cache_purge          uwsgi_cache $1$is_args$args soft;
+        cache_purge_mode_header    X-Purge-Mode;
     }
 
     location = /etc/passwd {
@@ -92,6 +99,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- config eval: $::config
 --- request
 PURGE /purge_proxy/proxy/passwd?t=proxy-soft-html
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: text/html
@@ -142,6 +151,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- config eval: $::config
 --- request
 PURGE /purge_proxy_json/proxy/passwd?t=proxy-soft-json
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: application/json
@@ -175,6 +186,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- config eval: $::config
 --- request
 PURGE /purge_proxy_xml/proxy/passwd?t=proxy-soft-xml
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: text/xml
@@ -208,6 +221,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- config eval: $::config
 --- request
 PURGE /purge_proxy_text/proxy/passwd?t=proxy-soft-text
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain

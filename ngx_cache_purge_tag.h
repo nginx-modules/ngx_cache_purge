@@ -47,6 +47,7 @@ typedef struct {
     ngx_uint_t                    resptype;
     ngx_flag_t                    cache_tag_watch;
     ngx_array_t                  *cache_tag_headers;
+    ngx_str_t                     purge_mode_header;
 } ngx_http_cache_purge_loc_conf_t;
 
 typedef struct {
@@ -203,5 +204,8 @@ ngx_int_t ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
 ngx_int_t ngx_http_cache_tag_flush_pending(ngx_cycle_t *cycle);
 void ngx_http_cache_tag_shutdown_runtime(void);
 #endif
+
+ngx_int_t ngx_http_cache_purge_request_mode(ngx_http_request_t *r,
+                                            ngx_flag_t default_soft);
 
 #endif
