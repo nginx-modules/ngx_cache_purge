@@ -262,7 +262,7 @@ The module can also purge cached objects by cache tag, similar to `Surrogate-Key
 When `cache_tag_index` and `cache_tag_watch` are enabled:
 
 - cached response files are parsed for the headers listed in `cache_tag_headers`
-- `Surrogate-Key` values are parsed as whitespace-delimited tags
+- `Surrogate-Key` values are parsed as comma- or whitespace-delimited tags
 - `Cache-Tag` values are parsed as comma- or whitespace-delimited tags
 - the module stores a tag-to-cache-file index in SQLite
 - on Linux, a worker-owned `inotify` watcher keeps the index up to date as cache files are created, replaced, or removed
