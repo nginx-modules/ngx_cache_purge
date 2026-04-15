@@ -235,6 +235,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
     ngx_str_t                        *path;
     ngx_uint_t                        i;
     ngx_int_t                         rc, purged;
+    ngx_int_t                         soft;
 #if (NGX_LINUX)
     ngx_http_cache_tag_store_t       *reader, *writer;
 #endif
@@ -252,6 +253,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
     }
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
+    soft = ngx_http_cache_purge_request_mode(r, cplcf->conf->soft);
     zone = NULL;
 #if (NGX_LINUX)
     zone = ngx_http_cache_tag_lookup_zone(cache);
@@ -325,7 +327,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
     purged = 0;
     path = paths->elts;
     for (i = 0; i < paths->nelts; i++) {
-        rc = ngx_http_cache_purge_by_path(cache, &path[i], cplcf->conf->soft,
+        rc = ngx_http_cache_purge_by_path(cache, &path[i], soft,
                                           r->connection->log);
         if (rc == NGX_OK) {
             purged++;
@@ -334,7 +336,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
             return NGX_ERROR;
         }
 
-        if (rc == NGX_OK && cplcf->conf->soft) {
+        if (rc == NGX_OK && soft) {
             continue;
         }
 

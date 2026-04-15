@@ -61,6 +61,7 @@ http {
             proxy_cache        tmpcache;
             proxy_cache_key    "$uri$is_args$args";
             proxy_cache_purge  PURGE soft from 127.0.0.1;
+            cache_purge_mode_header X-Purge-Mode;
             cache_tag_watch    on;
         }
     }
@@ -71,12 +72,14 @@ That unlocks tag-based requests such as:
 
 ```bash
 curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' 'http://127.0.0.1:8080/tagged/item'
+curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' -H 'X-Purge-Mode: soft' 'http://127.0.0.1:8080/tagged/item'
 ```
 
 Or surrogate-key requests such as:
 
 ```bash
 curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' 'http://127.0.0.1:8080/tagged/item'
+curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' -H 'X-Purge-Mode: soft' 'http://127.0.0.1:8080/tagged/item'
 ```
 
 ## Installation Instructions
@@ -209,6 +212,21 @@ Set the cache zone and key used for purging selected pages from `uWSGI` cache.
 
 Set the response type returned after a purge.
 
+#### `cache_purge_mode_header`
+
+- **syntax**: `cache_purge_mode_header <header>`
+- **default**: `none`
+- **context**: `http`, `server`, `location`
+
+Enable request-time soft/hard purge override using the named request header. When unset, purge mode is controlled only by the configured `soft` flag.
+
+If configured:
+
+- header value `soft`, `true`, or `1` forces a soft purge
+- any other present value forces a hard purge
+- if the header is absent, the configured purge mode is used
+- `purge_all` ignores this override and keeps its configured behavior
+
 #### `cache_tag_index`
 
 - **syntax**: `cache_tag_index sqlite <path>`
@@ -247,7 +265,11 @@ The asterisk must be the last character of the key, so you must put the `$uri` v
 
 ## Soft Purge
 
-Adding the `soft` parameter expires matching cached entries in place instead of deleting them outright.
+By default, soft purge behavior is still controlled by the configured `soft` parameter.
+
+If `cache_purge_mode_header` is configured, exact-key, wildcard, and cache-tag / surrogate-key purges can override that mode per request. A value of `soft`, `true`, or `1` forces a soft purge; any other present value forces a hard purge.
+
+The `soft` config parameter still controls `purge_all`, which does not honor `cache_purge_mode_header`.
 
 - Exact-key soft purge marks the cached entry as expired, so the next request is handled as `EXPIRED` rather than a deletion-driven `MISS`.
 - Wildcard soft purge applies the same expiration behavior to all matching keys.
@@ -272,13 +294,15 @@ To purge by tag, send a normal `PURGE` request and include one or more tag heade
 ```bash
 curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' 'http://127.0.0.1/tagged/item'
 curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' 'http://127.0.0.1/tagged/item'
+curl -i -X PURGE -H 'Surrogate-Key: article-42 group-a' -H 'X-Purge-Mode: soft' 'http://127.0.0.1/tagged/item'
+curl -i -X PURGE -H 'Cache-Tag: article-42, group-a' -H 'X-Purge-Mode: soft' 'http://127.0.0.1/tagged/item'
 ```
 
 All supplied tags are matched with OR semantics. If any cached file is indexed under any supplied tag, it will be purged.
 
 If a watched purge location receives a plain `PURGE` request without any of the configured tag headers, the module falls back to the normal key-based purge behavior for that location.
 
-If the purge location uses `soft`, tag purges also behave as soft purges: the matching cache entries are marked expired in place instead of being deleted.
+For tag-based purges, the configured `cache_purge_mode_header` can switch a request between soft and hard purge. Without that header, the configured purge mode is used.
 
 Notes:
 

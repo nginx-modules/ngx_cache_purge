@@ -5,7 +5,7 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4 + 16 * 1);
+plan tests => repeat_each() * (blocks() * 4 + 23 * 1);
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
@@ -21,6 +21,7 @@ our $config = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
 
         proxy_cache_purge  PURGE soft from 127.0.0.1;
+        cache_purge_mode_header X-Purge-Mode;
     }
 
     location = /etc/passwd {
@@ -102,7 +103,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 3: soft purge cached entry
+=== TEST 3: purge without override header uses configured soft mode
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -152,7 +153,94 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 6: prepare first wildcard match
+=== TEST 6: prepare soft-header cache entry
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/passwd?t=soft-header
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: MISS
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 7: explicit soft override preserves soft purge
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+PURGE /proxy/passwd?t=soft-header
+--- more_headers
+X-Purge-Mode: soft
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 8: next request after soft-purge is expired
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/passwd?t=soft-header
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: EXPIRED
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 9: hard override removes cached entry
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+PURGE /proxy/passwd?t=soft-header
+--- more_headers
+X-Purge-Mode: hard
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 10: hard override removes the entry
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/passwd?t=soft-header
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: MISS
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 11: prepare first wildcard match
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -169,7 +257,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 7: prepare second wildcard match
+=== TEST 12: prepare second wildcard match
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -186,7 +274,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 8: prepare unrelated cache entry
+=== TEST 13: prepare unrelated cache entry
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -203,7 +291,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 9: soft purge wildcard entries
+=== TEST 14: headerless wildcard purge uses configured soft mode
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -219,7 +307,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 10: first wildcard target is expired
+=== TEST 15: first wildcard target is expired
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -236,7 +324,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 11: second wildcard target is expired
+=== TEST 16: second wildcard target is expired
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -253,7 +341,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 12: unrelated entry remains a cache hit
+=== TEST 17: unrelated entry remains a cache hit
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -270,11 +358,11 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 13: prepare first purge_all target
+=== TEST 18: prepare first soft wildcard target
 --- http_config eval: $::http_config
---- config eval: $::config_purge_all
+--- config eval: $::config
 --- request
-GET /proxy/passwd?t=all
+GET /proxy/pass-soft-1
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -287,11 +375,11 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 14: prepare second purge_all target
+=== TEST 19: prepare second soft wildcard target
 --- http_config eval: $::http_config
---- config eval: $::config_purge_all
+--- config eval: $::config
 --- request
-GET /proxy/shadow?t=all
+GET /proxy/pass-soft-2
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -304,11 +392,13 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 15: soft purge_all expires cached entries in place
+=== TEST 20: explicit soft override on wildcard entries succeeds
 --- http_config eval: $::http_config
---- config eval: $::config_purge_all
+--- config eval: $::config
 --- request
-PURGE /proxy/any
+PURGE /proxy/pass-soft-*
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: text/html
@@ -320,7 +410,93 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 16: purge_all target is served as expired
+=== TEST 21: first soft wildcard target becomes expired
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/pass-soft-1
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: EXPIRED
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 22: second soft wildcard target becomes expired
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/pass-soft-2
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: EXPIRED
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 23: prepare first purge_all target
+--- http_config eval: $::http_config
+--- config eval: $::config_purge_all
+--- request
+GET /proxy/passwd?t=all
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: MISS
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 24: prepare second purge_all target
+--- http_config eval: $::http_config
+--- config eval: $::config_purge_all
+--- request
+GET /proxy/shadow?t=all
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: MISS
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 25: purge_all ignores override header and keeps configured soft behavior
+--- http_config eval: $::http_config
+--- config eval: $::config_purge_all
+--- request
+PURGE /proxy/any
+--- more_headers
+X-Purge-Mode: hard
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 26: purge_all target is served as expired
 --- http_config eval: $::http_config
 --- config eval: $::config_purge_all
 --- request
@@ -337,7 +513,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 17: second purge_all target is served as expired
+=== TEST 27: second purge_all target is served as expired
 --- http_config eval: $::http_config
 --- config eval: $::config_purge_all
 --- request
@@ -354,7 +530,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 18: prepare access-controlled soft purge entry
+=== TEST 28: prepare access-controlled soft purge entry
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
@@ -371,11 +547,13 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 19: soft purge still honors access controls
+=== TEST 29: override header still honors access controls
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
 PURGE /proxy/passwd?t=forbidden
+--- more_headers
+X-Purge-Mode: soft
 --- error_code: 403
 --- response_headers
 Content-Type: text/html
@@ -387,7 +565,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 20: forbidden soft purge leaves entry as hit
+=== TEST 30: forbidden soft purge leaves entry as hit
 --- http_config eval: $::http_config
 --- config eval: $::config_forbidden
 --- request
