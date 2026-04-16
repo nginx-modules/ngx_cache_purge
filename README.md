@@ -316,6 +316,93 @@ Notes:
 - The cache watcher keeps the index fresh during normal operation.
 - A cold-start bootstrap fallback scans the configured cache tree if a tag purge arrives before a zone has been indexed.
 
+## Cache Index Architecture
+
+This section describes how the cache index works internally. It is not required reading for normal use, but is useful when diagnosing storage growth, planning capacity, or modifying the module.
+
+### Overview
+
+The cache index maps cache tags to the physical file paths of cached responses. When a `PURGE` request arrives with tag headers, the module looks up all paths associated with those tags in the index and purges each file. Without an index there would be no efficient way to find which files carry a given tag across a potentially large cache directory tree.
+
+### Index population
+
+The index is built and kept current through two mechanisms that work together:
+
+**inotify watcher (Linux only).** When `cache_tag_watch on` is set, one worker process (the owner) opens an `inotify` watch on the cache directory tree. When other workers create or replace a cache file they enqueue a write operation into a shared-memory ring buffer. The owner worker drains this queue on a 10 ms timer and writes the tag associations to the index backend. Delete events are handled the same way.
+
+**Cold-start bootstrap.** If a tag `PURGE` request arrives before a zone has been indexed — for example after a restart — the module scans the entire cache directory tree, reads the cached response headers from every file it finds, extracts tags, and writes all associations to the index before completing the purge. The result is recorded so subsequent requests skip the scan.
+
+**Tag extraction.** Both paths use the same extraction logic. The module reads the configured header names (`Surrogate-Key` and `Cache-Tag` by default) from the binary nginx cache file header and splits the value on commas and whitespace. Duplicate tags within a single response are deduplicated. The hard limit is 1000 tags per cached file.
+
+### Shared-memory write queue
+
+Workers communicate with the index-owning worker through a fixed-size ring buffer allocated in shared memory (2 MB zone, capacity 256 entries). Each entry holds an operation type (replace or delete), the zone name, and the full cache file path. If the buffer is full the operation is dropped and a warning is logged; the cache file itself is still served and purged normally, but that file's index entry may become stale until the next inotify event corrects it.
+
+### SQLite backend
+
+The SQLite file uses WAL journal mode and `SYNCHRONOUS = NORMAL` to balance durability and write throughput.
+
+**Tables**
+
+`cache_tag_entries` — one row per (zone, tag, path) combination:
+
+```sql
+CREATE TABLE cache_tag_entries (
+  zone  TEXT    NOT NULL,
+  tag   TEXT    NOT NULL,
+  path  TEXT    NOT NULL,
+  mtime INTEGER NOT NULL,
+  size  INTEGER NOT NULL,
+  PRIMARY KEY (zone, tag, path)
+);
+CREATE INDEX cache_tag_entries_lookup ON cache_tag_entries (zone, tag);
+```
+
+`cache_tag_zones` — one row per zone, tracks bootstrap state:
+
+```sql
+CREATE TABLE cache_tag_zones (
+  zone                TEXT    PRIMARY KEY,
+  bootstrap_complete  INTEGER NOT NULL DEFAULT 0,
+  last_bootstrap_at   INTEGER NOT NULL DEFAULT 0
+);
+```
+
+**Read path.** A single-tag lookup is `SELECT DISTINCT path FROM cache_tag_entries WHERE zone = ? AND tag = ?`, backed by the `(zone, tag)` index. A multi-tag lookup uses an `IN (?, ?, …)` clause over the same index; the maximum number of bind parameters is 32766.
+
+**Write path.** Each file update runs inside a `BEGIN IMMEDIATE` transaction: first a `DELETE` on `(zone, path)` removes stale entries, then one `INSERT OR REPLACE` per tag adds the new associations. Prepared statements are compiled once and reused.
+
+**Storage estimate.** Each row is approximately 200 bytes on disk. A cache holding 10 000 files with an average of 10 tags per file produces roughly 20 MB of index data.
+
+### Redis backend
+
+The Redis backend implements the RESP protocol directly without an external client library. It communicates over a single TCP connection (`host:port`) or a Unix socket, with optional password authentication and database selection.
+
+**Key structure**
+
+| Key | Type | Contents |
+|-----|------|----------|
+| `cache_tag:zone:<zone>` | Hash | `bootstrap_complete` (0 or 1), `last_bootstrap_at` (Unix timestamp) |
+| `cache_tag:tag:<zone>:<tag>` | Set | All cache file paths that carry this tag |
+| `cache_tag:file:<zone>:<path>` | Set | All tags associated with this file |
+| `cache_tag:filemeta:<zone>:<path>` | Hash | `mtime` and `size` for the cached file |
+
+**Read path.** A single-tag purge queries `SMEMBERS cache_tag:tag:<zone>:<tag>`. A multi-tag purge uses `SUNION cache_tag:tag:<zone>:<tag1> cache_tag:tag:<zone>:<tag2> …` to collect all matching paths in one round trip.
+
+**Write path.** When a file's tags are replaced the module first calls `SMEMBERS` on the file's tag set to get the old tags, issues `SREM` to remove the file path from each old tag set, then `SADD` to add it to each new tag set, rebuilds the file→tag set with `SADD`, and updates the metadata hash with `HMSET`. Deletes reverse the same steps. Commands within a batch are pipelined to reduce round-trip overhead. On a connection failure the module reconnects and retries up to two times before logging an error.
+
+**Storage estimate.** Redis memory is proportional to the total number of (tag, path) associations stored across all sets, plus the overhead of the file-keyed sets and metadata hashes. There is no separate index structure; the sets are the index.
+
+### Purge flow
+
+When a tag `PURGE` request is received:
+
+1. Tags are extracted from the request headers using the same tokenisation logic as indexing.
+2. The index is queried for all file paths associated with the supplied tags (OR semantics — any matching tag is sufficient).
+3. For each path the module applies the configured purge mode:
+   - **Soft purge** — the cache file is marked expired in the shared-memory cache node so the next request is served as `EXPIRED`. The index entry is queued for async cleanup.
+   - **Hard purge** — the cache file is deleted from disk immediately. The index delete is handed off to the owner worker via the shared-memory queue. A `200` response means the delete was accepted for processing, not necessarily already committed to the index backend.
+
 ## Configuration Examples
 
 Use these as compact starting points after Quick Start.
