@@ -1,0 +1,38 @@
+{
+  "defaults": {
+    "get.cache_hit_rate": {
+      "min": 0.85
+    }
+  },
+  "scenarios": {
+    "exact": {
+      "get.rps": {
+        "min": 3000
+      },
+      "get.latency_us.p95": {
+        "max": 30000
+      },
+      "purge.rps": {
+        "min": 9
+      }
+    },
+    "wild": {
+      "get.rps": {
+        "min": 2500
+      },
+      "get.latency_us.p95": {
+        "max": 40000
+      }
+    },
+    "tag-sqlite": {
+      "get.latency_us.p95": {
+        "max": 40000
+      }
+    },
+    "tag-redis": {
+      "get.latency_us.p95": {
+        "max": 40000
+      }
+    }
+  }
+}

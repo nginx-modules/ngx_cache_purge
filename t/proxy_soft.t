@@ -5,7 +5,7 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4 + 21 * 1);
+plan tests => repeat_each() * (blocks() * 4 + 22 * 1);
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
@@ -228,6 +228,73 @@ X-Cache-Status: MISS
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 --- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 10A: prepare entry for repeated soft purge on stale object
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+GET /proxy/passwd?t=soft-repeat
+--- error_code: 200
+--- response_headers
+Content-Type: text/plain
+X-Cache-Status: MISS
+--- response_body_like: root
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 5: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 10B: first soft purge marks entry stale
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+PURGE /proxy/passwd?t=soft-repeat
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 10C: second soft purge on stale entry does not stall cache updating
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+PURGE /proxy/passwd?t=soft-repeat
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+
+
+=== TEST 10D: hard purge on stale entry also clears update ownership
+--- http_config eval: $::http_config
+--- config eval: $::config
+--- request
+PURGE /proxy/passwd?t=soft-repeat
+--- more_headers
+X-Purge-Mode: hard
+--- error_code: 200
+--- response_headers
+Content-Type: text/html
+--- response_body_like: Successful purge
+--- timeout: 10
+--- no_error_log eval
+qr/\[(warn|error|crit|alert|emerg)\]/
+--- skip_nginx2: 4: < 0.8.3 or < 0.7.62
 
 
 

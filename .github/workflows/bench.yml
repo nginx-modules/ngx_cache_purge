@@ -1,0 +1,52 @@
+name: Bench
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: bench-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version:
+          - "1.26.3"
+          - "1.28.3"
+          - "1.29.8"
+
+    env:
+      NGINX_VERSION: ${{ matrix.nginx_version }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Build docker image
+        run: docker compose build
+
+      - name: Run benchmark suite
+        run: docker compose run --rm dev make bench-quick
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-nginx-${{ matrix.nginx_version }}
+          path: |
+            bench/results/latest/summary.json
+            bench/results/latest/summary.txt
+            bench/results/latest/*.json
+            bench/results/latest/*.log
+          if-no-files-found: error

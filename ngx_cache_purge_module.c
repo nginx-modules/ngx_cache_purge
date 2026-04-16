@@ -112,6 +112,8 @@ ngx_http_cache_purge_soft_path(ngx_http_file_cache_t *cache, ngx_str_t *path,
                                ngx_log_t *log);
 static ngx_int_t
 ngx_http_cache_purge_soft_header(ngx_str_t *path, ngx_log_t *log);
+static void
+ngx_http_cache_purge_release_updating(ngx_http_cache_t *c);
 static ngx_http_file_cache_node_t *
 ngx_http_cache_purge_lookup(ngx_http_file_cache_t *cache, u_char *key);
 static ngx_int_t
@@ -2105,6 +2107,8 @@ ngx_http_file_cache_purge(ngx_http_request_t *r) {
         NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_exact_hard);
     }
 
+    ngx_http_cache_purge_release_updating(c);
+
     return NGX_OK;
 }
 
@@ -2164,7 +2168,30 @@ ngx_http_file_cache_purge_soft(ngx_http_request_t *r) {
         NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_exact_soft);
     }
 
+    ngx_http_cache_purge_release_updating(c);
+
     return NGX_OK;
+}
+
+static void
+ngx_http_cache_purge_release_updating(ngx_http_cache_t *c) {
+    ngx_http_file_cache_t  *cache;
+
+    if (c == NULL || c->node == NULL || !c->updating) {
+        return;
+    }
+
+    cache = c->file_cache;
+
+    ngx_shmtx_lock(&cache->shpool->mutex);
+
+    if (c->node != NULL && c->node->updating && c->node->lock_time == c->lock_time) {
+        c->node->updating = 0;
+    }
+
+    ngx_shmtx_unlock(&cache->shpool->mutex);
+
+    c->updating = 0;
 }
 
 ngx_int_t
