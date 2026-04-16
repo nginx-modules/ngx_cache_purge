@@ -24,10 +24,12 @@ CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_module.c \
 $ngx_addon_dir/ngx_cache_purge_tag.c \
 $ngx_addon_dir/ngx_cache_purge_tag_store.c \
 $ngx_addon_dir/ngx_cache_purge_tag_store_redis.c \
-$ngx_addon_dir/ngx_cache_purge_tag_watch_linux.c"
+$ngx_addon_dir/ngx_cache_purge_tag_watch_linux.c \
+$ngx_addon_dir/ngx_cache_purge_metrics.c"
 
 CACHE_PURGE_DEPS="$ngx_addon_dir/ngx_cache_purge_tag.h \
-$ngx_addon_dir/ngx_cache_purge_tag_store_internal.h"
+$ngx_addon_dir/ngx_cache_purge_tag_store_internal.h \
+$ngx_addon_dir/ngx_cache_purge_metrics.h"
 
 # Probe for SQLite3 — needed for the 'cache_tag_index sqlite' backend.
 # If not found the module still builds but only the Redis backend is available.

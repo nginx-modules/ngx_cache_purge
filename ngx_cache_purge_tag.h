@@ -48,6 +48,9 @@ typedef struct {
     ngx_flag_t                    cache_tag_watch;
     ngx_array_t                  *cache_tag_headers;
     ngx_str_t                     purge_mode_header;
+
+    /* cache_purge_stats: zones registered for the metrics endpoint */
+    ngx_array_t                  *stat_zones;  /* ngx_http_cache_purge_stat_zone_t */
 } ngx_http_cache_purge_loc_conf_t;
 
 typedef struct {
@@ -71,15 +74,35 @@ typedef enum {
     NGX_HTTP_CACHE_TAG_BACKEND_REDIS
 } ngx_http_cache_tag_backend_e;
 
+/*
+ * Forward declaration for ngx_http_cache_purge_metrics_shctx_t.
+ * Full definition is in ngx_cache_purge_metrics.h.
+ */
+struct ngx_http_cache_purge_metrics_shctx_s;
+typedef struct ngx_http_cache_purge_metrics_shctx_s
+    ngx_http_cache_purge_metrics_shctx_t;
+
+/*
+ * One cache zone registered for the stats endpoint.
+ * Populated at config time from the upstream-module main confs.
+ */
 typedef struct {
-    ngx_http_cache_tag_backend_e  backend;
-    ngx_str_t                     sqlite_path;
-    ngx_http_cache_tag_redis_conf_t redis;
-    ngx_array_t                  *zones;
-    size_t                        queue_shm_size;
+    ngx_str_t              name;
+    ngx_http_file_cache_t *cache;
+} ngx_http_cache_purge_stat_zone_t;
+
+typedef struct {
+    ngx_http_cache_tag_backend_e           backend;
+    ngx_str_t                              sqlite_path;
+    ngx_http_cache_tag_redis_conf_t        redis;
+    ngx_array_t                           *zones;
+    size_t                                 queue_shm_size;
 #if (NGX_LINUX)
-    ngx_shm_zone_t               *queue_zone;
+    ngx_shm_zone_t                        *queue_zone;
 #endif
+    /* Metrics shared-memory zone and pointer (set in init_process) */
+    ngx_shm_zone_t                        *metrics_zone;
+    ngx_http_cache_purge_metrics_shctx_t  *metrics;
 } ngx_http_cache_purge_main_conf_t;
 
 struct ngx_http_cache_tag_zone_s {

@@ -32,6 +32,7 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 #include "ngx_cache_purge_tag.h"
+#include "ngx_cache_purge_metrics.h"
 
 
 #ifndef nginx_version
@@ -95,6 +96,8 @@ ngx_int_t   ngx_http_uwsgi_cache_purge_handler(ngx_http_request_t *r);
 # endif /* NGX_HTTP_UWSGI */
 
 char        *ngx_http_cache_purge_mode_header_conf(ngx_conf_t *cf,
+        ngx_command_t *cmd, void *conf);
+char        *ngx_http_cache_purge_stats_conf(ngx_conf_t *cf,
         ngx_command_t *cmd, void *conf);
 static ngx_int_t
 ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx, ngx_str_t *path);
@@ -266,6 +269,14 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
         0,
         NULL
     },
+    {
+        ngx_string("cache_purge_stats"),
+        NGX_HTTP_LOC_CONF|NGX_CONF_ANY,
+        ngx_http_cache_purge_stats_conf,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        0,
+        NULL
+    },
 
     ngx_null_command
 };
@@ -317,8 +328,26 @@ ngx_http_cache_purge_dispatch_special(ngx_http_request_t *r,
         }
 
         if (rc == NGX_OK && tags != NULL && tags->nelts > 0) {
+            ngx_http_cache_purge_main_conf_t *pmcf_m;
+            ngx_int_t                         tag_soft;
+
             *handled = 1;
-            return ngx_http_cache_tag_purge(r, cache, tags);
+            rc = ngx_http_cache_tag_purge(r, cache, tags);
+
+            if (rc == NGX_OK) {
+                pmcf_m   = ngx_http_get_module_main_conf(r,
+                           ngx_http_cache_purge_module);
+                tag_soft = ngx_http_cache_purge_request_mode(r,
+                           cplcf->conf->soft);
+                if (tag_soft) {
+                    NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics,
+                                                purges_tag_soft);
+                } else {
+                    NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics,
+                                                purges_tag_hard);
+                }
+            }
+            return rc;
         }
     }
 
@@ -1001,6 +1030,170 @@ ngx_http_cache_purge_mode_header_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *
 }
 
 static ngx_int_t
+ngx_http_cache_purge_stats_add_caches(ngx_http_cache_purge_loc_conf_t *cplcf,
+                                      ngx_array_t *cache_array,
+                                      ngx_str_t *filters,
+                                      ngx_uint_t nfilters) {
+    ngx_http_cache_purge_stat_zone_t *sz;
+    ngx_http_file_cache_t           **caches, *cache;
+    ngx_uint_t                        i, j, found;
+
+    if (cache_array == NULL) {
+        return NGX_OK;
+    }
+
+    caches = cache_array->elts;
+
+    for (i = 0; i < cache_array->nelts; i++) {
+        cache = caches[i];
+
+        if (cache == NULL || cache->shm_zone == NULL) {
+            continue;
+        }
+
+        found = 0;
+        sz = cplcf->stat_zones->elts;
+        for (j = 0; j < cplcf->stat_zones->nelts; j++) {
+            if (sz[j].cache == cache) {
+                found = 1;
+                break;
+            }
+        }
+
+        if (found) {
+            continue;
+        }
+
+        if (nfilters > 0) {
+            found = 0;
+
+            for (j = 0; j < nfilters; j++) {
+                if (filters[j].len == cache->shm_zone->shm.name.len
+                        && ngx_strncmp(filters[j].data,
+                                       cache->shm_zone->shm.name.data,
+                                       filters[j].len) == 0) {
+                    found = 1;
+                    break;
+                }
+            }
+
+            if (!found) {
+                continue;
+            }
+        }
+
+        sz = ngx_array_push(cplcf->stat_zones);
+        if (sz == NULL) {
+            return NGX_ERROR;
+        }
+
+        sz->name  = cache->shm_zone->shm.name;
+        sz->cache = cache;
+    }
+
+    return NGX_OK;
+}
+
+char *
+ngx_http_cache_purge_stats_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_core_loc_conf_t         *clcf;
+    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_str_t                        *filters;
+    ngx_uint_t                        nfilters;
+
+    (void) cmd;
+
+    clcf  = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    cplcf = conf;
+
+    if (cplcf->stat_zones != NULL) {
+        return "is duplicate";
+    }
+
+    cplcf->stat_zones = ngx_array_create(cf->pool, 4,
+                                         sizeof(ngx_http_cache_purge_stat_zone_t));
+    if (cplcf->stat_zones == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    /*
+     * Optional zone name filters: cache_purge_stats zone1 zone2 ...
+     * If no filter args are given, all discovered zones are included.
+     */
+    filters  = cf->args->nelts > 1 ? (ngx_str_t *) cf->args->elts + 1 : NULL;
+    nfilters = cf->args->nelts > 1 ? cf->args->nelts - 1 : 0;
+
+#if (NGX_HTTP_CACHE) && (nginx_version >= 1007009)
+
+# if (NGX_HTTP_FASTCGI)
+    {
+        ngx_http_fastcgi_main_conf_t *fmcf;
+
+        fmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_fastcgi_module);
+
+        if (fmcf != NULL
+                && ngx_http_cache_purge_stats_add_caches(cplcf, &fmcf->caches,
+                        filters, nfilters)
+                != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+# endif /* NGX_HTTP_FASTCGI */
+
+# if (NGX_HTTP_PROXY)
+    {
+        ngx_http_proxy_main_conf_t *pmcf_proxy;
+
+        pmcf_proxy = ngx_http_conf_get_module_main_conf(cf, ngx_http_proxy_module);
+
+        if (pmcf_proxy != NULL
+                && ngx_http_cache_purge_stats_add_caches(cplcf,
+                        &pmcf_proxy->caches,
+                        filters, nfilters)
+                != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+# endif /* NGX_HTTP_PROXY */
+
+# if (NGX_HTTP_SCGI)
+    {
+        ngx_http_scgi_main_conf_t *smcf;
+
+        smcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_scgi_module);
+
+        if (smcf != NULL
+                && ngx_http_cache_purge_stats_add_caches(cplcf, &smcf->caches,
+                        filters, nfilters)
+                != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+# endif /* NGX_HTTP_SCGI */
+
+# if (NGX_HTTP_UWSGI)
+    {
+        ngx_http_uwsgi_main_conf_t *umcf;
+
+        umcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_uwsgi_module);
+
+        if (umcf != NULL
+                && ngx_http_cache_purge_stats_add_caches(cplcf, &umcf->caches,
+                        filters, nfilters)
+                != NGX_OK) {
+            return NGX_CONF_ERROR;
+        }
+    }
+# endif /* NGX_HTTP_UWSGI */
+
+#endif /* NGX_HTTP_CACHE && nginx_version >= 1007009 */
+
+    clcf->handler = ngx_http_cache_purge_metrics_handler;
+
+    return NGX_CONF_OK;
+}
+
+static ngx_int_t
 ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
     return NGX_OK;
 }
@@ -1154,6 +1347,15 @@ ngx_http_cache_purge_partial_completion(ngx_event_t *ev) {
     }
 
     if (ctx->rc == NGX_OK) {
+        {
+            ngx_http_cache_purge_main_conf_t *pmcf_m;
+            pmcf_m = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+            if (ctx->soft) {
+                NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_wildcard_soft);
+            } else {
+                NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_wildcard_hard);
+            }
+        }
         r->write_event_handler = ngx_http_request_empty_handler;
         ngx_http_finalize_request(r, ngx_http_cache_purge_send_response(r));
         ngx_http_run_posted_requests(c);
@@ -1737,12 +1939,21 @@ ngx_int_t
 ngx_http_cache_purge_init_process(ngx_cycle_t *cycle) {
     ngx_http_cache_purge_main_conf_t *pmcf;
 
+    pmcf = ngx_http_cycle_get_module_main_conf(cycle,
+            ngx_http_cache_purge_module);
+    if (pmcf == NULL) {
+        return NGX_OK;
+    }
+
+    /* Resolve the metrics pointer from the shm zone (set after shm init). */
+    if (pmcf->metrics_zone != NULL) {
+        pmcf->metrics = pmcf->metrics_zone->data;
+    }
+
 #if !(NGX_LINUX)
     return NGX_OK;
 #else
-    pmcf = ngx_http_cycle_get_module_main_conf(cycle,
-            ngx_http_cache_purge_module);
-    if (pmcf == NULL || !ngx_http_cache_tag_store_configured(pmcf)) {
+    if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_OK;
     }
 
@@ -1888,6 +2099,12 @@ ngx_http_file_cache_purge(ngx_http_request_t *r) {
     }
 
     /* file deleted from cache */
+    {
+        ngx_http_cache_purge_main_conf_t *pmcf_m;
+        pmcf_m = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+        NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_exact_hard);
+    }
+
     return NGX_OK;
 }
 
@@ -1940,6 +2157,12 @@ ngx_http_file_cache_purge_soft(ngx_http_request_t *r) {
     }
 
     ngx_shmtx_unlock(&cache->shpool->mutex);
+
+    {
+        ngx_http_cache_purge_main_conf_t *pmcf_m;
+        pmcf_m = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+        NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_exact_soft);
+    }
 
     return NGX_OK;
 }
@@ -2024,6 +2247,18 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
 
     if (ngx_walk_tree(&tree, &cache->path->name) != NGX_OK) {
         return NGX_ERROR;
+    }
+
+    {
+        ngx_http_cache_purge_main_conf_t *pmcf_m;
+        ngx_int_t soft_m;
+        pmcf_m = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+        soft_m = cplcf->conf->soft;
+        if (soft_m) {
+            NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_all_soft);
+        } else {
+            NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_all_hard);
+        }
     }
 
     return NGX_OK;
@@ -2140,6 +2375,16 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
 
     if (ngx_walk_tree(&tree, &cache->path->name) != NGX_OK) {
         return NGX_ERROR;
+    }
+
+    {
+        ngx_http_cache_purge_main_conf_t *pmcf_m;
+        pmcf_m = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+        if (soft) {
+            NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_wildcard_soft);
+        } else {
+            NGX_CACHE_PURGE_METRICS_INC(pmcf_m->metrics, purges_wildcard_hard);
+        }
     }
 
     return NGX_OK;
@@ -2282,6 +2527,10 @@ ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf) {
         return NGX_CONF_ERROR;
     }
 #endif
+
+    if (ngx_http_cache_purge_metrics_init_conf(cf, pmcf) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     return NGX_CONF_OK;
 }

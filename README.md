@@ -233,6 +233,87 @@ Enable cache-tag indexing for the cache used by the current purge-enabled locati
 
 For hard tag purges, matching cache files are removed immediately and the corresponding SQLite index deletes are handed off asynchronously to the owner worker. A successful purge response means all required index deletes were accepted for processing; if that handoff cannot be accepted, the request fails with `500`.
 
+#### `cache_purge_stats`
+
+- **syntax**: `cache_purge_stats [zone ...]`
+- **default**: `none`
+- **context**: `location`
+
+Expose a read-only metrics endpoint for the configured cache zones. With no arguments, all zones known to the module are included. One or more zone names can be listed to restrict the output.
+
+The endpoint returns `Cache-Control: no-store` and supports two output formats:
+
+| Trigger | Format | Content-Type |
+|---------|--------|--------------|
+| Default, `?format=json`, or `Accept: application/json` | JSON | `application/json` |
+| `?format=prometheus`, `Accept: text/plain`, or `Accept: application/openmetrics-text` | Prometheus text | `text/plain; version=0.0.4` |
+
+Example configuration:
+
+```nginx
+location /_cache_stats {
+    cache_purge_stats;
+}
+```
+
+Or filtered to specific zones:
+
+```nginx
+location /_cache_stats {
+    cache_purge_stats my_cache other_cache;
+}
+```
+
+**JSON response structure** (aligned with nginx Plus `/api/http/caches/` naming):
+
+```json
+{
+  "version": 1,
+  "timestamp": 1713268800,
+  "purges": {
+    "exact":    { "hard": 120, "soft": 45 },
+    "wildcard": { "hard": 12,  "soft": 3  },
+    "tag":      { "hard": 80,  "soft": 200 },
+    "all":      { "hard": 1,   "soft": 0  }
+  },
+  "zones": {
+    "my_cache": {
+      "size": 104857600,
+      "max_size": 1073741824,
+      "cold": false,
+      "entries": {
+        "total": 4823,
+        "valid": 4201,
+        "expired": 622,
+        "updating": 0
+      },
+      "tag_index": {
+        "backend": "sqlite",
+        "queue": {
+          "size": 3,
+          "capacity": 256,
+          "dropped": 0
+        }
+      }
+    }
+  }
+}
+```
+
+`tag_index` is omitted when no `cache_tag_index` is configured. `purges` counters are global across all zones and survive `nginx -s reload`.
+
+**Prometheus metrics** (prefix `nginx_cache_purge_`):
+
+- `nginx_cache_purge_purges_total{type,mode}` — counter, purge operations by type (`exact`, `wildcard`, `tag`, `all`) and mode (`hard`, `soft`)
+- `nginx_cache_purge_zone_size_bytes{zone}` — gauge, current zone usage in bytes
+- `nginx_cache_purge_zone_max_size_bytes{zone}` — gauge, configured maximum zone size
+- `nginx_cache_purge_zone_cold{zone}` — gauge, 1 while the cache loader is still warming the zone
+- `nginx_cache_purge_zone_entries{zone,state}` — gauge, entry count by state (`valid`, `expired`, `updating`)
+- `nginx_cache_purge_tag_index_info{zone,backend}` — info gauge, tag index backend type
+- `nginx_cache_purge_tag_queue_size{zone}` — gauge, pending entries in the inotify write queue
+- `nginx_cache_purge_tag_queue_capacity{zone}` — gauge, maximum queue capacity
+- `nginx_cache_purge_tag_queue_dropped_total{zone}` — counter, queue entries dropped due to overflow
+
 ## Partial Keys
 
 Sometimes it is not possible to pass the exact cache key to purge a page. For example, parts of the key may depend on cookies or query parameters. You can specify a partial key by adding an asterisk at the end of the URL.
@@ -494,14 +575,14 @@ It provides separate locations for these behaviors:
 - cache-tag soft purge by `Surrogate-Key` or `Cache-Tag` (`/tagged/...`)
 - watched-location plain `PURGE` fallback (`/tagged/plain`)
 - custom tag headers with an isolated cache zone (`/tagged_custom`)
+- cache metrics via `cache_purge_stats` (`/_stats`)
 
 Start it inside the container after building nginx:
 
 ```bash
 make shell
 make nginx-build
-rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_demo_tags.sqlite
-mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
+rm -rf /tmp/ngx_cache_*
 /opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
 ```
 
@@ -512,8 +593,7 @@ docker compose up -d redis
 make shell
 make nginx-build
 redis-cli -h redis -p 6379 -n 10 FLUSHDB
-rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_demo_tags.sqlite
-mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
+rm -rf /tmp/ngx_cache_*
 /opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
 ```
 
@@ -634,6 +714,16 @@ curl -i 'http://127.0.0.1:8080/tagged_custom'
 ```
 
 The final request should return `X-Cache-Status: EXPIRED`, confirming that both cached-response indexing and purge matching use `Edge-Tag` and `Custom-Group` for that isolated Redis-backed zone.
+
+Cache metrics endpoint:
+
+```bash
+curl -s 'http://127.0.0.1:8080/_stats'
+curl -s 'http://127.0.0.1:8080/_stats?format=prometheus'
+curl -s -H 'Accept: text/plain' 'http://127.0.0.1:8080/_stats'
+```
+
+After running some purge requests, re-fetch the endpoint and verify the `purges` counters increment.
 
 Stop the validation nginx instance with:
 
