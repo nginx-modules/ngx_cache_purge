@@ -369,9 +369,9 @@ Use `cache_purge_response_type` to switch between `html`, `json`, `xml`, and `te
 
 The minimal cache-tag setup is already shown in Quick Start. Use that pattern whenever you want to purge by `Cache-Tag` or `Surrogate-Key` headers.
 
-## Troubleshooting
+## Known issues
 
-- Enabling [`gzip_vary`](https://nginx.org/r/gzip_vary) can lead to different results when clearing. For reliable operation, you can disable [`gzip_vary`](https://nginx.org/r/gzip_vary) inside the location [#20](https://github.com/nginx-modules/ngx_cache_purge/issues/20).
+- **`gzip_vary` and Vary-based cache variants** — When [`gzip_vary`](https://nginx.org/r/gzip_vary) (or `brotli_vary` / `zstd_vary`) is enabled, nginx stores a separate cache file for each `Accept-Encoding` variant of the same URL. A key-based purge uses `ngx_http_file_cache_open`, which resolves to the single variant whose `Vary` headers match the incoming purge request, leaving other variants in the cache. **Recommended fix:** use cache tags. Every cached file — including each encoding variant — is registered in the tag store independently at write time, so a tag-based purge removes all variants regardless of encoding. See [#20](https://github.com/nginx-modules/ngx_cache_purge/issues/20).
 
 ## Development
 

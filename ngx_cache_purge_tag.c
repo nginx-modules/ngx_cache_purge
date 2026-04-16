@@ -318,13 +318,14 @@ ngx_http_cache_tag_headers_equal(ngx_array_t *left, ngx_array_t *right) {
 }
 
 ngx_int_t
-ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
+ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
+                         ngx_array_t *tags) {
     ngx_http_conf_ctx_t              *http_ctx;
     ngx_http_cache_purge_main_conf_t *pmcf;
     ngx_http_cache_purge_loc_conf_t  *cplcf;
     ngx_http_cache_tag_zone_t        *zone;
     ngx_http_cache_tag_zone_state_t   state;
-    ngx_array_t                      *tags, *paths;
+    ngx_array_t                      *paths;
     ngx_str_t                        *path;
     ngx_uint_t                        i;
     ngx_int_t                         rc, purged;
@@ -332,11 +333,6 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
 #if (NGX_LINUX)
     ngx_http_cache_tag_store_t       *reader, *writer;
 #endif
-
-    rc = ngx_http_cache_tag_request_headers(r, &tags);
-    if (rc != NGX_OK) {
-        return NGX_DECLINED;
-    }
 
     http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
                ngx_http_module);

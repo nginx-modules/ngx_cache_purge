@@ -44,6 +44,8 @@ static ngx_int_t ngx_http_cache_tag_store_redis_read_string_array(
 static ngx_int_t ngx_http_cache_tag_store_redis_read_zone_state(
     ngx_http_cache_tag_store_t *store, ngx_http_cache_tag_zone_state_t *state,
     ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_redis_read_byte(
+    ngx_http_cache_tag_store_t *store, u_char *byte, ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_redis_read_line(
     ngx_http_cache_tag_store_t *store, u_char *buf, size_t size, size_t *len,
     ngx_log_t *log);
@@ -59,6 +61,12 @@ static ngx_int_t ngx_http_cache_tag_store_redis_delete_keys(
 static ngx_int_t ngx_http_cache_tag_store_redis_do_replace_file_tags(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
     time_t mtime, off_t size, ngx_array_t *tags, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_redis_do_get_zone_state(
+    ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name,
+    ngx_http_cache_tag_zone_state_t *state, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_redis_do_set_zone_state(
+    ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name,
+    ngx_http_cache_tag_zone_state_t *state, ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_redis_do_delete_file(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
     ngx_log_t *log);
@@ -550,39 +558,70 @@ ngx_http_cache_tag_store_redis_get_zone_state(ngx_http_cache_tag_store_t *store,
         ngx_str_t *zone_name,
         ngx_http_cache_tag_zone_state_t *state,
         ngx_log_t *log) {
-    ngx_pool_t  *pool;
-    ngx_str_t    zone_key;
-    ngx_str_t    args[4];
-    ngx_int_t    rc;
+    ngx_uint_t  retry;
+    ngx_int_t   rc;
 
-    pool = ngx_create_pool(1024, log);
-    if (pool == NULL) {
-        return NGX_ERROR;
+    rc = NGX_ERROR;
+    for (retry = 0; retry < 2; retry++) {
+        if (retry > 0) {
+            ngx_http_cache_tag_store_redis_close_socket(store);
+            ngx_log_error(NGX_LOG_WARN, log, 0,
+                          "cache_tag redis get_zone_state failed, "
+                          "retrying after reconnect for zone \"%V\"", zone_name);
+        }
+        if (ngx_http_cache_tag_store_redis_ensure_connected(store, log) != NGX_OK) {
+            return NGX_ERROR;
+        }
+        rc = ngx_http_cache_tag_store_redis_do_get_zone_state(store, zone_name,
+                state, log);
+        if (rc == NGX_OK) {
+            break;
+        }
     }
+
+    return rc;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_redis_do_get_zone_state(ngx_http_cache_tag_store_t *store,
+        ngx_str_t *zone_name,
+        ngx_http_cache_tag_zone_state_t *state,
+        ngx_log_t *log) {
+    u_char      zone_key_buf[1024];
+    ngx_str_t   zone_key;
+    ngx_str_t   args[4];
+    size_t      key_len;
 
     state->bootstrap_complete = 0;
     state->last_bootstrap_at = 0;
 
-    if (ngx_http_cache_tag_store_redis_make_key(pool,
-            &ngx_http_cache_tag_redis_zone_prefix, zone_name, NULL, &zone_key)
-            != NGX_OK) {
-        ngx_destroy_pool(pool);
+    key_len = ngx_http_cache_tag_redis_zone_prefix.len + zone_name->len;
+    if (key_len >= sizeof(zone_key_buf)) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "cache_tag redis zone key too long for zone \"%V\"",
+                      zone_name);
         return NGX_ERROR;
     }
+
+    zone_key.data = zone_key_buf;
+    zone_key.len = key_len;
+    ngx_memcpy(zone_key_buf,
+               ngx_http_cache_tag_redis_zone_prefix.data,
+               ngx_http_cache_tag_redis_zone_prefix.len);
+    ngx_memcpy(zone_key_buf + ngx_http_cache_tag_redis_zone_prefix.len,
+               zone_name->data, zone_name->len);
+    zone_key_buf[key_len] = '\0';
 
     args[0] = ngx_http_cache_tag_redis_cmd_hmget;
     args[1] = zone_key;
     args[2] = ngx_http_cache_tag_redis_field_bootstrap;
     args[3] = ngx_http_cache_tag_redis_field_last_bootstrap;
 
-    rc = ngx_http_cache_tag_store_redis_send_command(store, log, 4, args);
-    if (rc == NGX_OK) {
-        rc = ngx_http_cache_tag_store_redis_read_zone_state(store, state, log);
+    if (ngx_http_cache_tag_store_redis_send_command(store, log, 4, args) != NGX_OK) {
+        return NGX_ERROR;
     }
 
-    ngx_destroy_pool(pool);
-
-    return rc;
+    return ngx_http_cache_tag_store_redis_read_zone_state(store, state, log);
 }
 
 static ngx_int_t
@@ -590,24 +629,58 @@ ngx_http_cache_tag_store_redis_set_zone_state(ngx_http_cache_tag_store_t *store,
         ngx_str_t *zone_name,
         ngx_http_cache_tag_zone_state_t *state,
         ngx_log_t *log) {
-    ngx_pool_t  *pool;
-    ngx_str_t    zone_key;
-    ngx_str_t    args[6];
-    u_char       bootstrap_buf[2];
-    u_char       ts_buf[NGX_TIME_T_LEN + 1];
-    ngx_int_t    rc;
+    ngx_uint_t  retry;
+    ngx_int_t   rc;
 
-    pool = ngx_create_pool(1024, log);
-    if (pool == NULL) {
+    rc = NGX_ERROR;
+    for (retry = 0; retry < 2; retry++) {
+        if (retry > 0) {
+            ngx_http_cache_tag_store_redis_close_socket(store);
+            ngx_log_error(NGX_LOG_WARN, log, 0,
+                          "cache_tag redis set_zone_state failed, "
+                          "retrying after reconnect for zone \"%V\"", zone_name);
+        }
+        if (ngx_http_cache_tag_store_redis_ensure_connected(store, log) != NGX_OK) {
+            return NGX_ERROR;
+        }
+        rc = ngx_http_cache_tag_store_redis_do_set_zone_state(store, zone_name,
+                state, log);
+        if (rc == NGX_OK) {
+            break;
+        }
+    }
+
+    return rc;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_redis_do_set_zone_state(ngx_http_cache_tag_store_t *store,
+        ngx_str_t *zone_name,
+        ngx_http_cache_tag_zone_state_t *state,
+        ngx_log_t *log) {
+    u_char     zone_key_buf[1024];
+    ngx_str_t  zone_key;
+    ngx_str_t  args[6];
+    u_char     bootstrap_buf[2];
+    u_char     ts_buf[NGX_TIME_T_LEN + 1];
+    size_t     key_len;
+
+    key_len = ngx_http_cache_tag_redis_zone_prefix.len + zone_name->len;
+    if (key_len >= sizeof(zone_key_buf)) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "cache_tag redis zone key too long for zone \"%V\"",
+                      zone_name);
         return NGX_ERROR;
     }
 
-    if (ngx_http_cache_tag_store_redis_make_key(pool,
-            &ngx_http_cache_tag_redis_zone_prefix, zone_name, NULL, &zone_key)
-            != NGX_OK) {
-        ngx_destroy_pool(pool);
-        return NGX_ERROR;
-    }
+    zone_key.data = zone_key_buf;
+    zone_key.len = key_len;
+    ngx_memcpy(zone_key_buf,
+               ngx_http_cache_tag_redis_zone_prefix.data,
+               ngx_http_cache_tag_redis_zone_prefix.len);
+    ngx_memcpy(zone_key_buf + ngx_http_cache_tag_redis_zone_prefix.len,
+               zone_name->data, zone_name->len);
+    zone_key_buf[key_len] = '\0';
 
     bootstrap_buf[0] = state->bootstrap_complete ? '1' : '0';
     args[0] = ngx_http_cache_tag_redis_cmd_hset;
@@ -619,14 +692,11 @@ ngx_http_cache_tag_store_redis_set_zone_state(ngx_http_cache_tag_store_t *store,
     args[5].data = ts_buf;
     args[5].len = ngx_sprintf(ts_buf, "%T", state->last_bootstrap_at) - ts_buf;
 
-    rc = ngx_http_cache_tag_store_redis_send_command(store, log, 6, args);
-    if (rc == NGX_OK) {
-        rc = ngx_http_cache_tag_store_redis_discard_reply(store, log);
+    if (ngx_http_cache_tag_store_redis_send_command(store, log, 6, args) != NGX_OK) {
+        return NGX_ERROR;
     }
 
-    ngx_destroy_pool(pool);
-
-    return rc;
+    return ngx_http_cache_tag_store_redis_discard_reply(store, log);
 }
 
 static void
@@ -635,6 +705,8 @@ ngx_http_cache_tag_store_redis_close_socket(ngx_http_cache_tag_store_t *store) {
         close(store->u.redis.fd);
         store->u.redis.fd = (ngx_socket_t) -1;
     }
+    store->u.redis.recv_pos = 0;
+    store->u.redis.recv_len = 0;
 }
 
 static ngx_int_t
@@ -779,10 +851,6 @@ ngx_http_cache_tag_store_redis_send_command(ngx_http_cache_tag_store_t *store,
     size_t     n;
     ngx_uint_t i;
 
-    if (ngx_http_cache_tag_store_redis_ensure_connected(store, log) != NGX_OK) {
-        return NGX_ERROR;
-    }
-
     n = ngx_snprintf(header, sizeof(header), "*%ui\r\n", argc) - header;
     if (ngx_http_cache_tag_store_redis_send_all(store, header, n, log) != NGX_OK) {
         return NGX_ERROR;
@@ -809,7 +877,6 @@ ngx_http_cache_tag_store_redis_discard_reply(ngx_http_cache_tag_store_t *store,
     size_t    len;
     ngx_int_t count, bulk_len, i;
     u_char    marker;
-    u_char   *buf;
 
     if (ngx_http_cache_tag_store_redis_read_line(store, line, sizeof(line), &len, log)
             != NGX_OK) {
@@ -833,16 +900,13 @@ ngx_http_cache_tag_store_redis_discard_reply(ngx_http_cache_tag_store_t *store,
         if (bulk_len == -1) {
             return NGX_OK;
         }
-        buf = ngx_alloc((size_t) bulk_len + 2, log);
-        if (buf == NULL) {
-            return NGX_ERROR;
+        /* drain bulk string + CRLF through read_byte to keep recv buffer in sync */
+        for (i = 0; i < (ngx_int_t) bulk_len + 2; i++) {
+            if (ngx_http_cache_tag_store_redis_read_byte(store,
+                    (u_char *) &marker, log) != NGX_OK) {
+                return NGX_ERROR;
+            }
         }
-        if (ngx_http_cache_tag_store_redis_read_exact(store, buf,
-                (size_t) bulk_len + 2, log) != NGX_OK) {
-            ngx_free(buf);
-            return NGX_ERROR;
-        }
-        ngx_free(buf);
         return NGX_OK;
     case '*':
         count = ngx_atoi(line + 1, len - 1);
@@ -1021,21 +1085,46 @@ ngx_http_cache_tag_store_redis_read_zone_state(
 }
 
 static ngx_int_t
-ngx_http_cache_tag_store_redis_read_line(ngx_http_cache_tag_store_t *store,
-        u_char *buf, size_t size, size_t *len,
-        ngx_log_t *log) {
-    size_t   off;
+ngx_http_cache_tag_store_redis_read_byte(ngx_http_cache_tag_store_t *store,
+        u_char *byte, ngx_log_t *log) {
     ssize_t  n;
 
-    off = 0;
-    while (off + 1 < size) {
-        n = recv(store->u.redis.fd, buf + off, 1, 0);
-        if (n <= 0) {
-            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
-                          "redis recv failed while reading line");
+    if (store->u.redis.recv_pos >= store->u.redis.recv_len) {
+        n = recv(store->u.redis.fd, store->u.redis.recv_buf,
+                 sizeof(store->u.redis.recv_buf), 0);
+        if (n == 0) {
+            ngx_log_error(NGX_LOG_ERR, log, 0,
+                          "redis connection closed");
             ngx_http_cache_tag_store_redis_close_socket(store);
             return NGX_ERROR;
         }
+        if (n < 0) {
+            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                          "redis recv failed");
+            ngx_http_cache_tag_store_redis_close_socket(store);
+            return NGX_ERROR;
+        }
+        store->u.redis.recv_pos = 0;
+        store->u.redis.recv_len = (size_t) n;
+    }
+
+    *byte = store->u.redis.recv_buf[store->u.redis.recv_pos++];
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_redis_read_line(ngx_http_cache_tag_store_t *store,
+        u_char *buf, size_t size, size_t *len,
+        ngx_log_t *log) {
+    size_t  off;
+    u_char  byte;
+
+    off = 0;
+    while (off + 1 < size) {
+        if (ngx_http_cache_tag_store_redis_read_byte(store, &byte, log) != NGX_OK) {
+            return NGX_ERROR;
+        }
+        buf[off] = byte;
         if (off > 0 && buf[off - 1] == '\r' && buf[off] == '\n') {
             buf[off - 1] = '\0';
             *len = off - 1;
@@ -1052,10 +1141,21 @@ ngx_http_cache_tag_store_redis_read_line(ngx_http_cache_tag_store_t *store,
 static ngx_int_t
 ngx_http_cache_tag_store_redis_read_exact(ngx_http_cache_tag_store_t *store,
         u_char *buf, size_t len, ngx_log_t *log) {
+    size_t   have, need, off;
     ssize_t  n;
-    size_t   off;
 
     off = 0;
+
+    /* drain buffered bytes first */
+    have = store->u.redis.recv_len - store->u.redis.recv_pos;
+    if (have > 0) {
+        need = (len < have) ? len : have;
+        ngx_memcpy(buf, store->u.redis.recv_buf + store->u.redis.recv_pos, need);
+        store->u.redis.recv_pos += need;
+        off += need;
+    }
+
+    /* read remainder directly from socket */
     while (off < len) {
         n = recv(store->u.redis.fd, buf + off, len - off, 0);
         if (n <= 0) {

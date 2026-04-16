@@ -35,6 +35,9 @@ struct ngx_http_cache_tag_store_s {
         struct {
             ngx_socket_t                  fd;
             ngx_http_cache_purge_main_conf_t *pmcf;
+            u_char                        recv_buf[4096];
+            size_t                        recv_pos;
+            size_t                        recv_len;
         } redis;
     } u;
 };

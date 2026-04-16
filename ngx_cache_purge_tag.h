@@ -190,7 +190,8 @@ ngx_int_t ngx_http_cache_tag_register_cache(ngx_conf_t *cf,
                                             ngx_http_file_cache_t *cache,
                                             ngx_array_t *headers);
 ngx_int_t ngx_http_cache_tag_purge(ngx_http_request_t *r,
-                                   ngx_http_file_cache_t *cache);
+                                   ngx_http_file_cache_t *cache,
+                                   ngx_array_t *tags);
 ngx_int_t ngx_http_cache_tag_process_init(ngx_cycle_t *cycle,
         ngx_http_cache_purge_main_conf_t *pmcf);
 void ngx_http_cache_tag_process_exit(void);

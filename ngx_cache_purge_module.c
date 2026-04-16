@@ -38,10 +38,10 @@
     #error This module cannot be build against an unknown nginx version.
 #endif
 
-#define NGX_REPONSE_TYPE_HTML 1
-#define NGX_REPONSE_TYPE_XML  2
-#define NGX_REPONSE_TYPE_JSON 3
-#define NGX_REPONSE_TYPE_TEXT 4
+#define NGX_RESPONSE_TYPE_HTML 1
+#define NGX_RESPONSE_TYPE_XML  2
+#define NGX_RESPONSE_TYPE_JSON 3
+#define NGX_RESPONSE_TYPE_TEXT 4
 
 static const char ngx_http_cache_purge_content_type_json[] = "application/json";
 static const char ngx_http_cache_purge_content_type_html[] = "text/html";
@@ -295,7 +295,7 @@ ngx_http_cache_purge_dispatch_special(ngx_http_request_t *r,
 
         if (rc == NGX_OK && tags != NULL && tags->nelts > 0) {
             *handled = 1;
-            return ngx_http_cache_tag_purge(r, cache);
+            return ngx_http_cache_tag_purge(r, cache, tags);
         }
     }
 
@@ -1379,13 +1379,13 @@ ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, ngx_command_t *cmd, void
     }
 
     if (ngx_strcmp(value[1].data, "html") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_HTML;
+        cplcf->resptype = NGX_RESPONSE_TYPE_HTML;
     } else if (ngx_strcmp(value[1].data, "xml") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_XML;
+        cplcf->resptype = NGX_RESPONSE_TYPE_XML;
     } else if (ngx_strcmp(value[1].data, "json") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_JSON;
+        cplcf->resptype = NGX_RESPONSE_TYPE_JSON;
     } else if (ngx_strcmp(value[1].data, "text") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_TEXT;
+        cplcf->resptype = NGX_RESPONSE_TYPE_TEXT;
     }
 
     return NGX_CONF_OK;
@@ -1423,6 +1423,7 @@ ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path) {
     if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
                       ngx_delete_file_n " \"%s\" failed", path->data);
+        return NGX_ERROR;
     }
 
     return NGX_OK;
@@ -1801,7 +1802,6 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
     size_t resp_tmpl_len;
     u_char *buf;
     u_char *buf_keydata;
-    u_char *p;
     const char *resp_ct;
     size_t resp_ct_size;
     const char *resp_body;
@@ -1810,35 +1810,36 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
     ngx_http_cache_purge_loc_conf_t   *cplcf;
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
 
+    if (r->cache->keys.nelts == 0) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
     key = r->cache->keys.elts;
 
-    buf_keydata = ngx_pcalloc(r->pool, key[0].len+1);
+    buf_keydata = ngx_pcalloc(r->pool, key[0].len + 1);
     if (buf_keydata == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    p = ngx_cpymem(buf_keydata, key[0].data, key[0].len);
-    if (p == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+    (void) ngx_cpymem(buf_keydata, key[0].data, key[0].len);
 
     switch (cplcf->resptype) {
 
-    case NGX_REPONSE_TYPE_JSON:
+    case NGX_RESPONSE_TYPE_JSON:
         resp_ct = ngx_http_cache_purge_content_type_json;
         resp_ct_size = ngx_http_cache_purge_content_type_json_size;
         resp_body = ngx_http_cache_purge_body_templ_json;
         resp_body_size = ngx_http_cache_purge_body_templ_json_size;
         break;
 
-    case NGX_REPONSE_TYPE_XML:
+    case NGX_RESPONSE_TYPE_XML:
         resp_ct = ngx_http_cache_purge_content_type_xml;
         resp_ct_size = ngx_http_cache_purge_content_type_xml_size;
         resp_body = ngx_http_cache_purge_body_templ_xml;
         resp_body_size = ngx_http_cache_purge_body_templ_xml_size;
         break;
 
-    case NGX_REPONSE_TYPE_TEXT:
+    case NGX_RESPONSE_TYPE_TEXT:
         resp_ct = ngx_http_cache_purge_content_type_text;
         resp_ct_size = ngx_http_cache_purge_content_type_text_size;
         resp_body = ngx_http_cache_purge_body_templ_text;
@@ -1846,7 +1847,7 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
         break;
 
     default:
-    case NGX_REPONSE_TYPE_HTML:
+    case NGX_RESPONSE_TYPE_HTML:
         resp_ct = ngx_http_cache_purge_content_type_html;
         resp_ct_size = ngx_http_cache_purge_content_type_html_size;
         resp_body = ngx_http_cache_purge_body_templ_html;
@@ -1865,10 +1866,7 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    p = ngx_snprintf(buf, resp_tmpl_len, resp_body, buf_keydata);
-    if (p == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
+    ngx_snprintf(buf, resp_tmpl_len, resp_body, buf_keydata);
 
     len = body_len + key[0].len;
 
@@ -2069,6 +2067,23 @@ ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle) {
     (void) cycle;
     ngx_http_cache_tag_process_exit();
 }
+
+/*
+ * Known limitation: gzip_vary and Vary-based cache variants
+ *
+ * When gzip_vary (or brotli_vary / zstd_vary) is enabled, nginx stores a
+ * separate cache file for each Accept-Encoding variant of the same URL.
+ * Each variant has a different on-disk hash derived from the primary key
+ * combined with the Vary header value, so a single key-based purge (which
+ * uses ngx_http_file_cache_open) can only remove the one variant whose
+ * Vary headers match the incoming purge request.
+ *
+ * Workaround: use cache tags.  Every cached file — including each Vary
+ * variant — is independently registered in the tag store at write time, so
+ * a tag-based purge finds and removes all variants regardless of encoding.
+ * Configure cache_tag / cache_tag_store and tag your responses to take
+ * advantage of this.
+ */
 
 void
 ngx_http_cache_purge_handler(ngx_http_request_t *r) {
@@ -2328,21 +2343,29 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
 
 ngx_int_t
 ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
-    ngx_http_cache_purge_loc_conf_t    *cplcf;
-    ngx_int_t                           soft;
+    ngx_http_cache_purge_loc_conf_t     *cplcf;
+    ngx_http_cache_purge_partial_ctx_t  *ctx;
+    ngx_str_t                           *keys;
+    ngx_str_t                            key;
+    ngx_int_t                            soft;
+    ngx_tree_ctx_t                       tree;
+
     ngx_log_debug(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                   "purge_partial http in %s",
                   cache->path->name.data);
 
-    ngx_str_t           *keys;
-    ngx_str_t           key;
+    if (r->cache->keys.nelts == 0) {
+        return NGX_ERROR;
+    }
 
     /* Only check the first key, and discard '*' at the end */
     keys = r->cache->keys.elts;
     key = keys[0];
+    if (key.len == 0) {
+        return NGX_ERROR;
+    }
     key.len--;
 
-    ngx_http_cache_purge_partial_ctx_t *ctx;
     ctx = ngx_palloc(r->pool, sizeof(ngx_http_cache_purge_partial_ctx_t));
     if (ctx == NULL) {
         return NGX_ERROR;
@@ -2363,7 +2386,6 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r, ngx_http_file_cache_t *cache
     soft = ngx_http_cache_purge_request_mode(r, cplcf->conf->soft);
 
     /* Walk the tree and remove all the files matching key_partial */
-    ngx_tree_ctx_t  tree;
     tree.init_handler = NULL;
     tree.file_handler = soft
                         ? ngx_http_purge_file_cache_soft_partial_file
@@ -2628,7 +2650,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
-    ngx_conf_merge_uint_value(conf->resptype, prev->resptype, NGX_REPONSE_TYPE_HTML);
+    ngx_conf_merge_uint_value(conf->resptype, prev->resptype, NGX_RESPONSE_TYPE_HTML);
     ngx_conf_merge_value(conf->cache_tag_watch, prev->cache_tag_watch, 0);
     ngx_conf_merge_str_value(conf->purge_mode_header, prev->purge_mode_header, "");
 
