@@ -159,7 +159,7 @@ void        ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle);
 static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
     {
         ngx_string("cache_tag_index"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+        NGX_HTTP_MAIN_CONF|NGX_CONF_2MORE,
         ngx_http_cache_tag_index_conf,
         NGX_HTTP_MAIN_CONF_OFFSET,
         0,
@@ -2056,7 +2056,7 @@ ngx_http_cache_purge_init_process(ngx_cycle_t *cycle) {
     }
 
     pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
-    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+    if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_OK;
     }
 
@@ -2555,9 +2555,12 @@ char *
 ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf) {
     ngx_http_cache_purge_main_conf_t  *pmcf = conf;
 
-    if (pmcf->sqlite_path.data == NULL) {
-        pmcf->sqlite_path.len = 0;
+#if (NGX_LINUX)
+    if (ngx_http_cache_tag_store_configured(pmcf)
+            && ngx_http_cache_tag_queue_init_conf(cf, pmcf) != NGX_OK) {
+        return NGX_CONF_ERROR;
     }
+#endif
 
     return NGX_CONF_OK;
 }

@@ -48,7 +48,7 @@ If the configured cache key ends with `$uri`, you can also purge by wildcard URI
 curl -i -X PURGE 'http://127.0.0.1:8080/articles/2026/*'
 ```
 
-If you want cache-tag purging, enable the SQLite-backed index and watch the cache directory:
+If you want cache-tag purging, enable an index backend and watch the cache directory:
 
 ```nginx
 http {
@@ -128,7 +128,7 @@ make install
 
 For a dynamic module build in this workflow, replace `--add-module` with `--add-dynamic-module` and use `make modules`.
 
-The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library. The resulting dynamic module also depends on the system `libsqlite3` at runtime.
+The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library. Redis support uses the module's built-in RESP client and does not add another native dependency. The resulting dynamic module still depends on the system `libsqlite3` when SQLite support is compiled in.
 
 If you want the included containerized build environment, tests, or the manual validation setup, see [Development](#development).
 
@@ -229,11 +229,11 @@ If configured:
 
 #### `cache_tag_index`
 
-- **syntax**: `cache_tag_index sqlite <path>`
+- **syntax**: `cache_tag_index sqlite <path>` or `cache_tag_index redis <endpoint> [db=<n>] [password=<secret>]`
 - **default**: `none`
 - **context**: `http`
 
-Enable cache-tag indexing backed by a SQLite database. This feature is currently Linux-only and requires a writable database path.
+Enable cache-tag indexing backed by SQLite or Redis. This feature is currently Linux-only. SQLite requires a writable database path. Redis currently supports a single instance over `host:port` or `unix:/path`, with optional `db=<n>` and `password=<secret>`, but no TLS, Sentinel, or Cluster support.
 
 #### `cache_tag_headers`
 
@@ -252,6 +252,8 @@ All watched locations that share the same cache zone must use the same `cache_ta
 - **context**: `http`, `server`, `location`
 
 Enable cache-tag indexing for the cache used by the current purge-enabled location. When enabled, the module watches the cache directory, indexes tags found in cached response headers, and allows tag-based `PURGE` requests.
+
+For hard tag purges, matching cache files are removed immediately and the corresponding SQLite index deletes are handed off asynchronously to the owner worker. A successful purge response means all required index deletes were accepted for processing; if that handoff cannot be accepted, the request fails with `500`.
 
 ## Partial Keys
 
@@ -286,7 +288,7 @@ When `cache_tag_index` and `cache_tag_watch` are enabled:
 - cached response files are parsed for the headers listed in `cache_tag_headers`
 - `Surrogate-Key` values are parsed as comma- or whitespace-delimited tags
 - `Cache-Tag` values are parsed as comma- or whitespace-delimited tags
-- the module stores a tag-to-cache-file index in SQLite
+- the module stores a tag-to-cache-file index in SQLite or Redis
 - on Linux, a worker-owned `inotify` watcher keeps the index up to date as cache files are created, replaced, or removed
 
 To purge by tag, send a normal `PURGE` request and include one or more tag headers:
@@ -304,10 +306,13 @@ If a watched purge location receives a plain `PURGE` request without any of the 
 
 For tag-based purges, the configured `cache_purge_mode_header` can switch a request between soft and hard purge. Without that header, the configured purge mode is used.
 
+Hard tag purges use asynchronous owner-worker handoff for backend index deletes. A `200` response means the delete work was accepted for processing, not necessarily already persisted yet.
+
 Notes:
 
 - Cache-tag support currently requires Linux.
-- SQLite is the only supported tag index backend.
+- Supported tag index backends are SQLite and Redis.
+- Redis support currently targets a single instance over TCP or a Unix socket, with optional password auth and database selection.
 - The cache watcher keeps the index fresh during normal operation.
 - A cold-start bootstrap fallback scans the configured cache tree if a tag purge arrives before a zone has been indexed.
 
@@ -399,6 +404,13 @@ make test
 
 For manual validation inside the development container, the repository includes an example nginx configuration at `examples/docker-validation.conf`.
 
+It defaults to SQLite for tag indexing and includes a commented Redis alternative:
+
+```nginx
+cache_tag_index  sqlite /tmp/ngx_cache_purge_demo_tags.sqlite;
+# cache_tag_index  redis redis:6379 db=10;
+```
+
 It provides separate locations for these behaviors:
 
 - exact-key soft purge (`/soft`)
@@ -407,12 +419,26 @@ It provides separate locations for these behaviors:
 - `purge_all` soft purge (`/purge_all`)
 - separate-location `zone key soft` syntax (`/separate` and `/purge_separate/...`)
 - cache-tag soft purge by `Surrogate-Key` or `Cache-Tag` (`/tagged/...`)
+- watched-location plain `PURGE` fallback (`/tagged/plain`)
+- custom tag headers with an isolated cache zone (`/tagged_custom`)
 
 Start it inside the container after building nginx:
 
 ```bash
 make shell
 make nginx-build
+rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_demo_tags.sqlite
+mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
+/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+```
+
+For Redis-backed validation, start the sidecar first, switch `cache_tag_index` in the example config to the commented Redis line, and clear the selected database before starting nginx:
+
+```bash
+docker compose up -d redis
+make shell
+make nginx-build
+redis-cli -h redis -p 6379 -n 10 FLUSHDB
 rm -rf /tmp/ngx_cache_purge_demo_* /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_demo_tags.sqlite
 mkdir -p /tmp/ngx_cache_purge_temp /tmp/logs
 /opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
@@ -503,6 +529,38 @@ curl -i 'http://127.0.0.1:8080/tagged/c'
 ```
 
 The two `shared` entries should come back as `EXPIRED`, while `/tagged/c` should remain `HIT`.
+
+Redis-specific validation flows after switching the example config to `cache_tag_index redis redis:6379 db=10`:
+
+Watched-location plain `PURGE` fallback:
+
+```bash
+curl -i 'http://127.0.0.1:8080/tagged/plain'
+curl -i -X PURGE 'http://127.0.0.1:8080/tagged/plain'
+curl -i 'http://127.0.0.1:8080/tagged/plain'
+```
+
+The final request should return `X-Cache-Status: EXPIRED`, showing that a watched location still falls back to key-based soft purge when no tag headers are supplied.
+
+Redis hard tag purge via `cache_purge_mode_header` override:
+
+```bash
+curl -i 'http://127.0.0.1:8080/tagged/a?t=redis-hard'
+curl -i -X PURGE -H 'Cache-Tag: alpha' -H 'X-Purge-Mode: hard' 'http://127.0.0.1:8080/tagged/a?t=redis-hard'
+curl -i 'http://127.0.0.1:8080/tagged/a?t=redis-hard'
+```
+
+The final request should return `X-Cache-Status: MISS`, confirming that the Redis-backed tag purge deleted the cache file instead of expiring it in place.
+
+Redis custom `cache_tag_headers` flow:
+
+```bash
+curl -i 'http://127.0.0.1:8080/tagged_custom'
+curl -i -X PURGE -H 'Custom-Group: custom-alpha' 'http://127.0.0.1:8080/tagged_custom'
+curl -i 'http://127.0.0.1:8080/tagged_custom'
+```
+
+The final request should return `X-Cache-Status: EXPIRED`, confirming that both cached-response indexing and purge matching use `Edge-Tag` and `Custom-Group` for that isolated Redis-backed zone.
 
 Stop the validation nginx instance with:
 

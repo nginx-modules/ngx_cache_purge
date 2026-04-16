@@ -51,7 +51,7 @@ test:
 	$(MAKE) nginx-build >/tmp/nginx-build.log
 	@set -e; \
 	for test_file in t/*.t; do \
-		rm -rf /tmp/ngx_cache_purge_cache /tmp/ngx_cache_purge_temp /tmp/ngx_cache_purge_tags.sqlite*; \
+		rm -rf /tmp/ngx_cache_*; \
 		echo "== $$test_file =="; \
 		TEST_NGINX_BINARY="$(NGINX_BUILD_PREFIX)/sbin/nginx" prove "$$test_file" || exit $$?; \
 	done

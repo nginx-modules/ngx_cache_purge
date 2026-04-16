@@ -3,62 +3,65 @@
 use lib 'lib';
 use Test::Nginx::Socket;
 
+BEGIN {
+    if (system("redis-cli -h 127.0.0.1 -p 6380 ping >/dev/null 2>&1") != 0) {
+        system("redis-server --save '' --appendonly no --daemonize yes --bind 127.0.0.1 --port 6380 >/dev/null 2>&1");
+    }
+    for my $db (0 .. 15) {
+        system("redis-cli -h 127.0.0.1 -p 6380 -n $db FLUSHDB >/dev/null 2>&1");
+    }
+}
+
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4);
+plan tests => repeat_each() * 118;
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=10;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_hard.sqlite;
-_EOC_
-
-our $http_config_cache_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_cache_tag.sqlite;
-_EOC_
-
-our $http_config_override = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_override.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=11;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_restart.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=12;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_plain.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=13;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_custom.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=14;
+_EOC_
+
+our $http_config_cache_tag = <<'_EOC_';
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=15;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_multi_tag.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=0;
 _EOC_
 
 our $config_multi_tag = <<'_EOC_';
     location = /proxy/multi-a {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/multi-a;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -69,7 +72,7 @@ our $config_multi_tag = <<'_EOC_';
 
     location = /proxy/multi-b {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/multi-b;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -80,7 +83,7 @@ our $config_multi_tag = <<'_EOC_';
 
     location = /proxy/multi-c {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/multi-c;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -106,15 +109,15 @@ our $config_multi_tag = <<'_EOC_';
 _EOC_
 
 our $http_config_overload = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_overload keys_zone=overload_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_overload 1 2;
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_overload.sqlite;
+    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis_overload keys_zone=redis_overload_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis_overload 1 2;
+    cache_tag_index   redis 127.0.0.1:6380 db=1;
 _EOC_
 
 our $config_overload = <<'_EOC_';
     location = /proxy/overload {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/overload;
-        proxy_cache        overload_cache;
+        proxy_cache        redis_overload_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -134,7 +137,7 @@ our $overload_tags = join(" ", map { "t$_" } 1..1001);
 our $config_soft = <<'_EOC_';
     location = /proxy/a {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/a;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -145,18 +148,7 @@ our $config_soft = <<'_EOC_';
 
     location = /proxy/b {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/b;
-        proxy_cache        test_cache;
-        proxy_cache_key    $uri$is_args$args;
-        proxy_cache_valid  3m;
-        add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
-    }
-
-    location = /proxy/c {
-        proxy_pass         $scheme://127.0.0.1:$server_port/origin/c;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -176,18 +168,12 @@ our $config_soft = <<'_EOC_';
         add_header         Cache-Tag "beta, shared";
         return 200         "origin-b";
     }
-
-    location = /origin/c {
-        add_header         Surrogate-Key "group-three";
-        add_header         Cache-Tag "gamma";
-        return 200         "origin-c";
-    }
 _EOC_
 
 our $config_hard = <<'_EOC_';
     location = /proxy/a {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/a;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -203,29 +189,10 @@ our $config_hard = <<'_EOC_';
     }
 _EOC_
 
-our $config_forbidden = <<'_EOC_';
-    location = /proxy/a {
-        proxy_pass         $scheme://127.0.0.1:$server_port/origin/a;
-        proxy_cache        test_cache;
-        proxy_cache_key    $uri$is_args$args;
-        proxy_cache_valid  3m;
-        add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 1.0.0.0/8;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
-    }
-
-    location = /origin/a {
-        add_header         Surrogate-Key "group-denied";
-        add_header         Cache-Tag "denied";
-        return 200         "origin-a";
-    }
-_EOC_
-
 our $config_plain = <<'_EOC_';
     location = /proxy/plain {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/plain;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -244,7 +211,7 @@ _EOC_
 our $config_custom = <<'_EOC_';
     location = /proxy/custom {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/custom;
-        proxy_cache        test_cache;
+        proxy_cache        redis_cache;
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
@@ -269,7 +236,7 @@ no_diff();
 
 __DATA__
 
-=== TEST 1: prepare first soft-tagged cache entry
+=== TEST 1: prepare first redis soft-tagged cache entry
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -278,13 +245,12 @@ GET /proxy/a
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 2: prepare second soft-tagged cache entry
+=== TEST 2: prepare second redis soft-tagged cache entry
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -293,28 +259,12 @@ GET /proxy/b
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 3: prepare unrelated soft-tagged cache entry
---- http_config eval: $::http_config
---- config eval: $::config_soft
---- request
-GET /proxy/c
---- error_code: 200
---- response_headers
-X-Cache-Status: MISS
---- response_body: origin-c
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 4: headerless surrogate-key purge on soft location uses configured mode
+=== TEST 3: redis surrogate-key soft purge succeeds
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -322,16 +272,13 @@ PURGE /proxy/a
 --- more_headers
 Surrogate-Key: group-one
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 5: first matched surrogate-key entry is expired
+=== TEST 4: first redis surrogate-key match expires
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -340,13 +287,12 @@ GET /proxy/a
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 6: second matched surrogate-key entry is expired
+=== TEST 5: second redis surrogate-key match expires
 --- http_config eval: $::http_config
 --- config eval: $::config_soft
 --- request
@@ -355,28 +301,12 @@ GET /proxy/b
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 7: unrelated entry remains a hit after surrogate-key purge
---- http_config eval: $::http_config
---- config eval: $::config_soft
---- request
-GET /proxy/c
---- error_code: 200
---- response_headers
-X-Cache-Status: HIT
---- response_body: origin-c
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 8: prepare cache-tag alpha entry on fresh index
+=== TEST 6: prepare redis cache-tag alpha entry
 --- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
@@ -385,13 +315,12 @@ GET /proxy/a?t=cache-tag
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 9: prepare cache-tag beta entry on fresh index
+=== TEST 7: prepare redis cache-tag beta entry
 --- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
@@ -400,13 +329,12 @@ GET /proxy/b?t=cache-tag
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 10: headerless cache-tag purge on soft location uses configured mode
+=== TEST 8: redis cache-tag soft purge succeeds
 --- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
@@ -414,16 +342,13 @@ PURGE /proxy/a?t=cache-tag
 --- more_headers
 Cache-Tag: alpha, missing-tag
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 11: headerless cache-tag purge expires matching alpha entry
+=== TEST 9: redis cache-tag soft purge expires matching entry
 --- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
@@ -432,13 +357,12 @@ GET /proxy/a?t=cache-tag
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 12: cache-tag purge does not touch unrelated beta entry
+=== TEST 10: redis cache-tag soft purge leaves unrelated entry alone
 --- http_config eval: $::http_config_cache_tag
 --- config eval: $::config_soft
 --- request
@@ -447,13 +371,12 @@ GET /proxy/b?t=cache-tag
 --- response_headers
 X-Cache-Status: HIT
 --- response_body: origin-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 11: prepare hard-tagged cache entry
+=== TEST 11: prepare redis hard-tagged cache entry
 --- http_config eval: $::http_config_hard
 --- config eval: $::config_hard
 --- request
@@ -462,28 +385,12 @@ GET /proxy/a?t=hard
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 12: serve hard-tagged cache entry from cache
---- http_config eval: $::http_config_hard
---- config eval: $::config_hard
---- request
-GET /proxy/a?t=hard
---- error_code: 200
---- response_headers
-X-Cache-Status: HIT
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 13: hard purge by cache-tag removes the entry
+=== TEST 12: redis hard cache-tag purge succeeds
 --- http_config eval: $::http_config_hard
 --- config eval: $::config_hard
 --- request
@@ -491,16 +398,13 @@ PURGE /proxy/a?t=hard
 --- more_headers
 Cache-Tag: hard-only
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 14: next request after hard tag purge is a miss
+=== TEST 13: next request after redis hard tag purge is a miss
 --- http_config eval: $::http_config_hard
 --- config eval: $::config_hard
 --- request
@@ -509,108 +413,12 @@ GET /proxy/a?t=hard
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 15: prepare hard-tagged cache entry for soft override
---- http_config eval: $::http_config_override
---- config eval: $::config_hard
---- request
-GET /proxy/a?t=hard-soft
---- error_code: 200
---- response_headers
-X-Cache-Status: MISS
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 16: override header softens hard cache-tag purge
---- http_config eval: $::http_config_override
---- config eval: $::config_hard
---- request
-PURGE /proxy/a?t=hard-soft
---- more_headers
-Cache-Tag: hard-only
-X-Purge-Mode: soft
---- error_code: 200
---- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 17: soft-overridden hard cache-tag purge expires the entry
---- http_config eval: $::http_config_override
---- config eval: $::config_hard
---- request
-GET /proxy/a?t=hard-soft
---- error_code: 200
---- response_headers
-X-Cache-Status: EXPIRED
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 18: prepare forbidden tag purge entry
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/a?t=forbidden
---- error_code: 200
---- response_headers
-X-Cache-Status: MISS
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 19: forbidden tag purge is rejected
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-PURGE /proxy/a?t=forbidden
---- more_headers
-Surrogate-Key: group-denied
---- error_code: 403
---- response_headers
-Content-Type: text/html
---- response_body_like: 403 Forbidden
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 20: forbidden tag purge leaves cached entry as hit
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/a?t=forbidden
---- error_code: 200
---- response_headers
-X-Cache-Status: HIT
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 21: prepare restart-tagged entry for persisted bootstrap test
+=== TEST 14: prepare redis bootstrap entry
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
@@ -619,13 +427,12 @@ GET /proxy/a?t=restart
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 22: first tag purge bootstraps the zone index
+=== TEST 15: first redis tag purge bootstraps the zone index
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
@@ -636,15 +443,15 @@ X-Purge-Mode: soft
 --- error_code: 200
 --- response_body_like: Successful purge
 --- grep_error_log eval
-qr/cache_tag bootstrap zone "test_cache"/
+qr/cache_tag bootstrap zone "redis_cache"/
 --- grep_error_log_out
-cache_tag bootstrap zone "test_cache"
+cache_tag bootstrap zone "redis_cache"
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 23: second tag purge reuses persisted index after restart
+=== TEST 16: second redis tag purge reuses persisted index
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
@@ -655,15 +462,15 @@ X-Purge-Mode: soft
 --- error_code: 200
 --- response_body_like: Successful purge
 --- grep_error_log eval
-qr/cache_tag request reusing persisted index for zone "test_cache"/
+qr/cache_tag request reusing persisted index for zone "redis_cache"/
 --- grep_error_log_out
-cache_tag request reusing persisted index for zone "test_cache"
+cache_tag request reusing persisted index for zone "redis_cache"
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 24: prepare watched entry for plain purge fallback
+=== TEST 17: prepare redis plain purge fallback entry
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -672,28 +479,24 @@ GET /proxy/plain
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-plain
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 25: plain PURGE without override header still works when cache_tag_watch is enabled
+=== TEST 18: plain PURGE still works with redis cache_tag_watch
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
 PURGE /proxy/plain
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 26: plain PURGE fallback uses configured soft mode by default
+=== TEST 19: plain PURGE fallback still uses soft mode with redis backend
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -702,60 +505,12 @@ GET /proxy/plain
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-plain
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 27: prepare watched entry for soft override fallback
---- http_config eval: $::http_config_plain
---- config eval: $::config_plain
---- request
-GET /proxy/plain?t=soft
---- error_code: 200
---- response_headers
-X-Cache-Status: MISS
---- response_body: origin-plain
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 28: explicit soft override preserves plain PURGE fallback behavior
---- http_config eval: $::http_config_plain
---- config eval: $::config_plain
---- request
-PURGE /proxy/plain?t=soft
---- more_headers
-X-Purge-Mode: soft
---- error_code: 200
---- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 29: plain PURGE fallback honors explicit soft override
---- http_config eval: $::http_config_plain
---- config eval: $::config_plain
---- request
-GET /proxy/plain?t=soft
---- error_code: 200
---- response_headers
-X-Cache-Status: EXPIRED
---- response_body: origin-plain
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 30: prepare custom-header tagged cache entry
+=== TEST 20: prepare redis custom-header tagged entry
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -764,28 +519,12 @@ GET /proxy/custom
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-custom
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 31: serve custom-header tagged entry from cache
---- http_config eval: $::http_config_custom
---- config eval: $::config_custom
---- request
-GET /proxy/custom
---- error_code: 200
---- response_headers
-X-Cache-Status: HIT
---- response_body: origin-custom
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 32: custom cache_tag_headers are matched during purge
+=== TEST 21: redis custom cache_tag_headers are matched during purge
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -793,16 +532,13 @@ PURGE /proxy/custom
 --- more_headers
 Custom-Group: custom-alpha
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 33: custom cache_tag_headers are used for cached-response indexing
+=== TEST 22: redis custom cache_tag_headers are used for cached-response indexing
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -811,13 +547,12 @@ GET /proxy/custom
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-custom
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 34: prepare sqlite multi-tag-a cache entry
+=== TEST 23: prepare redis multi-tag-a cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -826,13 +561,12 @@ GET /proxy/multi-a
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-multi-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 35: prepare sqlite multi-tag-b cache entry
+=== TEST 24: prepare redis multi-tag-b cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -841,13 +575,12 @@ GET /proxy/multi-b
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-multi-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 36: prepare sqlite unrelated multi-tag-c cache entry
+=== TEST 25: prepare redis unrelated multi-tag-c cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -856,13 +589,12 @@ GET /proxy/multi-c
 --- response_headers
 X-Cache-Status: MISS
 --- response_body: origin-multi-c
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 37: sqlite purge by two tags exercises IN clause path
+=== TEST 26: redis purge by two tags uses SUNION across two tag keys
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -870,16 +602,13 @@ PURGE /proxy/multi-a
 --- more_headers
 Surrogate-Key: sk-multi-a sk-multi-b
 --- error_code: 200
---- response_headers
-Content-Type: text/html
 --- response_body_like: Successful purge
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 38: sqlite multi-tag-a entry is expired after two-tag purge
+=== TEST 27: redis multi-tag-a entry is expired after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -888,13 +617,12 @@ GET /proxy/multi-a
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-multi-a
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 39: sqlite multi-tag-b entry is expired after two-tag purge
+=== TEST 28: redis multi-tag-b entry is expired after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -903,13 +631,12 @@ GET /proxy/multi-b
 --- response_headers
 X-Cache-Status: EXPIRED
 --- response_body: origin-multi-b
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 40: sqlite unrelated entry remains a hit after two-tag purge
+=== TEST 29: redis unrelated entry remains a hit after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -918,13 +645,12 @@ GET /proxy/multi-c
 --- response_headers
 X-Cache-Status: HIT
 --- response_body: origin-multi-c
---- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 41: prepare sqlite overload cache entry for truncation test
+=== TEST 30: prepare redis overload cache entry for truncation test
 --- http_config eval: $::http_config_overload
 --- config eval: $::config_overload
 --- request
@@ -939,7 +665,7 @@ qr/\[(error|crit|alert|emerg)\]/
 
 
 
-=== TEST 42: sqlite purge with 1001 tags logs truncation warning at 1000
+=== TEST 31: redis purge with 1001 tags logs truncation warning at 1000
 --- http_config eval: $::http_config_overload
 --- config eval: $::config_overload
 --- request

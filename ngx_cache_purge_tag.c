@@ -2,6 +2,8 @@
 
 static ngx_flag_t ngx_http_cache_tag_headers_equal(ngx_array_t *left,
         ngx_array_t *right);
+static char *ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
+        ngx_http_cache_purge_main_conf_t *pmcf, ngx_str_t *value);
 
 char *
 ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
@@ -11,14 +13,8 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     pmcf = conf;
     value = cf->args->elts;
 
-    if (pmcf->sqlite_path.data != NULL) {
+    if (pmcf->backend != NGX_HTTP_CACHE_TAG_BACKEND_NONE) {
         return "is duplicate";
-    }
-
-    if (ngx_strcmp(value[1].data, "sqlite") != 0) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "invalid cache_tag_index backend \"%V\"", &value[1]);
-        return NGX_CONF_ERROR;
     }
 
 #if !(NGX_LINUX)
@@ -26,9 +22,105 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
                        "cache_tag_index requires Linux inotify support");
     return NGX_CONF_ERROR;
 #else
-    pmcf->sqlite_path = value[2];
-    return NGX_CONF_OK;
+    if (ngx_strcmp(value[1].data, "sqlite") == 0) {
+        if (cf->args->nelts != 3) {
+            return NGX_CONF_ERROR;
+        }
+
+        pmcf->backend = NGX_HTTP_CACHE_TAG_BACKEND_SQLITE;
+        pmcf->sqlite_path = value[2];
+        return NGX_CONF_OK;
+    }
+
+    if (ngx_strcmp(value[1].data, "redis") == 0) {
+        return ngx_http_cache_tag_index_conf_redis(cf, pmcf, value);
+    }
+
+    ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                       "invalid cache_tag_index backend \"%V\"", &value[1]);
+    return NGX_CONF_ERROR;
 #endif
+}
+
+static char *
+ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
+                                    ngx_http_cache_purge_main_conf_t *pmcf,
+                                    ngx_str_t *value) {
+    ngx_uint_t  i;
+    u_char     *colon;
+    ngx_int_t   port, db;
+
+    if (cf->args->nelts < 3) {
+        return NGX_CONF_ERROR;
+    }
+
+    pmcf->backend = NGX_HTTP_CACHE_TAG_BACKEND_REDIS;
+    pmcf->redis.endpoint = value[2];
+    pmcf->redis.db = 0;
+
+    if (value[2].len > sizeof("unix:") - 1
+            && ngx_strncmp(value[2].data, "unix:", sizeof("unix:") - 1) == 0) {
+        pmcf->redis.use_unix = 1;
+        pmcf->redis.unix_path.data = value[2].data + sizeof("unix:") - 1;
+        pmcf->redis.unix_path.len = value[2].len - (sizeof("unix:") - 1);
+        if (pmcf->redis.unix_path.len == 0 || pmcf->redis.unix_path.data[0] != '/') {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid redis unix socket endpoint \"%V\"",
+                               &value[2]);
+            return NGX_CONF_ERROR;
+        }
+    } else {
+        colon = (u_char *) ngx_strlchr(value[2].data,
+                                       value[2].data + value[2].len, ':');
+        if (colon == NULL || colon == value[2].data
+                || colon == value[2].data + value[2].len - 1) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid redis endpoint \"%V\"", &value[2]);
+            return NGX_CONF_ERROR;
+        }
+
+        pmcf->redis.host.data = value[2].data;
+        pmcf->redis.host.len = (size_t)(colon - value[2].data);
+        port = ngx_atoi(colon + 1, value[2].len - pmcf->redis.host.len - 1);
+        if (port == NGX_ERROR || port <= 0 || port > 65535) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid redis port in \"%V\"", &value[2]);
+            return NGX_CONF_ERROR;
+        }
+
+        pmcf->redis.port = (ngx_uint_t) port;
+    }
+
+    for (i = 3; i < cf->args->nelts; i++) {
+        if (value[i].len > 3 && ngx_strncmp(value[i].data, "db=", 3) == 0) {
+            db = ngx_atoi(value[i].data + 3, value[i].len - 3);
+            if (db == NGX_ERROR || db < 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "invalid redis db option \"%V\"", &value[i]);
+                return NGX_CONF_ERROR;
+            }
+            pmcf->redis.db = (ngx_uint_t) db;
+            continue;
+        }
+
+        if (value[i].len >= 9 && ngx_strncmp(value[i].data, "password=", 9) == 0) {
+            if (value[i].len == 9) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "redis password option must not be empty");
+                return NGX_CONF_ERROR;
+            }
+            pmcf->redis.password.data = value[i].data + 9;
+            pmcf->redis.password.len = value[i].len - 9;
+            continue;
+        }
+
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "unknown redis cache_tag_index option \"%V\"",
+                           &value[i]);
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
 }
 
 char *
@@ -136,7 +228,8 @@ ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
             }
 
             if (ngx_http_cache_tag_extract_tokens(r->pool, header[i].value.data,
-                                                  header[i].value.len, result)
+                                                  header[i].value.len, result,
+                                                  r->connection->log)
                     != NGX_OK) {
                 return NGX_ERROR;
             }
@@ -160,7 +253,7 @@ ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
     }
 
     pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_purge_module);
-    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+    if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_OK;
     }
 
@@ -248,7 +341,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
     http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
                ngx_http_module);
     pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
-    if (pmcf == NULL || pmcf->sqlite_path.len == 0) {
+    if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_DECLINED;
     }
 
@@ -298,15 +391,20 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
     }
 
     if (paths->nelts == 0 && !state.bootstrap_complete && cache->path != NULL) {
-        writer = ngx_http_cache_tag_store_open_writer(&pmcf->sqlite_path,
-                 r->connection->log);
+        writer = ngx_http_cache_tag_is_owner()
+                 ? ngx_http_cache_tag_store_writer()
+                 : ngx_http_cache_tag_store_open_writer(pmcf,
+                         r->connection->log);
         if (writer == NULL) {
             return NGX_ERROR;
         }
 
         rc = ngx_http_cache_tag_bootstrap_zone(writer, zone,
                                                (ngx_cycle_t *) ngx_cycle);
-        ngx_http_cache_tag_store_close(writer);
+        if (!ngx_http_cache_tag_is_owner()) {
+            ngx_http_cache_tag_store_close(writer);
+        }
+
         if (rc != NGX_OK) {
             return NGX_ERROR;
         }
@@ -323,7 +421,6 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
         }
     }
 
-    writer = NULL;
     purged = 0;
     path = paths->elts;
     for (i = 0; i < paths->nelts; i++) {
@@ -332,7 +429,6 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
         if (rc == NGX_OK) {
             purged++;
         } else if (rc != NGX_DECLINED) {
-            ngx_http_cache_tag_store_close(writer);
             return NGX_ERROR;
         }
 
@@ -341,23 +437,13 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache) {
         }
 
         if (rc == NGX_OK || rc == NGX_DECLINED) {
-            if (writer == NULL) {
-                writer = ngx_http_cache_tag_store_open_writer(&pmcf->sqlite_path,
-                         r->connection->log);
-                if (writer == NULL) {
-                    return NGX_ERROR;
-                }
-            }
-
-            if (ngx_http_cache_tag_store_delete_file(writer, &zone->zone_name,
-                    &path[i], r->connection->log) != NGX_OK) {
-                ngx_http_cache_tag_store_close(writer);
+            rc = ngx_http_cache_tag_queue_enqueue_delete(pmcf,
+                    &zone->zone_name, &path[i], r->connection->log);
+            if (rc != NGX_OK) {
                 return NGX_ERROR;
             }
         }
     }
-
-    ngx_http_cache_tag_store_close(writer);
 
     return purged > 0 ? NGX_OK : NGX_DECLINED;
 #endif

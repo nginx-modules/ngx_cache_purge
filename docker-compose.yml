@@ -10,3 +10,9 @@ services:
       - .:/workspace
     tty: true
     stdin_open: true
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]

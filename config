@@ -17,7 +17,9 @@ fi
 ngx_addon_name=ngx_http_cache_purge_module
 CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_module.c \
 $ngx_addon_dir/ngx_cache_purge_tag.c \
+$ngx_addon_dir/ngx_cache_purge_tag_store.c \
 $ngx_addon_dir/ngx_cache_purge_tag_store_sqlite.c \
+$ngx_addon_dir/ngx_cache_purge_tag_store_redis.c \
 $ngx_addon_dir/ngx_cache_purge_tag_watch_linux.c"
 ngx_module_libs="-lsqlite3"
 
