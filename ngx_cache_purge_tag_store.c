@@ -24,8 +24,10 @@ ngx_http_cache_tag_store_open_writer(ngx_http_cache_purge_main_conf_t *pmcf,
     }
 
     switch (pmcf->backend) {
+#if (NGX_CACHE_PURGE_SQLITE)
     case NGX_HTTP_CACHE_TAG_BACKEND_SQLITE:
         return ngx_http_cache_tag_store_sqlite_open(pmcf, 0, log);
+#endif
     case NGX_HTTP_CACHE_TAG_BACKEND_REDIS:
         return ngx_http_cache_tag_store_redis_open(pmcf, 0, log);
     default:
@@ -41,8 +43,10 @@ ngx_http_cache_tag_store_open_reader(ngx_http_cache_purge_main_conf_t *pmcf,
     }
 
     switch (pmcf->backend) {
+#if (NGX_CACHE_PURGE_SQLITE)
     case NGX_HTTP_CACHE_TAG_BACKEND_SQLITE:
         return ngx_http_cache_tag_store_sqlite_open(pmcf, 1, log);
+#endif
     case NGX_HTTP_CACHE_TAG_BACKEND_REDIS:
         return ngx_http_cache_tag_store_redis_open(pmcf, 1, log);
     default:
@@ -56,8 +60,10 @@ ngx_http_cache_tag_store_close(ngx_http_cache_tag_store_t *store) {
         return;
     }
 
+    /* Close the backing resource (socket / db handle).  The store struct
+     * itself is allocated from cycle->pool and freed automatically when
+     * the pool is destroyed on worker exit or config reload. */
     store->ops->close(store);
-    ngx_free(store);
 }
 
 ngx_int_t

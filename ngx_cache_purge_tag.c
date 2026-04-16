@@ -1,5 +1,9 @@
 #include "ngx_cache_purge_tag.h"
 
+#if (NGX_LINUX)
+    #include <netdb.h>
+#endif
+
 static ngx_flag_t ngx_http_cache_tag_headers_equal(ngx_array_t *left,
         ngx_array_t *right);
 static char *ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
@@ -22,6 +26,7 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
                        "cache_tag_index requires Linux inotify support");
     return NGX_CONF_ERROR;
 #else
+#if (NGX_CACHE_PURGE_SQLITE)
     if (ngx_strcmp(value[1].data, "sqlite") == 0) {
         if (cf->args->nelts != 3) {
             return NGX_CONF_ERROR;
@@ -31,6 +36,14 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         pmcf->sqlite_path = value[2];
         return NGX_CONF_OK;
     }
+#else
+    if (ngx_strcmp(value[1].data, "sqlite") == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "cache_tag_index sqlite backend requires SQLite3 "
+                           "library (not found at build time)");
+        return NGX_CONF_ERROR;
+    }
+#endif
 
     if (ngx_strcmp(value[1].data, "redis") == 0) {
         return ngx_http_cache_tag_index_conf_redis(cf, pmcf, value);
@@ -89,6 +102,51 @@ ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
         }
 
         pmcf->redis.port = (ngx_uint_t) port;
+
+        /* Resolve the TCP address once here in the master process so that
+         * worker reconnects never call getaddrinfo() inside the event loop. */
+        {
+            struct addrinfo   hints, *res;
+            u_char           *host_buf;
+            char              port_buf[NGX_INT_T_LEN + 1];
+            int               gai_rc;
+
+            ngx_memzero(&hints, sizeof(hints));
+            hints.ai_family   = AF_UNSPEC;
+            hints.ai_socktype = SOCK_STREAM;
+            ngx_snprintf((u_char *) port_buf, sizeof(port_buf), "%ui%Z",
+                         pmcf->redis.port);
+
+            host_buf = ngx_pnalloc(cf->pool, pmcf->redis.host.len + 1);
+            if (host_buf == NULL) {
+                return NGX_CONF_ERROR;
+            }
+            ngx_memcpy(host_buf, pmcf->redis.host.data, pmcf->redis.host.len);
+            host_buf[pmcf->redis.host.len] = '\0';
+
+            gai_rc = getaddrinfo((const char *) host_buf, port_buf, &hints,
+                                 &res);
+            if (gai_rc != 0) {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "redis: failed to resolve \"%V\": %s",
+                                   &pmcf->redis.host, gai_strerror(gai_rc));
+                return NGX_CONF_ERROR;
+            }
+
+            if (res->ai_addrlen > sizeof(pmcf->redis.resolved_addr)) {
+                freeaddrinfo(res);
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "redis: resolved address too large for "
+                                   "\"%V\"", &pmcf->redis.host);
+                return NGX_CONF_ERROR;
+            }
+
+            ngx_memcpy(&pmcf->redis.resolved_addr, res->ai_addr,
+                       res->ai_addrlen);
+            pmcf->redis.resolved_addrlen = (socklen_t) res->ai_addrlen;
+            pmcf->redis.resolved = 1;
+            freeaddrinfo(res);
+        }
     }
 
     for (i = 3; i < cf->args->nelts; i++) {
@@ -153,27 +211,6 @@ ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
     }
 
     return NGX_CONF_OK;
-}
-
-char *
-ngx_http_cache_tag_watch_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_cache_purge_loc_conf_t  *cplcf;
-    ngx_str_t                        *value;
-
-    cplcf = conf;
-    value = cf->args->elts;
-
-    if (ngx_strcmp(value[1].data, "on") == 0) {
-        cplcf->cache_tag_watch = 1;
-        return NGX_CONF_OK;
-    }
-
-    if (ngx_strcmp(value[1].data, "off") == 0) {
-        cplcf->cache_tag_watch = 0;
-        return NGX_CONF_OK;
-    }
-
-    return "invalid value";
 }
 
 ngx_flag_t

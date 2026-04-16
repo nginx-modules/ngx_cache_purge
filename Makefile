@@ -24,6 +24,7 @@ nginx-build:
 	cd "$(NGINX_SRC_DIR)" && ./configure \
 		--prefix="$(NGINX_BUILD_PREFIX)" \
 		--with-debug \
+		--with-threads \
 		--with-http_ssl_module \
 		--add-module="$(MODULE_DIR)"
 	$(MAKE) -C "$(NGINX_SRC_DIR)" -j"$(JOBS)"
@@ -35,6 +36,7 @@ nginx-build-dynamic:
 		--prefix="$(NGINX_BUILD_PREFIX)" \
 		--with-compat \
 		--with-debug \
+		--with-threads \
 		--with-http_ssl_module \
 		--with-ld-opt="-lsqlite3" \
 		--add-dynamic-module="$(MODULE_DIR)"

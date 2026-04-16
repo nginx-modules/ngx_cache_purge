@@ -2,8 +2,6 @@
 
 #if (NGX_LINUX)
 
-#include <netdb.h>
-
 static void ngx_http_cache_tag_store_redis_close(
     ngx_http_cache_tag_store_t *store);
 static ngx_int_t ngx_http_cache_tag_store_redis_begin_batch(
@@ -119,17 +117,17 @@ ngx_http_cache_tag_store_redis_open(ngx_http_cache_purge_main_conf_t *pmcf,
         return NULL;
     }
 
-    store = ngx_alloc(sizeof(ngx_http_cache_tag_store_t), log);
+    store = ngx_pcalloc(ngx_cycle->pool, sizeof(ngx_http_cache_tag_store_t));
     if (store == NULL) {
         return NULL;
     }
 
-    ngx_memzero(store, sizeof(ngx_http_cache_tag_store_t));
     store->ops = &ngx_http_cache_tag_store_redis_ops;
     store->backend = NGX_HTTP_CACHE_TAG_BACKEND_REDIS;
     store->readonly = readonly;
     store->u.redis.pmcf = pmcf;
-    store->u.redis.fd = (ngx_socket_t) -1;
+    store->u.redis.conn = NULL;
+    store->u.redis.fd = (ngx_socket_t) NGX_INVALID_FILE;
 
     if (ngx_http_cache_tag_store_redis_connect(store, log) != NGX_OK) {
         ngx_http_cache_tag_store_close(store);
@@ -179,7 +177,7 @@ ngx_http_cache_tag_store_redis_replace_file_tags(ngx_http_cache_tag_store_t *sto
     for (retry = 0; retry < 2; retry++) {
         if (retry > 0) {
             ngx_http_cache_tag_store_redis_close_socket(store);
-            ngx_log_error(NGX_LOG_WARN, log, 0,
+            ngx_log_error(NGX_LOG_NOTICE, log, 0,
                           "cache_tag redis replace_file_tags failed, "
                           "retrying after reconnect for zone \"%V\" path \"%V\"",
                           zone_name, path);
@@ -375,7 +373,7 @@ ngx_http_cache_tag_store_redis_delete_file(ngx_http_cache_tag_store_t *store,
     for (retry = 0; retry < 2; retry++) {
         if (retry > 0) {
             ngx_http_cache_tag_store_redis_close_socket(store);
-            ngx_log_error(NGX_LOG_WARN, log, 0,
+            ngx_log_error(NGX_LOG_NOTICE, log, 0,
                           "cache_tag redis delete_file failed, "
                           "retrying after reconnect for zone \"%V\" path \"%V\"",
                           zone_name, path);
@@ -482,7 +480,7 @@ ngx_http_cache_tag_store_redis_collect_paths_by_tags(
     for (retry = 0; retry < 2; retry++) {
         if (retry > 0) {
             ngx_http_cache_tag_store_redis_close_socket(store);
-            ngx_log_error(NGX_LOG_WARN, log, 0,
+            ngx_log_error(NGX_LOG_NOTICE, log, 0,
                           "cache_tag redis collect_paths failed, "
                           "retrying after reconnect for zone \"%V\"", zone_name);
         }
@@ -565,7 +563,7 @@ ngx_http_cache_tag_store_redis_get_zone_state(ngx_http_cache_tag_store_t *store,
     for (retry = 0; retry < 2; retry++) {
         if (retry > 0) {
             ngx_http_cache_tag_store_redis_close_socket(store);
-            ngx_log_error(NGX_LOG_WARN, log, 0,
+            ngx_log_error(NGX_LOG_NOTICE, log, 0,
                           "cache_tag redis get_zone_state failed, "
                           "retrying after reconnect for zone \"%V\"", zone_name);
         }
@@ -636,7 +634,7 @@ ngx_http_cache_tag_store_redis_set_zone_state(ngx_http_cache_tag_store_t *store,
     for (retry = 0; retry < 2; retry++) {
         if (retry > 0) {
             ngx_http_cache_tag_store_redis_close_socket(store);
-            ngx_log_error(NGX_LOG_WARN, log, 0,
+            ngx_log_error(NGX_LOG_NOTICE, log, 0,
                           "cache_tag redis set_zone_state failed, "
                           "retrying after reconnect for zone \"%V\"", zone_name);
         }
@@ -701,9 +699,10 @@ ngx_http_cache_tag_store_redis_do_set_zone_state(ngx_http_cache_tag_store_t *sto
 
 static void
 ngx_http_cache_tag_store_redis_close_socket(ngx_http_cache_tag_store_t *store) {
-    if (store->u.redis.fd != (ngx_socket_t) -1) {
-        close(store->u.redis.fd);
-        store->u.redis.fd = (ngx_socket_t) -1;
+    if (store->u.redis.conn != NULL) {
+        ngx_close_connection(store->u.redis.conn);
+        store->u.redis.conn = NULL;
+        store->u.redis.fd = (ngx_socket_t) NGX_INVALID_FILE;
     }
     store->u.redis.recv_pos = 0;
     store->u.redis.recv_len = 0;
@@ -712,7 +711,7 @@ ngx_http_cache_tag_store_redis_close_socket(ngx_http_cache_tag_store_t *store) {
 static ngx_int_t
 ngx_http_cache_tag_store_redis_ensure_connected(ngx_http_cache_tag_store_t *store,
         ngx_log_t *log) {
-    if (store->u.redis.fd != (ngx_socket_t) -1) {
+    if (store->u.redis.conn != NULL) {
         return NGX_OK;
     }
 
@@ -723,13 +722,14 @@ static ngx_int_t
 ngx_http_cache_tag_store_redis_connect(ngx_http_cache_tag_store_t *store,
                                        ngx_log_t *log) {
     ngx_http_cache_tag_redis_conf_t *conf;
+    ngx_connection_t                *conn;
     ngx_str_t                        auth_args[2];
     ngx_str_t                        select_args[2];
     u_char                           db_buf[NGX_INT_T_LEN + 1];
     int                              fd;
 
     conf = &store->u.redis.pmcf->redis;
-    fd = -1;
+    fd = NGX_INVALID_FILE;
 
     if (conf->use_unix) {
         struct sockaddr_un addr;
@@ -761,57 +761,45 @@ ngx_http_cache_tag_store_redis_connect(ngx_http_cache_tag_store_t *store,
             close(fd);
             return NGX_ERROR;
         }
+
     } else {
-        struct addrinfo   hints;
-        struct addrinfo  *res, *rp;
-        u_char           *host_buf;
-        char              port_buf[NGX_INT_T_LEN + 1];
-        int               gai_rc;
-
-        ngx_memzero(&hints, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        ngx_snprintf((u_char *) port_buf, sizeof(port_buf), "%ui%Z", conf->port);
-
-        host_buf = ngx_alloc(conf->host.len + 1, log);
-        if (host_buf == NULL) {
-            return NGX_ERROR;
-        }
-        ngx_memcpy(host_buf, conf->host.data, conf->host.len);
-        host_buf[conf->host.len] = '\0';
-
-        gai_rc = getaddrinfo((const char *) host_buf, port_buf, &hints, &res);
-        ngx_free(host_buf);
-        if (gai_rc != 0) {
+        /* Use the address resolved once at config-parse time so that this
+         * reconnect path (called from timer callbacks and request handlers)
+         * never blocks the event loop with a getaddrinfo() call. */
+        if (!conf->resolved) {
             ngx_log_error(NGX_LOG_ERR, log, 0,
-                          "redis getaddrinfo failed for \"%V\": %s",
-                          &conf->host, gai_strerror(gai_rc));
+                          "redis: no pre-resolved address for \"%V\"",
+                          &conf->endpoint);
             return NGX_ERROR;
         }
 
-        for (rp = res; rp != NULL; rp = rp->ai_next) {
-            fd = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-            if (fd == -1) {
-                continue;
-            }
-
-            if (connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) {
-                break;
-            }
-
-            close(fd);
-            fd = -1;
-        }
-
-        freeaddrinfo(res);
-
+        fd = socket(conf->resolved_addr.ss_family, SOCK_STREAM, 0);
         if (fd == -1) {
             ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
+                          "redis socket() failed");
+            return NGX_ERROR;
+        }
+
+        if (connect(fd, (struct sockaddr *) &conf->resolved_addr,
+                    conf->resolved_addrlen) == -1) {
+            ngx_log_error(NGX_LOG_ERR, log, ngx_errno,
                           "redis connect failed for \"%V\"", &conf->endpoint);
+            close(fd);
             return NGX_ERROR;
         }
     }
 
+    /* Register the fd with the nginx cycle so the connection table owns it.
+     * This ensures the fd is closed on worker reload/exit and is visible to
+     * the event backend. */
+    conn = ngx_get_connection(fd, log);
+    if (conn == NULL) {
+        close(fd);
+        return NGX_ERROR;
+    }
+    conn->log = log;
+
+    store->u.redis.conn = conn;
     store->u.redis.fd = fd;
 
     if (conf->password.len > 0) {

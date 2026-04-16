@@ -105,6 +105,7 @@ cd nginx-1.28.1
 
 ./configure \
     --with-compat \
+    --with-threads \
     --with-ld-opt="-lsqlite3" \
     --add-dynamic-module=../ngx_cache_purge
 
@@ -120,6 +121,7 @@ If you are building your own NGINX binary from source, point `./configure` at th
 ```bash
 ./configure \
     --with-debug \
+    --with-threads \
     --with-http_ssl_module \
     --add-module=/path/to/ngx_cache_purge
 make
@@ -129,6 +131,8 @@ make install
 For a dynamic module build in this workflow, replace `--add-module` with `--add-dynamic-module` and use `make modules`.
 
 The repository `config` script links against `sqlite3`, so your build environment must provide the SQLite development library. Redis support uses the module's built-in RESP client and does not add another native dependency. The resulting dynamic module still depends on the system `libsqlite3` when SQLite support is compiled in.
+
+`--with-threads` enables nginx's thread pool support. When present, the module offloads two blocking operations to a worker thread: the startup cache-tree bootstrap (tag index population) and wildcard/partial-key purge scans. Without `--with-threads` these operations run synchronously in the event loop.
 
 If you want the included containerized build environment, tests, or the manual validation setup, see [Development](#development).
 
@@ -314,7 +318,7 @@ Notes:
 - Supported tag index backends are SQLite and Redis.
 - Redis support currently targets a single instance over TCP or a Unix socket, with optional password auth and database selection.
 - The cache watcher keeps the index fresh during normal operation.
-- A cold-start bootstrap fallback scans the configured cache tree if a tag purge arrives before a zone has been indexed.
+- When built with `--with-threads`, the startup cache-tree bootstrap and wildcard purge scans run in an nginx thread pool, keeping the event loop unblocked. Without threads, both operations run synchronously.
 
 ## Cache Index Architecture
 
