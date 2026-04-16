@@ -19,42 +19,91 @@ plan tests => repeat_each() * 118;
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=10;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=11;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=12;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=13;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=14;
 _EOC_
 
 our $http_config_cache_tag = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=15;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=0;
 _EOC_
 
@@ -65,7 +114,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -76,7 +125,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -87,7 +136,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -111,6 +160,13 @@ _EOC_
 our $http_config_overload = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_redis_overload keys_zone=redis_overload_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_redis_overload 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   redis 127.0.0.1:6380 db=1;
 _EOC_
 
@@ -121,7 +177,7 @@ our $config_overload = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -141,7 +197,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -152,7 +208,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -177,7 +233,7 @@ our $config_hard = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE from 127.0.0.1;
+        proxy_cache_purge  $purge_method;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -196,7 +252,7 @@ our $config_plain = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -215,7 +271,7 @@ our $config_custom = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE from 127.0.0.1;
+        proxy_cache_purge  $purge_method;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
         cache_tag_headers  Edge-Tag Custom-Group;

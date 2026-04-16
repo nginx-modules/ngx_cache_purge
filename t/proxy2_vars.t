@@ -5,15 +5,21 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4 + 6 * 1);
+plan tests => repeat_each() * (blocks() * 4 + 5 * 1);
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
 _EOC_
 
 our $config = <<'_EOC_';
-    proxy_cache_purge  on;
     set $cache         test_cache;
 
     location /proxy {
@@ -22,8 +28,7 @@ our $config = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-
-        if ($uri)          { }
+        proxy_cache_purge  $purge_method;
     }
 
     location = /etc/passwd {
@@ -32,7 +37,6 @@ our $config = <<'_EOC_';
 _EOC_
 
 our $config_allowed = <<'_EOC_';
-    proxy_cache_purge  PURGE from 1.0.0.0/8 127.0.0.0/8 3.0.0.0/8;
     set $cache         test_cache;
 
     location /proxy {
@@ -41,23 +45,7 @@ our $config_allowed = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-    }
-
-    location = /etc/passwd {
-        root               /;
-    }
-_EOC_
-
-our $config_forbidden = <<'_EOC_';
-    proxy_cache_purge  PURGE from 1.0.0.0/8;
-    set $cache         test_cache;
-
-    location /proxy {
-        proxy_pass         $scheme://127.0.0.1:$server_port/etc/passwd;
-        proxy_cache        $cache;
-        proxy_cache_key    $uri$is_args$args;
-        proxy_cache_valid  3m;
-        add_header         X-Cache-Status $upstream_cache_status;
+        proxy_cache_purge  $purge_method;
     }
 
     location = /etc/passwd {
@@ -238,46 +226,12 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 11: purge from cache (PURGE not allowed)
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-PURGE /proxy/passwd
---- error_code: 403
---- response_headers
-Content-Type: text/html
---- response_body_like: 403 Forbidden
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx: 4: < 1.7.9
-
-
-
-=== TEST 12: get from cache (PURGE not allowed)
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/passwd
---- error_code: 200
---- response_headers
-Content-Type: text/plain
-X-Cache-Status: HIT
---- response_body_like: root
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx: 5: < 1.7.9
-
-
-
 === TEST 13: no cache (PURGE allowed)
 --- http_config eval: $::http_config
 --- config
-    proxy_cache_purge  PURGE from 1.0.0.0/8 127.0.0.0/8 3.0.0.0/8;
-
     location /proxy {
         proxy_pass         $scheme://127.0.0.1:$server_port/etc/passwd;
+        proxy_cache_purge  $purge_method;
     }
 
     location = /etc/passwd {
@@ -296,36 +250,9 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 14: no cache (PURGE not allowed)
---- http_config eval: $::http_config
---- config
-    proxy_cache_purge  PURGE from 1.0.0.0/8;
-
-    location /proxy {
-        proxy_pass         $scheme://127.0.0.1:$server_port/etc/passwd;
-    }
-
-    location = /etc/passwd {
-        root               /;
-    }
---- request
-PURGE /proxy/passwd
---- error_code: 403
---- response_headers
-Content-Type: text/html
---- response_body_like: 403 Forbidden
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx: 4: < 1.7.9
-
-
-
 === TEST 15: multiple cache purge directives
 --- http_config eval: $::http_config
 --- config
-    fastcgi_cache_purge  on;
-    proxy_cache_purge    on;
     set $cache           test_cache;
 
     location /proxy {
@@ -334,8 +261,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-
-        if ($uri)          { }
+        proxy_cache_purge  $purge_method;
     }
 
     location = /etc/passwd {

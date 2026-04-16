@@ -39,6 +39,13 @@ _EOC_
 our $http_config_boot = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_threads_tag_cache keys_zone=threads_tag_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_threads_tag_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_tags_boot.sqlite;
 _EOC_
 
@@ -49,6 +56,13 @@ _EOC_
 our $http_config_persist = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_threads_persist_cache keys_zone=threads_persist_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_threads_persist_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_persist_tags.sqlite;
 _EOC_
 
@@ -59,6 +73,13 @@ _EOC_
 our $http_config_persist_reload = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_threads_persist_cache keys_zone=threads_persist_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_threads_persist_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_persist_tags.sqlite;
     # second-start (forces nginx restart in Test::Nginx)
 _EOC_
@@ -70,7 +91,7 @@ our $config_boot = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -88,7 +109,7 @@ our $config_persist = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }

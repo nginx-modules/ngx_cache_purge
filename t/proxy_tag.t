@@ -10,48 +10,104 @@ plan tests => repeat_each() * (blocks() * 4);
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags.sqlite;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_hard.sqlite;
 _EOC_
 
 our $http_config_cache_tag = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_cache_tag.sqlite;
 _EOC_
 
 our $http_config_override = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_override.sqlite;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_restart.sqlite;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_plain.sqlite;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_custom.sqlite;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_multi_tag.sqlite;
 _EOC_
 
@@ -62,7 +118,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -73,7 +129,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -84,7 +140,7 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -108,6 +164,13 @@ _EOC_
 our $http_config_overload = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache_overload keys_zone=overload_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp_overload 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
     cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_overload.sqlite;
 _EOC_
 
@@ -118,7 +181,7 @@ our $config_overload = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -138,7 +201,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -149,7 +212,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -160,7 +223,7 @@ our $config_soft = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -191,7 +254,7 @@ our $config_hard = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE from 127.0.0.1;
+        proxy_cache_purge  $purge_method;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -203,25 +266,6 @@ our $config_hard = <<'_EOC_';
     }
 _EOC_
 
-our $config_forbidden = <<'_EOC_';
-    location = /proxy/a {
-        proxy_pass         $scheme://127.0.0.1:$server_port/origin/a;
-        proxy_cache        test_cache;
-        proxy_cache_key    $uri$is_args$args;
-        proxy_cache_valid  3m;
-        add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 1.0.0.0/8;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
-    }
-
-    location = /origin/a {
-        add_header         Surrogate-Key "group-denied";
-        add_header         Cache-Tag "denied";
-        return 200         "origin-a";
-    }
-_EOC_
-
 our $config_plain = <<'_EOC_';
     location = /proxy/plain {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/plain;
@@ -229,7 +273,7 @@ our $config_plain = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
     }
@@ -248,7 +292,7 @@ our $config_custom = <<'_EOC_';
         proxy_cache_key    $uri$is_args$args;
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
-        proxy_cache_purge  PURGE from 127.0.0.1;
+        proxy_cache_purge  $purge_method;
         cache_purge_mode_header X-Purge-Mode;
         cache_tag_watch    on;
         cache_tag_headers  Edge-Tag Custom-Group;
@@ -560,56 +604,6 @@ X-Cache-Status: EXPIRED
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 18: prepare forbidden tag purge entry
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/a?t=forbidden
---- error_code: 200
---- response_headers
-X-Cache-Status: MISS
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 19: forbidden tag purge is rejected
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-PURGE /proxy/a?t=forbidden
---- more_headers
-Surrogate-Key: group-denied
---- error_code: 403
---- response_headers
-Content-Type: text/html
---- response_body_like: 403 Forbidden
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
-=== TEST 20: forbidden tag purge leaves cached entry as hit
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/a?t=forbidden
---- error_code: 200
---- response_headers
-X-Cache-Status: HIT
---- response_body: origin-a
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
-
-
-
 === TEST 21: prepare restart-tagged entry for persisted bootstrap test
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft

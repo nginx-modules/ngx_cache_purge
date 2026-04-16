@@ -22,6 +22,10 @@ For most users, the simplest starting point is a cached location plus a `PURGE` 
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
 
     server {
         listen 8080;
@@ -30,7 +34,7 @@ http {
             proxy_pass         http://127.0.0.1:8000;
             proxy_cache        tmpcache;
             proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  PURGE from 127.0.0.1;
+            proxy_cache_purge  $purge_method;
         }
     }
 }
@@ -53,6 +57,10 @@ If you want cache-tag purging, enable an index backend and watch the cache direc
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
     cache_tag_index  sqlite /tmp/ngx_cache_purge_tags.sqlite;
 
     server {
@@ -60,7 +68,7 @@ http {
             proxy_pass         http://127.0.0.1:8000;
             proxy_cache        tmpcache;
             proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  PURGE soft from 127.0.0.1;
+            proxy_cache_purge  $purge_method soft;
             cache_purge_mode_header X-Purge-Mode;
             cache_tag_watch    on;
         }
@@ -138,73 +146,39 @@ If you want the included containerized build environment, tests, or the manual v
 
 ## Configuration Reference
 
-### Same-location syntax
-
 #### `fastcgi_cache_purge`
 
-- **syntax**: `fastcgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **syntax**: `fastcgi_cache_purge string ... [soft] [purge_all]`
 - **default**: `none`
 - **context**: `http`, `server`, `location`
 
-Allow purging of selected pages from `FastCGI` cache.
+Allow purging of selected pages from `FastCGI` cache. Purge is enabled when at least one condition value is non-empty and not equal to `"0"`. This matches nginx core purge semantics, with `soft` and `purge_all` kept as module-specific trailing flags.
 
 #### `proxy_cache_purge`
 
-- **syntax**: `proxy_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **syntax**: `proxy_cache_purge string ... [soft] [purge_all]`
 - **default**: `none`
 - **context**: `http`, `server`, `location`
 
-Allow purging of selected pages from `proxy` cache.
+Allow purging of selected pages from `proxy` cache. Purge is enabled when at least one condition value is non-empty and not equal to `"0"`.
 
 #### `scgi_cache_purge`
 
-- **syntax**: `scgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **syntax**: `scgi_cache_purge string ... [soft] [purge_all]`
 - **default**: `none`
 - **context**: `http`, `server`, `location`
 
-Allow purging of selected pages from `SCGI` cache.
+Allow purging of selected pages from `SCGI` cache. Purge is enabled when at least one condition value is non-empty and not equal to `"0"`.
 
 #### `uwsgi_cache_purge`
 
-- **syntax**: `uwsgi_cache_purge on|off|<method> [soft] [purge_all] [from all|<ip> [.. <ip>]]`
+- **syntax**: `uwsgi_cache_purge string ... [soft] [purge_all]`
 - **default**: `none`
 - **context**: `http`, `server`, `location`
 
-Allow purging of selected pages from `uWSGI` cache.
+Allow purging of selected pages from `uWSGI` cache. Purge is enabled when at least one condition value is non-empty and not equal to `"0"`.
 
-### Separate-location syntax
-
-#### `fastcgi_cache_purge`
-
-- **syntax**: `fastcgi_cache_purge zone_name key [soft]`
-- **default**: `none`
-- **context**: `location`
-
-Set the cache zone and key used for purging selected pages from `FastCGI` cache.
-
-#### `proxy_cache_purge`
-
-- **syntax**: `proxy_cache_purge zone_name key [soft]`
-- **default**: `none`
-- **context**: `location`
-
-Set the cache zone and key used for purging selected pages from `proxy` cache.
-
-#### `scgi_cache_purge`
-
-- **syntax**: `scgi_cache_purge zone_name key [soft]`
-- **default**: `none`
-- **context**: `location`
-
-Set the cache zone and key used for purging selected pages from `SCGI` cache.
-
-#### `uwsgi_cache_purge`
-
-- **syntax**: `uwsgi_cache_purge zone_name key [soft]`
-- **default**: `none`
-- **context**: `location`
-
-Set the cache zone and key used for purging selected pages from `uWSGI` cache.
+For dedicated purge locations, configure the cache zone with `*_cache`, the purge key with `*_cache_key`, and then enable purging with one or more string conditions plus optional `soft` / `purge_all` flags.
 
 ### Optional directives
 
@@ -416,13 +390,17 @@ Use these as compact starting points after Quick Start.
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
 
     server {
         location / {
             proxy_pass         http://127.0.0.1:8000;
             proxy_cache        tmpcache;
             proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  PURGE from 127.0.0.1;
+            proxy_cache_purge  $purge_method;
         }
     }
 }
@@ -435,6 +413,10 @@ Use `soft` if you want matching entries to expire in place, or add `purge_all` i
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
 
     server {
         location / {
@@ -444,9 +426,9 @@ http {
         }
 
         location ~ /purge(/.*) {
-            allow              127.0.0.1;
-            deny               all;
-            proxy_cache_purge  tmpcache "$1$is_args$args";
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$1$is_args$args";
+            proxy_cache_purge  $purge_method;
         }
     }
 }
@@ -508,7 +490,7 @@ It provides separate locations for these behaviors:
 - soft purge with `proxy_cache_use_stale` on upstream `500` (`/stale`)
 - wildcard soft purge (`/wild`)
 - `purge_all` soft purge (`/purge_all`)
-- separate-location `zone key soft` syntax (`/separate` and `/purge_separate/...`)
+- separate-location purge with local `proxy_cache` and `proxy_cache_key` (`/separate` and `/purge_separate/...`)
 - cache-tag soft purge by `Surrogate-Key` or `Cache-Tag` (`/tagged/...`)
 - watched-location plain `PURGE` fallback (`/tagged/plain`)
 - custom tag headers with an isolated cache zone (`/tagged_custom`)

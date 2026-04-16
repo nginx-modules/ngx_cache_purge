@@ -20,11 +20,10 @@ typedef struct ngx_http_cache_tag_store_s
 
 typedef struct {
     ngx_flag_t                    enable;
-    ngx_str_t                     method;
+    ngx_flag_t                    configured;
+    ngx_array_t                  *enable_values;
     ngx_flag_t                    soft;
     ngx_flag_t                    purge_all;
-    ngx_array_t                  *access;   /* array of ngx_in_cidr_t */
-    ngx_array_t                  *access6;  /* array of ngx_in6_cidr_t */
 } ngx_http_cache_purge_conf_t;
 
 typedef struct {

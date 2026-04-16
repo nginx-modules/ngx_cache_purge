@@ -22,7 +22,9 @@ our $config = <<'_EOC_';
     }
 
     location ~ /purge(/.*) {
-        proxy_cache_purge  test_cache $1$is_args$args;
+        proxy_cache        test_cache;
+        proxy_cache_key    $1$is_args$args;
+        proxy_cache_purge  1;
     }
 
     location = /etc/passwd {

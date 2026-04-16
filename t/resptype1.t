@@ -25,21 +25,29 @@ our $config = <<'_EOC_';
     }
 
     location ~ /purge(/.*) {
-        proxy_cache_purge           test_cache $1$is_args$args;
+        proxy_cache                 test_cache;
+        proxy_cache_key             $1$is_args$args;
+        proxy_cache_purge           1;
         cache_purge_response_type   html;
     }
 
     location ~ /purge_json(/.*) {
-        proxy_cache_purge           test_cache $1$is_args$args;
+        proxy_cache                 test_cache;
+        proxy_cache_key             $1$is_args$args;
+        proxy_cache_purge           1;
     }
 
     location ~ /purge_xml(/.*) {
-        proxy_cache_purge           test_cache $1$is_args$args;
+        proxy_cache                 test_cache;
+        proxy_cache_key             $1$is_args$args;
+        proxy_cache_purge           1;
         cache_purge_response_type   xml;
     }
 
     location ~ /purge_text(/.*) {
-        proxy_cache_purge           test_cache $1$is_args$args;
+        proxy_cache                 test_cache;
+        proxy_cache_key             $1$is_args$args;
+        proxy_cache_purge           1;
         cache_purge_response_type   text;
     }
 
@@ -241,5 +249,4 @@ Content-Type: text/plain
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 --- skip_nginx2: 4: < 0.8.3 or < 0.7.62
-
 

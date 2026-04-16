@@ -27,40 +27,54 @@ our $config = <<'_EOC_';
     }
 
     location ~ /purge_proxy(/.*) {
-        proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        proxy_cache                proxy_cache;
+        proxy_cache_key            $1$is_args$args;
+        proxy_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  html;
     }
 
     location ~ /purge_proxy_json(/.*) {
-        proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        proxy_cache                proxy_cache;
+        proxy_cache_key            $1$is_args$args;
+        proxy_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_proxy_xml(/.*) {
-        proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        proxy_cache                proxy_cache;
+        proxy_cache_key            $1$is_args$args;
+        proxy_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  xml;
     }
 
     location ~ /purge_proxy_text(/.*) {
-        proxy_cache_purge          proxy_cache $1$is_args$args soft;
+        proxy_cache                proxy_cache;
+        proxy_cache_key            $1$is_args$args;
+        proxy_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
         cache_purge_response_type  text;
     }
 
     location ~ /purge_fastcgi(/.*) {
-        fastcgi_cache_purge        fastcgi_cache $1$is_args$args soft;
+        fastcgi_cache              fastcgi_cache;
+        fastcgi_cache_key          $1$is_args$args;
+        fastcgi_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_scgi(/.*) {
-        scgi_cache_purge           scgi_cache $1$is_args$args soft;
+        scgi_cache                 scgi_cache;
+        scgi_cache_key             $1$is_args$args;
+        scgi_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
     }
 
     location ~ /purge_uwsgi(/.*) {
-        uwsgi_cache_purge          uwsgi_cache $1$is_args$args soft;
+        uwsgi_cache                uwsgi_cache;
+        uwsgi_cache_key            $1$is_args$args;
+        uwsgi_cache_purge  1 soft;
         cache_purge_mode_header    X-Purge-Mode;
     }
 

@@ -5,11 +5,18 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4 + 23 * 1);
+plan tests => repeat_each() * (blocks() * 4 + 21 * 1);
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
 _EOC_
 
 our $config = <<'_EOC_';
@@ -20,7 +27,7 @@ our $config = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
 
-        proxy_cache_purge  PURGE soft from 127.0.0.1;
+        proxy_cache_purge  $purge_method soft;
         cache_purge_mode_header X-Purge-Mode;
     }
 
@@ -37,23 +44,7 @@ our $config_purge_all = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
 
-        proxy_cache_purge  PURGE soft purge_all from 127.0.0.1;
-    }
-
-    location = /etc/passwd {
-        root               /;
-    }
-_EOC_
-
-our $config_forbidden = <<'_EOC_';
-    location /proxy {
-        proxy_pass         $scheme://127.0.0.1:$server_port/etc/passwd;
-        proxy_cache        test_cache;
-        proxy_cache_key    $uri$is_args$args;
-        proxy_cache_valid  3m;
-        add_header         X-Cache-Status $upstream_cache_status;
-
-        proxy_cache_purge  PURGE soft from 1.0.0.0/8;
+        proxy_cache_purge  $purge_method soft purge_all;
     }
 
     location = /etc/passwd {
@@ -244,7 +235,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/passwd
+GET /proxy/passwd?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -261,7 +252,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/passwd2
+GET /proxy/passwd2?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -278,7 +269,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/shadow
+GET /proxy/shadow?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -311,7 +302,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/passwd
+GET /proxy/passwd?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -328,7 +319,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/passwd2
+GET /proxy/passwd2?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -345,7 +336,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
-GET /proxy/shadow
+GET /proxy/shadow?t=wild
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain
@@ -522,58 +513,6 @@ GET /proxy/shadow?t=all
 --- response_headers
 Content-Type: text/plain
 X-Cache-Status: EXPIRED
---- response_body_like: root
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx2: 5: < 0.8.3 or < 0.7.62
-
-
-
-=== TEST 28: prepare access-controlled soft purge entry
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/passwd?t=forbidden
---- error_code: 200
---- response_headers
-Content-Type: text/plain
-X-Cache-Status: MISS
---- response_body_like: root
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx2: 5: < 0.8.3 or < 0.7.62
-
-
-
-=== TEST 29: override header still honors access controls
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-PURGE /proxy/passwd?t=forbidden
---- more_headers
-X-Purge-Mode: soft
---- error_code: 403
---- response_headers
-Content-Type: text/html
---- response_body_like: 403 Forbidden
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx2: 4: < 0.8.3 or < 0.7.62
-
-
-
-=== TEST 30: forbidden soft purge leaves entry as hit
---- http_config eval: $::http_config
---- config eval: $::config_forbidden
---- request
-GET /proxy/passwd?t=forbidden
---- error_code: 200
---- response_headers
-Content-Type: text/plain
-X-Cache-Status: HIT
 --- response_body_like: root
 --- timeout: 10
 --- no_error_log eval

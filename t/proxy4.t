@@ -10,6 +10,13 @@ plan tests => 41;
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    map $request_method $purge_method {
+        PURGE   1;
+        default 0;
+    }
+    map $request_method $purge_never {
+        default 0;
+    }
 _EOC_
 
 our $config = <<'_EOC_';
@@ -20,7 +27,7 @@ our $config = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
 
-        proxy_cache_purge PURGE from 1.0.0.0/8 127.0.0.0/8 3.0.0.0/8;
+        proxy_cache_purge  $purge_method;
     }
 
 
