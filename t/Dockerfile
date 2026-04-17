@@ -8,6 +8,30 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG NGINX_VERSION=1.24.0
 ENV NGINX_VERSION=${NGINX_VERSION}
 
+# Prioritized mirrors
+ARG UBUNTU_MIRROR=azure
+RUN . /etc/os-release && \
+    \
+    # Resolve mirror URL from ARG
+    case "${UBUNTU_MIRROR}" in \
+        azure)   MIRROR_URL="http://azure.archive.ubuntu.com/ubuntu/" ;; \
+        kernel)  MIRROR_URL="http://mirrors.kernel.org/ubuntu/" ;; \
+        *)       echo "Unknown UBUNTU_MIRROR: ${UBUNTU_MIRROR}"; exit 1 ;; \
+    esac && \
+    \
+    # 1. Identify the active config file (Standard vs 24.04+ DEB822 format)
+    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+        TARGET="/etc/apt/sources.list.d/ubuntu.sources"; \
+        # For 24.04+, replace URIs with selected mirror
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
+        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
+    else \
+        TARGET="/etc/apt/sources.list"; \
+        # For 22.04 and below, replace URIs with selected mirror
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
+        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
+    fi
+
 # Install dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
