@@ -1,5 +1,9 @@
 # Agent instructions
 
+## Coding style
+
+- Follow the Nginx core development guide https://nginx.org/en/docs/dev/development_guide.html
+
 ## Verifying changes
 
 - Follow the Development section in [README.md](README.md): use the included development container for development, testing, and manual validation work.

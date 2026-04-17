@@ -8,8 +8,8 @@ repeat_each(1);
 plan tests => repeat_each() * (blocks() * 4 + 22 * 1);
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -28,7 +28,7 @@ our $config = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
 
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
+        cache_pilot_purge_mode_header X-Purge-Mode;
     }
 
     location = /etc/passwd {

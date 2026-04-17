@@ -8,8 +8,8 @@ repeat_each(1);
 plan tests => repeat_each() * (blocks() * 4);
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -17,12 +17,12 @@ our $http_config = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags.sqlite;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -30,12 +30,12 @@ our $http_config_hard = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_hard.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_hard.sqlite;
 _EOC_
 
 our $http_config_cache_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -43,12 +43,12 @@ our $http_config_cache_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_cache_tag.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_cache_tag.sqlite;
 _EOC_
 
 our $http_config_override = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -56,12 +56,12 @@ our $http_config_override = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_override.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_override.sqlite;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -69,12 +69,12 @@ our $http_config_restart = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_restart.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_restart.sqlite;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -82,12 +82,12 @@ our $http_config_plain = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_plain.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_plain.sqlite;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -95,12 +95,12 @@ our $http_config_custom = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_custom.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_custom.sqlite;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -108,7 +108,7 @@ our $http_config_multi_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_multi_tag.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_multi_tag.sqlite;
 _EOC_
 
 our $config_multi_tag = <<'_EOC_';
@@ -119,8 +119,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/multi-b {
@@ -130,8 +130,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/multi-c {
@@ -141,8 +141,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/multi-a {
@@ -162,8 +162,8 @@ our $config_multi_tag = <<'_EOC_';
 _EOC_
 
 our $http_config_overload = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_overload keys_zone=overload_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_overload 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_overload keys_zone=overload_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_overload 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -171,7 +171,7 @@ our $http_config_overload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_tags_overload.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_tags_overload.sqlite;
 _EOC_
 
 our $config_overload = <<'_EOC_';
@@ -182,8 +182,8 @@ our $config_overload = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/overload {
@@ -202,8 +202,8 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/b {
@@ -213,8 +213,8 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/c {
@@ -224,8 +224,8 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/a {
@@ -255,8 +255,8 @@ our $config_hard = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/a {
@@ -274,8 +274,8 @@ our $config_plain = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/plain {
@@ -293,9 +293,9 @@ our $config_custom = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
-        cache_tag_headers  Edge-Tag Custom-Group;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
+        cache_pilot_tag_headers  Edge-Tag Custom-Group;
     }
 
     location = /origin/custom {
@@ -672,7 +672,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 25: plain PURGE without override header still works when cache_tag_watch is enabled
+=== TEST 25: plain PURGE without override header still works when cache_pilot_tag_watch is enabled
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -779,7 +779,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 32: custom cache_tag_headers are matched during purge
+=== TEST 32: custom cache_pilot_tag_headers are matched during purge
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -796,7 +796,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 33: custom cache_tag_headers are used for cached-response indexing
+=== TEST 33: custom cache_pilot_tag_headers are used for cached-response indexing
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request

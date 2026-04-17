@@ -1,11 +1,11 @@
-#ifndef _NGX_CACHE_PURGE_TAG_STORE_INTERNAL_H_INCLUDED_
-#define _NGX_CACHE_PURGE_TAG_STORE_INTERNAL_H_INCLUDED_
+#ifndef _NGX_CACHE_PILOT_TAG_STORE_INTERNAL_H_INCLUDED_
+#define _NGX_CACHE_PILOT_TAG_STORE_INTERNAL_H_INCLUDED_
 
-#include "ngx_cache_purge_tag.h"
+#include "ngx_cache_pilot_tag.h"
 
 #if (NGX_LINUX)
 
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
 #include <sqlite3.h>
 
 typedef struct {
@@ -30,7 +30,7 @@ struct ngx_http_cache_tag_store_s {
     ngx_http_cache_tag_backend_e          backend;
     ngx_flag_t                            readonly;
     union {
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
         struct {
             sqlite3                      *db;
             ngx_flag_t                    schema_ready;
@@ -40,7 +40,7 @@ struct ngx_http_cache_tag_store_s {
         struct {
             ngx_connection_t             *conn;   /* owns fd lifecycle */
             ngx_socket_t                  fd;     /* cached conn->fd for send/recv */
-            ngx_http_cache_purge_main_conf_t *pmcf;
+            ngx_http_cache_pilot_main_conf_t *pmcf;
             u_char                        recv_buf[4096];
             size_t                        recv_pos;
             size_t                        recv_len;
@@ -54,27 +54,27 @@ struct ngx_http_cache_tag_store_ops_s {
     ngx_int_t (*commit_batch)(ngx_http_cache_tag_store_t *store, ngx_log_t *log);
     ngx_int_t (*rollback_batch)(ngx_http_cache_tag_store_t *store, ngx_log_t *log);
     ngx_int_t (*replace_file_tags)(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_str_t *path, time_t mtime, off_t size,
-        ngx_array_t *tags, ngx_log_t *log);
+                                   ngx_str_t *zone_name, ngx_str_t *path, time_t mtime, off_t size,
+                                   ngx_array_t *tags, ngx_log_t *log);
     ngx_int_t (*delete_file)(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_str_t *path, ngx_log_t *log);
+                             ngx_str_t *zone_name, ngx_str_t *path, ngx_log_t *log);
     ngx_int_t (*collect_paths_by_tags)(ngx_http_cache_tag_store_t *store,
-        ngx_pool_t *pool, ngx_str_t *zone_name, ngx_array_t *tags,
-        ngx_array_t **paths, ngx_log_t *log);
+                                       ngx_pool_t *pool, ngx_str_t *zone_name, ngx_array_t *tags,
+                                       ngx_array_t **paths, ngx_log_t *log);
     ngx_int_t (*get_zone_state)(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_http_cache_tag_zone_state_t *state,
-        ngx_log_t *log);
+                                ngx_str_t *zone_name, ngx_http_cache_tag_zone_state_t *state,
+                                ngx_log_t *log);
     ngx_int_t (*set_zone_state)(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_http_cache_tag_zone_state_t *state,
-        ngx_log_t *log);
+                                ngx_str_t *zone_name, ngx_http_cache_tag_zone_state_t *state,
+                                ngx_log_t *log);
 };
 
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
 ngx_http_cache_tag_store_t *ngx_http_cache_tag_store_sqlite_open(
-    ngx_http_cache_purge_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
+    ngx_http_cache_pilot_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
 #endif
 ngx_http_cache_tag_store_t *ngx_http_cache_tag_store_redis_open(
-    ngx_http_cache_purge_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
+    ngx_http_cache_pilot_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
 
 #endif
 

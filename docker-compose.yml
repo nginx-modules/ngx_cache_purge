@@ -4,7 +4,7 @@ services:
       context: .
       args:
         NGINX_VERSION: ${NGINX_VERSION:-1.25.5}
-    image: ngx-cache-purge-dev:${NGINX_VERSION:-1.25.5}
+    image: ngx-cache-pilot-dev:${NGINX_VERSION:-1.25.5}
     working_dir: /workspace
     volumes:
       - .:/workspace

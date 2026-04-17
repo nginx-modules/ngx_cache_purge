@@ -1,4 +1,4 @@
-#include "ngx_cache_purge_tag.h"
+#include "ngx_cache_pilot_tag.h"
 
 #if (NGX_LINUX)
 
@@ -31,7 +31,7 @@ static ngx_int_t ngx_http_cache_tag_process_events(ngx_cycle_t *cycle);
 static ngx_int_t ngx_http_cache_tag_join_path(ngx_pool_t *pool, ngx_str_t *base,
         const char *name, ngx_str_t *out);
 static ngx_int_t ngx_http_cache_tag_runtime_init_zones(
-    ngx_cycle_t *cycle, ngx_http_cache_purge_main_conf_t *pmcf);
+    ngx_cycle_t *cycle, ngx_http_cache_pilot_main_conf_t *pmcf);
 static ngx_int_t ngx_http_cache_tag_pending_op_set(ngx_pool_t *pool,
         ngx_array_t *pending_ops, ngx_str_t *zone_name, ngx_http_file_cache_t *cache,
         ngx_str_t *path, ngx_uint_t operation);
@@ -46,8 +46,8 @@ static ngx_int_t ngx_http_cache_tag_apply_pending_ops(
 
 ngx_int_t
 ngx_http_cache_tag_queue_init_conf(ngx_conf_t *cf,
-                                   ngx_http_cache_purge_main_conf_t *pmcf) {
-    static ngx_str_t  queue_name = ngx_string("ngx_cache_purge_tag_queue");
+                                   ngx_http_cache_pilot_main_conf_t *pmcf) {
+    static ngx_str_t  queue_name = ngx_string("ngx_cache_pilot_tag_queue");
     ngx_http_cache_tag_queue_ctx_t  *ctx;
 
     if (pmcf->queue_zone != NULL) {
@@ -56,7 +56,7 @@ ngx_http_cache_tag_queue_init_conf(ngx_conf_t *cf,
 
     pmcf->queue_zone = ngx_shared_memory_add(cf, &queue_name,
                        pmcf->queue_shm_size,
-                       &ngx_http_cache_purge_module);
+                       &ngx_http_cache_pilot_module);
     if (pmcf->queue_zone == NULL) {
         return NGX_ERROR;
     }
@@ -78,7 +78,7 @@ ngx_http_cache_tag_is_owner(void) {
 }
 
 ngx_int_t
-ngx_http_cache_tag_queue_enqueue_delete(ngx_http_cache_purge_main_conf_t *pmcf,
+ngx_http_cache_tag_queue_enqueue_delete(ngx_http_cache_pilot_main_conf_t *pmcf,
                                         ngx_str_t *zone_name, ngx_str_t *path,
                                         ngx_log_t *log) {
     ngx_http_cache_tag_queue_ctx_t     *ctx;
@@ -725,11 +725,11 @@ ngx_http_cache_tag_arm_watch(ngx_cycle_t *cycle) {
     return NGX_OK;
 }
 
-#if (NGX_CACHE_PURGE_THREADS)
+#if (NGX_CACHE_PILOT_THREADS)
 
 typedef struct {
     ngx_cycle_t                       *cycle;
-    ngx_http_cache_purge_main_conf_t  *pmcf;
+    ngx_http_cache_pilot_main_conf_t  *pmcf;
     ngx_int_t                          rc;
 } ngx_http_cache_tag_bootstrap_ctx_t;
 
@@ -826,16 +826,16 @@ ngx_http_cache_tag_bootstrap_complete(ngx_event_t *ev) {
     ngx_http_cache_tag_watch_runtime.active = 1;
 }
 
-#endif /* NGX_CACHE_PURGE_THREADS */
+#endif /* NGX_CACHE_PILOT_THREADS */
 
 ngx_int_t
 ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
-                                ngx_http_cache_purge_main_conf_t *pmcf) {
+                                ngx_http_cache_pilot_main_conf_t *pmcf) {
     ngx_http_cache_tag_zone_t        *zone;
     ngx_http_cache_tag_store_t       *writer;
     ngx_http_cache_tag_zone_state_t   state;
     ngx_uint_t                        i;
-#if (NGX_CACHE_PURGE_THREADS)
+#if (NGX_CACHE_PILOT_THREADS)
     ngx_thread_pool_t                *tp;
     ngx_thread_task_t                *task;
     ngx_http_cache_tag_bootstrap_ctx_t *bctx;
@@ -905,7 +905,7 @@ ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
         return NGX_ERROR;
     }
 
-#if (NGX_CACHE_PURGE_THREADS)
+#if (NGX_CACHE_PILOT_THREADS)
     /* Try to offload the blocking bootstrap walk to the default thread pool.
      * If the thread pool is unavailable (nginx not built with --with-threads,
      * or no "thread_pool default" directive), fall through to the sync path. */
@@ -1105,7 +1105,7 @@ ngx_http_cache_tag_join_path(ngx_pool_t *pool, ngx_str_t *base, const char *name
 
 static ngx_int_t
 ngx_http_cache_tag_runtime_init_zones(ngx_cycle_t *cycle,
-                                      ngx_http_cache_purge_main_conf_t *pmcf) {
+                                      ngx_http_cache_pilot_main_conf_t *pmcf) {
     ngx_http_cache_tag_zone_t        *zone;
     ngx_http_cache_tag_zone_index_t  *index;
     ngx_uint_t                        i;

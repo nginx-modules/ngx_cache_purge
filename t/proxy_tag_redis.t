@@ -17,8 +17,8 @@ repeat_each(1);
 plan tests => repeat_each() * 118;
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -26,12 +26,12 @@ our $http_config = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=10;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=10;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -39,12 +39,12 @@ our $http_config_hard = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=11;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=11;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -52,12 +52,12 @@ our $http_config_restart = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=12;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=12;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -65,12 +65,12 @@ our $http_config_plain = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=13;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=13;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -78,12 +78,12 @@ our $http_config_custom = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=14;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=14;
 _EOC_
 
 our $http_config_cache_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -91,12 +91,12 @@ our $http_config_cache_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=15;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=15;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis keys_zone=redis_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis keys_zone=redis_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -104,7 +104,7 @@ our $http_config_multi_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=0;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=0;
 _EOC_
 
 our $config_multi_tag = <<'_EOC_';
@@ -115,8 +115,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/multi-b {
@@ -126,8 +126,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/multi-c {
@@ -137,8 +137,8 @@ our $config_multi_tag = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/multi-a {
@@ -158,8 +158,8 @@ our $config_multi_tag = <<'_EOC_';
 _EOC_
 
 our $http_config_overload = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache_redis_overload keys_zone=redis_overload_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp_redis_overload 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache_redis_overload keys_zone=redis_overload_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp_redis_overload 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -167,7 +167,7 @@ our $http_config_overload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   redis 127.0.0.1:6380 db=1;
+    cache_pilot_tag_index   redis 127.0.0.1:6380 db=1;
 _EOC_
 
 our $config_overload = <<'_EOC_';
@@ -178,8 +178,8 @@ our $config_overload = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/overload {
@@ -198,8 +198,8 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /proxy/b {
@@ -209,8 +209,8 @@ our $config_soft = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/a {
@@ -234,8 +234,8 @@ our $config_hard = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/a {
@@ -253,8 +253,8 @@ our $config_plain = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/plain {
@@ -272,9 +272,9 @@ our $config_custom = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
-        cache_tag_headers  Edge-Tag Custom-Group;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
+        cache_pilot_tag_headers  Edge-Tag Custom-Group;
     }
 
     location = /origin/custom {
@@ -540,7 +540,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 18: plain PURGE still works with redis cache_tag_watch
+=== TEST 18: plain PURGE still works with redis cache_pilot_tag_watch
 --- http_config eval: $::http_config_plain
 --- config eval: $::config_plain
 --- request
@@ -580,7 +580,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 21: redis custom cache_tag_headers are matched during purge
+=== TEST 21: redis custom cache_pilot_tag_headers are matched during purge
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request
@@ -594,7 +594,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 22: redis custom cache_tag_headers are used for cached-response indexing
+=== TEST 22: redis custom cache_pilot_tag_headers are used for cached-response indexing
 --- http_config eval: $::http_config_custom
 --- config eval: $::config_custom
 --- request

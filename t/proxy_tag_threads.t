@@ -2,7 +2,7 @@
 #
 # Tag-index bootstrap and tag purge with a thread pool configured.
 #
-# When NGX_CACHE_PURGE_THREADS is active the bootstrap directory walk runs in
+# When NGX_CACHE_PILOT_THREADS is active the bootstrap directory walk runs in
 # a worker thread at init_process time rather than synchronously on the first
 # PURGE request.  These tests verify:
 #
@@ -37,8 +37,8 @@ _EOC_
 # ── Phase 1: fresh SQLite, confirms bootstrap thread ran ─────────────────────
 
 our $http_config_boot = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_threads_tag_cache keys_zone=threads_tag_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_threads_tag_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_threads_tag_cache keys_zone=threads_tag_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_threads_tag_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -46,7 +46,7 @@ our $http_config_boot = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_tags_boot.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_tags_boot.sqlite;
 _EOC_
 
 # ── Phase 2a: persisted SQLite, first start ───────────────────────────────────
@@ -54,8 +54,8 @@ _EOC_
 # from $http_config_boot.
 
 our $http_config_persist = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_threads_persist_cache keys_zone=threads_persist_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_threads_persist_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_threads_persist_cache keys_zone=threads_persist_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_threads_persist_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -63,7 +63,7 @@ our $http_config_persist = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_persist_tags.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
 _EOC_
 
 # ── Phase 2b: same functional config as Phase 2a plus a harmless comment ─────
@@ -71,8 +71,8 @@ _EOC_
 # while keeping the same cache directory and SQLite file on disk.
 
 our $http_config_persist_reload = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_threads_persist_cache keys_zone=threads_persist_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_threads_persist_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_threads_persist_cache keys_zone=threads_persist_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_threads_persist_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
@@ -80,7 +80,7 @@ our $http_config_persist_reload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_tag_index   sqlite /tmp/ngx_cache_purge_threads_persist_tags.sqlite;
+    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
     # second-start (forces nginx restart in Test::Nginx)
 _EOC_
 
@@ -92,8 +92,8 @@ our $config_boot = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/a {
@@ -110,8 +110,8 @@ our $config_persist = <<'_EOC_';
         proxy_cache_valid  3m;
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
-        cache_purge_mode_header X-Purge-Mode;
-        cache_tag_watch    on;
+        cache_pilot_purge_mode_header X-Purge-Mode;
+        cache_pilot_tag_watch    on;
     }
 
     location = /origin/p {

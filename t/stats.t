@@ -9,9 +9,9 @@ repeat_each(1);
 plan tests => repeat_each() * 56;
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_stats_cache  keys_zone=stats_test:10m;
-    proxy_cache_path  /tmp/ngx_cache_purge_stats_cache2 keys_zone=stats_test2:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_stats_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_stats_cache  keys_zone=stats_test:10m;
+    proxy_cache_path  /tmp/ngx_cache_pilot_stats_cache2 keys_zone=stats_test2:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_stats_temp 1 2;
 _EOC_
 
 our $config = <<'_EOC_';
@@ -34,11 +34,11 @@ our $config = <<'_EOC_';
     }
 
     location = /_stats {
-        cache_purge_stats;
+        cache_pilot_stats;
     }
 
     location = /_stats_filtered {
-        cache_purge_stats stats_test;
+        cache_pilot_stats stats_test;
     }
 _EOC_
 
@@ -73,7 +73,7 @@ GET /_stats?format=prometheus
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
---- response_body_like: nginx_cache_purge_purges_total
+--- response_body_like: nginx_cache_pilot_purges_total
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -90,7 +90,7 @@ GET /_stats
 --- error_code: 200
 --- response_headers
 Content-Type: text/plain; version=0.0.4; charset=utf-8
---- response_body_like: nginx_cache_purge_purges_total
+--- response_body_like: nginx_cache_pilot_purges_total
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/

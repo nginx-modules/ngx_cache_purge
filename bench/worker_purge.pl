@@ -47,7 +47,7 @@ die "unsupported mode: $options{mode}\n"
     unless exists $interval_by_mode{$options{mode}};
 
 my $ua = LWP::UserAgent->new(
-    agent      => 'ngx-cache-purge-bench/1.0',
+    agent      => 'ngx-cache-pilot-bench/1.0',
     keep_alive => 1,
     timeout    => 5,
 );

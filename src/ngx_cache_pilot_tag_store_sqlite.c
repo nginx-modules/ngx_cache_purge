@@ -1,4 +1,4 @@
-#include "ngx_cache_purge_tag_store_internal.h"
+#include "ngx_cache_pilot_tag_store_internal.h"
 
 #if (NGX_LINUX)
 
@@ -54,7 +54,7 @@ static const ngx_http_cache_tag_store_ops_t ngx_http_cache_tag_store_sqlite_ops 
 };
 
 ngx_http_cache_tag_store_t *
-ngx_http_cache_tag_store_sqlite_open(ngx_http_cache_purge_main_conf_t *pmcf,
+ngx_http_cache_tag_store_sqlite_open(ngx_http_cache_pilot_main_conf_t *pmcf,
                                      ngx_flag_t readonly, ngx_log_t *log) {
     ngx_http_cache_tag_store_t  *store;
 

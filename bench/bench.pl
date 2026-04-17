@@ -47,7 +47,7 @@ my $redis_pid_file = '/tmp/bench_redis.pid';
 my $redis_port = 16379;
 my $redis_db = 5;
 my $stats_url = "http://127.0.0.1:$options{port}/bench_stats";
-my $ua = LWP::UserAgent->new(agent => 'ngx-cache-purge-bench/1.0', keep_alive => 5, timeout => 5);
+my $ua = LWP::UserAgent->new(agent => 'ngx-cache-pilot-bench/1.0', keep_alive => 5, timeout => 5);
 
 die "nginx binary not found at $nginx; run make nginx-build first\n"
     unless -x $nginx;

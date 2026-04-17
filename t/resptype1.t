@@ -8,13 +8,13 @@ repeat_each(1);
 plan tests => repeat_each() * (blocks() * 4 + 3 * 1);
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_cache keys_zone=test_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
 _EOC_
 
 our $config = <<'_EOC_';
 
-    cache_purge_response_type json;
+    cache_pilot_purge_response_type json;
 
     location /proxy {
         proxy_pass         $scheme://127.0.0.1:$server_port/etc/passwd;
@@ -28,7 +28,7 @@ our $config = <<'_EOC_';
         proxy_cache                 test_cache;
         proxy_cache_key             $1$is_args$args;
         proxy_cache_purge           1;
-        cache_purge_response_type   html;
+        cache_pilot_purge_response_type   html;
     }
 
     location ~ /purge_json(/.*) {
@@ -41,14 +41,14 @@ our $config = <<'_EOC_';
         proxy_cache                 test_cache;
         proxy_cache_key             $1$is_args$args;
         proxy_cache_purge           1;
-        cache_purge_response_type   xml;
+        cache_pilot_purge_response_type   xml;
     }
 
     location ~ /purge_text(/.*) {
         proxy_cache                 test_cache;
         proxy_cache_key             $1$is_args$args;
         proxy_cache_purge           1;
-        cache_purge_response_type   text;
+        cache_pilot_purge_response_type   text;
     }
 
 

@@ -1,9 +1,9 @@
-# ngx_cache_purge
+# ngx_cache_pilot
 
-[![CI](https://github.com/kasparsd/ngx_cache_purge/actions/workflows/ci.yml/badge.svg)](https://github.com/kasparsd/ngx_cache_purge/actions/workflows/ci.yml)
-[![Bench](https://github.com/kasparsd/ngx_cache_purge/actions/workflows/bench.yml/badge.svg)](https://github.com/kasparsd/ngx_cache_purge/actions/workflows/bench.yml)
+[![CI](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml)
+[![Bench](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml)
 
-`ngx_cache_purge` is an `nginx` module that adds cache purge support for `FastCGI`, `proxy`, `SCGI`, and `uWSGI` caches. A purge operation removes or expires cached content that matches the cache key, wildcard key, or configured cache tags for the request.
+`ngx_cache_pilot` is an `nginx` module that adds cache purge support for [`fastcgi_cache`](https://nginx.org/en/docs/http/ngx_http_fastcgi_module.html), [`proxy_cache`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html), [`scgi_cache`](https://nginx.org/en/docs/http/ngx_http_scgi_module.html), and [`uwsgi_cache`](https://nginx.org/en/docs/http/ngx_http_uwsgi_module.html) caches. A purge operation removes or expires cached content that matches the cache key, wildcard key, or configured cache tags for the request.
 
 _This module is not distributed with the NGINX source. See [Installation Instructions](#installation-instructions)._
 
@@ -13,31 +13,31 @@ This is a fork of the [`ngx_cache_purge` module](https://github.com/nginx-module
 
 ## Quick Start
 
-`ngx_cache_purge` supports multiple purge styles depending on how you want to address cached content:
+`ngx_cache_pilot` supports multiple purge styles depending on how you want to address cached content:
 
 - exact URI purge
 - wildcard URI purge using a trailing `*`
-- cache-tag purge
-- surrogate-key purge
+- cache-tag and surrogate-key purge
 
 For most users, the simplest starting point is a cached location plus a `PURGE` method restricted to trusted clients.
 
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
-    map $request_method $purge_method {
-        PURGE   1;
-        default 0;
+
+    # Restrict purging to specific IPs and the PURGE method.
+    map $request_method:$remote_addr $purge_request {
+        default         0;
+        PURGE:127.0.0.1 1;
     }
 
     server {
         listen 8080;
 
         location / {
-            proxy_pass         http://127.0.0.1:8000;
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  $purge_method;
+            proxy_pass http://127.0.0.1:8000;
+            proxy_cache tmpcache;
+            proxy_cache_purge $purge_request;
         }
     }
 }
@@ -60,20 +60,28 @@ If you want cache-tag purging, enable an index backend and watch the cache direc
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
-    map $request_method $purge_method {
-        PURGE   1;
-        default 0;
+
+    # Storage for cache tag index (map of cache tags to files)
+    cache_pilot_tag_index  sqlite /tmp/ngx_cache_pilot_tags.sqlite;
+
+    map $request_method:$remote_addr $purge_request {
+        default         0;
+        PURGE:127.0.0.1 1;
     }
-    cache_tag_index  sqlite /tmp/ngx_cache_purge_tags.sqlite;
 
     server {
         location /tagged/ {
-            proxy_pass         http://127.0.0.1:8000;
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  $purge_method soft;
-            cache_purge_mode_header X-Purge-Mode;
-            cache_tag_watch    on;
+            proxy_pass http://127.0.0.1:8000;
+            proxy_cache tmpcache;
+
+            # Do hard purge by default.
+            proxy_cache_purge $purge_request;
+
+            # Use this header to enable soft purge.
+            cache_pilot_purge_mode_header X-Purge-Mode;
+            
+            # Enable cache tag indexing and purging.
+            cache_pilot_tag_watch on;
         }
     }
 }
@@ -109,7 +117,7 @@ For most users, the recommended installation path is to build a dynamic module a
 For example, if `nginx -v` reports `nginx/1.28.1`:
 
 ```bash
-cd ~/build/nginx-cache-purge
+cd ~/build/nginx-cache-pilot
 wget https://nginx.org/download/nginx-1.28.1.tar.gz
 tar xf nginx-1.28.1.tar.gz
 cd nginx-1.28.1
@@ -118,12 +126,12 @@ cd nginx-1.28.1
     --with-compat \
     --with-threads \
     --with-ld-opt="-lsqlite3" \
-    --add-dynamic-module=../ngx_cache_purge
+    --add-dynamic-module=../ngx_cache_pilot
 
 make modules
 ```
 
-This produces `objs/ngx_http_cache_purge_module.so`, which you can then copy into your nginx modules directory and load with `load_module`.
+This produces `objs/ngx_http_cache_pilot_module.so`, which you can then copy into your nginx modules directory and load with `load_module`.
 
 ### Alternative: build NGINX from source with this module
 
@@ -134,7 +142,7 @@ If you are building your own NGINX binary from source, point `./configure` at th
     --with-debug \
     --with-threads \
     --with-http_ssl_module \
-    --add-module=/path/to/ngx_cache_purge
+    --add-module=/path/to/ngx_cache_pilot
 make
 make install
 ```
@@ -185,17 +193,17 @@ For dedicated purge locations, configure the cache zone with `*_cache`, the purg
 
 ### Optional directives
 
-#### `cache_purge_response_type`
+#### `cache_pilot_purge_response_type`
 
-- **syntax**: `cache_purge_response_type html|json|xml|text`
+- **syntax**: `cache_pilot_purge_response_type html|json|xml|text`
 - **default**: `html`
 - **context**: `http`, `server`, `location`
 
 Set the response type returned after a purge.
 
-#### `cache_purge_mode_header`
+#### `cache_pilot_purge_mode_header`
 
-- **syntax**: `cache_purge_mode_header <header>`
+- **syntax**: `cache_pilot_purge_mode_header <header>`
 - **default**: `none`
 - **context**: `http`, `server`, `location`
 
@@ -208,27 +216,27 @@ If configured:
 - if the header is absent, the configured purge mode is used
 - `purge_all` ignores this override and keeps its configured behavior
 
-#### `cache_tag_index`
+#### `cache_pilot_tag_index`
 
-- **syntax**: `cache_tag_index sqlite <path>` or `cache_tag_index redis <endpoint> [db=<n>] [password=<secret>]`
+- **syntax**: `cache_pilot_tag_index sqlite <path>` or `cache_pilot_tag_index redis <endpoint> [db=<n>] [password=<secret>]`
 - **default**: `none`
 - **context**: `http`
 
 Enable cache-tag indexing backed by SQLite or Redis. This feature is currently Linux-only. SQLite requires a writable database path. Redis currently supports a single instance over `host:port` or `unix:/path`, with optional `db=<n>` and `password=<secret>`, but no TLS, Sentinel, or Cluster support.
 
-#### `cache_tag_headers`
+#### `cache_pilot_tag_headers`
 
-- **syntax**: `cache_tag_headers <header> [header ...]`
+- **syntax**: `cache_pilot_tag_headers <header> [header ...]`
 - **default**: `Surrogate-Key Cache-Tag`
 - **context**: `http`, `server`, `location`
 
 Set the request and cached-response headers used for cache-tag extraction and tag purge matching.
 
-All watched locations that share the same cache zone must use the same `cache_tag_headers` list.
+All watched locations that share the same cache zone must use the same `cache_pilot_tag_headers` list.
 
-#### `cache_tag_watch`
+#### `cache_pilot_tag_watch`
 
-- **syntax**: `cache_tag_watch on|off`
+- **syntax**: `cache_pilot_tag_watch on|off`
 - **default**: `off`
 - **context**: `http`, `server`, `location`
 
@@ -236,9 +244,9 @@ Enable cache-tag indexing for the cache used by the current purge-enabled locati
 
 For hard tag purges, matching cache files are removed immediately and the corresponding SQLite index deletes are handed off asynchronously to the owner worker. A successful purge response means all required index deletes were accepted for processing; if that handoff cannot be accepted, the request fails with `500`.
 
-#### `cache_purge_stats`
+#### `cache_pilot_stats`
 
-- **syntax**: `cache_purge_stats [zone ...]`
+- **syntax**: `cache_pilot_stats [zone ...]`
 - **default**: `none`
 - **context**: `location`
 
@@ -255,7 +263,7 @@ Example configuration:
 
 ```nginx
 location /_cache_stats {
-    cache_purge_stats;
+    cache_pilot_stats;
 }
 ```
 
@@ -263,7 +271,7 @@ Or filtered to specific zones:
 
 ```nginx
 location /_cache_stats {
-    cache_purge_stats my_cache other_cache;
+    cache_pilot_stats my_cache other_cache;
 }
 ```
 
@@ -303,19 +311,19 @@ location /_cache_stats {
 }
 ```
 
-`tag_index` is omitted when no `cache_tag_index` is configured. `purges` counters are global across all zones and survive `nginx -s reload`.
+`tag_index` is omitted when no `cache_pilot_tag_index` is configured. `purges` counters are global across all zones and survive `nginx -s reload`.
 
-**Prometheus metrics** (prefix `nginx_cache_purge_`):
+**Prometheus metrics** (prefix `nginx_cache_pilot_`):
 
-- `nginx_cache_purge_purges_total{type,mode}` — counter, purge operations by type (`exact`, `wildcard`, `tag`, `all`) and mode (`hard`, `soft`)
-- `nginx_cache_purge_zone_size_bytes{zone}` — gauge, current zone usage in bytes
-- `nginx_cache_purge_zone_max_size_bytes{zone}` — gauge, configured maximum zone size
-- `nginx_cache_purge_zone_cold{zone}` — gauge, 1 while the cache loader is still warming the zone
-- `nginx_cache_purge_zone_entries{zone,state}` — gauge, entry count by state (`valid`, `expired`, `updating`)
-- `nginx_cache_purge_tag_index_info{zone,backend}` — info gauge, tag index backend type
-- `nginx_cache_purge_tag_queue_size{zone}` — gauge, pending entries in the inotify write queue
-- `nginx_cache_purge_tag_queue_capacity{zone}` — gauge, maximum queue capacity
-- `nginx_cache_purge_tag_queue_dropped_total{zone}` — counter, queue entries dropped due to overflow
+- `nginx_cache_pilot_purges_total{type,mode}` — counter, purge operations by type (`exact`, `wildcard`, `tag`, `all`) and mode (`hard`, `soft`)
+- `nginx_cache_pilot_zone_size_bytes{zone}` — gauge, current zone usage in bytes
+- `nginx_cache_pilot_zone_max_size_bytes{zone}` — gauge, configured maximum zone size
+- `nginx_cache_pilot_zone_cold{zone}` — gauge, 1 while the cache loader is still warming the zone
+- `nginx_cache_pilot_zone_entries{zone,state}` — gauge, entry count by state (`valid`, `expired`, `updating`)
+- `nginx_cache_pilot_tag_index_info{zone,backend}` — info gauge, tag index backend type
+- `nginx_cache_pilot_tag_queue_size{zone}` — gauge, pending entries in the inotify write queue
+- `nginx_cache_pilot_tag_queue_capacity{zone}` — gauge, maximum queue capacity
+- `nginx_cache_pilot_tag_queue_dropped_total{zone}` — counter, queue entries dropped due to overflow
 
 ## Partial Keys
 
@@ -331,9 +339,9 @@ The asterisk must be the last character of the key, so you must put the `$uri` v
 
 By default, soft purge behavior is still controlled by the configured `soft` parameter.
 
-If `cache_purge_mode_header` is configured, exact-key, wildcard, and cache-tag / surrogate-key purges can override that mode per request. A value of `soft`, `true`, or `1` forces a soft purge; any other present value forces a hard purge.
+If `cache_pilot_purge_mode_header` is configured, exact-key, wildcard, and cache-tag / surrogate-key purges can override that mode per request. A value of `soft`, `true`, or `1` forces a soft purge; any other present value forces a hard purge.
 
-The `soft` config parameter still controls `purge_all`, which does not honor `cache_purge_mode_header`.
+The `soft` config parameter still controls `purge_all`, which does not honor `cache_pilot_purge_mode_header`.
 
 - Exact-key soft purge marks the cached entry as expired, so the next request is handled as `EXPIRED` rather than a deletion-driven `MISS`.
 - Wildcard soft purge applies the same expiration behavior to all matching keys.
@@ -345,9 +353,9 @@ For wildcard and `purge_all` soft purges, the module expires both the cache-file
 
 The module can also purge cached objects by cache tag, similar to `Surrogate-Key` or `Cache-Tag` support in other reverse proxies.
 
-When `cache_tag_index` and `cache_tag_watch` are enabled:
+When `cache_pilot_tag_index` and `cache_pilot_tag_watch` are enabled:
 
-- cached response files are parsed for the headers listed in `cache_tag_headers`
+- cached response files are parsed for the headers listed in `cache_pilot_tag_headers`
 - `Surrogate-Key` values are parsed as comma- or whitespace-delimited tags
 - `Cache-Tag` values are parsed as comma- or whitespace-delimited tags
 - the module stores a tag-to-cache-file index in SQLite or Redis
@@ -366,7 +374,7 @@ All supplied tags are matched with OR semantics. If any cached file is indexed u
 
 If a watched purge location receives a plain `PURGE` request without any of the configured tag headers, the module falls back to the normal key-based purge behavior for that location.
 
-For tag-based purges, the configured `cache_purge_mode_header` can switch a request between soft and hard purge. Without that header, the configured purge mode is used.
+For tag-based purges, the configured `cache_pilot_purge_mode_header` can switch a request between soft and hard purge. Without that header, the configured purge mode is used.
 
 Hard tag purges use asynchronous owner-worker handoff for backend index deletes. A `200` response means the delete work was accepted for processing, not necessarily already persisted yet.
 
@@ -390,7 +398,7 @@ The cache index maps cache tags to the physical file paths of cached responses. 
 
 The index is built and kept current through two mechanisms that work together:
 
-**inotify watcher (Linux only).** When `cache_tag_watch on` is set, one worker process (the owner) opens an `inotify` watch on the cache directory tree. When other workers create or replace a cache file they enqueue a write operation into a shared-memory ring buffer. The owner worker drains this queue on a 10 ms timer and writes the tag associations to the index backend. Delete events are handled the same way.
+**inotify watcher (Linux only).** When `cache_pilot_tag_watch on` is set, one worker process (the owner) opens an `inotify` watch on the cache directory tree. When other workers create or replace a cache file they enqueue a write operation into a shared-memory ring buffer. The owner worker drains this queue on a 10 ms timer and writes the tag associations to the index backend. Delete events are handled the same way.
 
 **Cold-start bootstrap.** If a tag `PURGE` request arrives before a zone has been indexed — for example after a restart — the module scans the entire cache directory tree, reads the cached response headers from every file it finds, extracts tags, and writes all associations to the index before completing the purge. The result is recorded so subsequent requests skip the scan.
 
@@ -474,17 +482,16 @@ Use these as compact starting points after Quick Start.
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
-    map $request_method $purge_method {
-        PURGE   1;
-        default 0;
+    map $request_method:$remote_addr $purge_request {
+        default         0;
+        PURGE:127.0.0.1 1;
     }
 
     server {
         location / {
-            proxy_pass         http://127.0.0.1:8000;
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$uri$is_args$args";
-            proxy_cache_purge  $purge_method;
+            proxy_pass http://127.0.0.1:8000;
+            proxy_cache tmpcache;
+            proxy_cache_purge $purge_request;
         }
     }
 }
@@ -497,22 +504,19 @@ Use `soft` if you want matching entries to expire in place, or add `purge_all` i
 ```nginx
 http {
     proxy_cache_path /tmp/cache keys_zone=tmpcache:10m;
-    map $request_method $purge_method {
-        PURGE   1;
-        default 0;
-    }
 
     server {
         location / {
-            proxy_pass         http://127.0.0.1:8000;
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$uri$is_args$args";
+            proxy_pass http://127.0.0.1:8000;
+            proxy_cache tmpcache;
         }
 
         location ~ /purge(/.*) {
-            proxy_cache        tmpcache;
-            proxy_cache_key    "$1$is_args$args";
-            proxy_cache_purge  $purge_method;
+            allow 127.0.0.1;
+            deny all;
+
+            proxy_cache tmpcache;
+            proxy_cache_purge $purge_request;
         }
     }
 }
@@ -520,7 +524,7 @@ http {
 
 ### Response types
 
-Use `cache_purge_response_type` to switch between `html`, `json`, `xml`, and `text` responses in the scope where the purge response is generated.
+Use `cache_pilot_purge_response_type` to switch between `html`, `json`, `xml`, and `text` responses in the scope where the purge response is generated.
 
 ### Cache tags
 
@@ -572,7 +576,7 @@ Each scenario warms 1000 cached objects, starts 50 keep-alive GET workers, then 
 - GET throughput and latency percentiles
 - cache hit rate and `X-Cache-Status` breakdown
 - purge throughput and latency percentiles
-- `cache_purge_stats` snapshots before and after the run
+- `cache_pilot_stats` snapshots before and after the run
 
 Run the quick suite after building nginx:
 
@@ -592,13 +596,13 @@ The benchmark suite now uses two explicit nginx templates: `bench/nginx.conf` fo
 
 ### Docker Validation Config
 
-For manual validation inside the development container, the repository includes an example nginx configuration at `examples/docker-validation.conf`.
+For manual validation inside the development container, the repository includes an example nginx configuration at `examples/kitchen-sink.conf`.
 
 It defaults to SQLite for tag indexing and includes a commented Redis alternative:
 
 ```nginx
-cache_tag_index  sqlite /tmp/ngx_cache_purge_demo_tags.sqlite;
-# cache_tag_index  redis redis:6379 db=10;
+cache_pilot_tag_index  sqlite /tmp/ngx_cache_pilot_demo_tags.sqlite;
+# cache_pilot_tag_index  redis redis:6379 db=10;
 ```
 
 It provides separate locations for these behaviors:
@@ -611,7 +615,7 @@ It provides separate locations for these behaviors:
 - cache-tag soft purge by `Surrogate-Key` or `Cache-Tag` (`/tagged/...`)
 - watched-location plain `PURGE` fallback (`/tagged/plain`)
 - custom tag headers with an isolated cache zone (`/tagged_custom`)
-- cache metrics via `cache_purge_stats` (`/_stats`)
+- cache metrics via `cache_pilot_stats` (`/_stats`)
 
 Start it inside the container after building nginx:
 
@@ -619,10 +623,10 @@ Start it inside the container after building nginx:
 make shell
 make nginx-build
 rm -rf /tmp/ngx_cache_*
-/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/kitchen-sink.conf
 ```
 
-For Redis-backed validation, start the sidecar first, switch `cache_tag_index` in the example config to the commented Redis line, and clear the selected database before starting nginx:
+For Redis-backed validation, start the sidecar first, switch `cache_pilot_tag_index` in the example config to the commented Redis line, and clear the selected database before starting nginx:
 
 ```bash
 docker compose up -d redis
@@ -630,7 +634,7 @@ make shell
 make nginx-build
 redis-cli -h redis -p 6379 -n 10 FLUSHDB
 rm -rf /tmp/ngx_cache_*
-/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/docker-validation.conf
+/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/kitchen-sink.conf
 ```
 
 Exact-key soft purge flow:
@@ -719,7 +723,7 @@ curl -i 'http://127.0.0.1:8080/tagged/c'
 
 The two `shared` entries should come back as `EXPIRED`, while `/tagged/c` should remain `HIT`.
 
-Redis-specific validation flows after switching the example config to `cache_tag_index redis redis:6379 db=10`:
+Redis-specific validation flows after switching the example config to `cache_pilot_tag_index redis redis:6379 db=10`:
 
 Watched-location plain `PURGE` fallback:
 
@@ -731,7 +735,7 @@ curl -i 'http://127.0.0.1:8080/tagged/plain'
 
 The final request should return `X-Cache-Status: EXPIRED`, showing that a watched location still falls back to key-based soft purge when no tag headers are supplied.
 
-Redis hard tag purge via `cache_purge_mode_header` override:
+Redis hard tag purge via `cache_pilot_purge_mode_header` override:
 
 ```bash
 curl -i 'http://127.0.0.1:8080/tagged/a?t=redis-hard'
@@ -741,7 +745,7 @@ curl -i 'http://127.0.0.1:8080/tagged/a?t=redis-hard'
 
 The final request should return `X-Cache-Status: MISS`, confirming that the Redis-backed tag purge deleted the cache file instead of expiring it in place.
 
-Redis custom `cache_tag_headers` flow:
+Redis custom `cache_pilot_tag_headers` flow:
 
 ```bash
 curl -i 'http://127.0.0.1:8080/tagged_custom'
@@ -764,7 +768,7 @@ After running some purge requests, re-fetch the endpoint and verify the `purges`
 Stop the validation nginx instance with:
 
 ```bash
-kill "$(cat /tmp/ngx-cache-purge-validation.pid)"
+kill "$(cat /tmp/ngx-cache-pilot-validation.pid)"
 ```
 
 ## License

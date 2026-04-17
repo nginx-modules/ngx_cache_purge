@@ -49,7 +49,7 @@ for (1 .. $options{concurrency}) {
     if ($pid == 0) {
         my $encoder = JSON::PP->new->ascii;
         my $ua = LWP::UserAgent->new(
-            agent      => 'ngx-cache-purge-bench/1.0',
+            agent      => 'ngx-cache-pilot-bench/1.0',
             keep_alive => 5,
             timeout    => 5,
         );

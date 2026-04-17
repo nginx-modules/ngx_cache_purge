@@ -1,4 +1,4 @@
-#include "ngx_cache_purge_tag.h"
+#include "ngx_cache_pilot_tag.h"
 
 #if (NGX_LINUX)
     #include <netdb.h>
@@ -7,11 +7,11 @@
 static ngx_flag_t ngx_http_cache_tag_headers_equal(ngx_array_t *left,
         ngx_array_t *right);
 static char *ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
-        ngx_http_cache_purge_main_conf_t *pmcf, ngx_str_t *value);
+        ngx_http_cache_pilot_main_conf_t *pmcf, ngx_str_t *value);
 
 char *
 ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_cache_purge_main_conf_t  *pmcf;
+    ngx_http_cache_pilot_main_conf_t  *pmcf;
     ngx_str_t                         *value;
 
     pmcf = conf;
@@ -23,10 +23,10 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 
 #if !(NGX_LINUX)
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                       "cache_tag_index requires Linux inotify support");
+                       "cache_pilot_tag_index requires Linux inotify support");
     return NGX_CONF_ERROR;
 #else
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
     if (ngx_strcmp(value[1].data, "sqlite") == 0) {
         if (cf->args->nelts != 3) {
             return NGX_CONF_ERROR;
@@ -39,7 +39,7 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 #else
     if (ngx_strcmp(value[1].data, "sqlite") == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "cache_tag_index sqlite backend requires SQLite3 "
+                           "cache_pilot_tag_index sqlite backend requires SQLite3 "
                            "library (not found at build time)");
         return NGX_CONF_ERROR;
     }
@@ -50,14 +50,15 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     }
 
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                       "invalid cache_tag_index backend \"%V\"", &value[1]);
+                       "invalid cache_pilot_tag_index backend \"%V\"",
+                       &value[1]);
     return NGX_CONF_ERROR;
 #endif
 }
 
 static char *
 ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
-                                    ngx_http_cache_purge_main_conf_t *pmcf,
+                                    ngx_http_cache_pilot_main_conf_t *pmcf,
                                     ngx_str_t *value) {
     ngx_uint_t  i;
     u_char     *colon;
@@ -173,7 +174,7 @@ ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
         }
 
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "unknown redis cache_tag_index option \"%V\"",
+                           "unknown redis cache_pilot_tag_index option \"%V\"",
                            &value[i]);
         return NGX_CONF_ERROR;
     }
@@ -183,7 +184,7 @@ ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
 
 char *
 ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_http_cache_pilot_loc_conf_t  *cplcf;
     ngx_str_t                        *value, *header;
     ngx_uint_t                        i;
 
@@ -214,20 +215,20 @@ ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 }
 
 ngx_flag_t
-ngx_http_cache_tag_location_enabled(ngx_http_cache_purge_loc_conf_t *cplcf) {
+ngx_http_cache_tag_location_enabled(ngx_http_cache_pilot_loc_conf_t *cplcf) {
     return cplcf->cache_tag_watch && cplcf->cache_tag_headers != NULL;
 }
 
 ngx_int_t
 ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
-    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_http_cache_pilot_loc_conf_t  *cplcf;
     ngx_list_part_t                  *part;
     ngx_table_elt_t                  *header;
     ngx_str_t                        *wanted;
     ngx_uint_t                        i, j;
     ngx_array_t                      *result;
 
-    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
+    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_pilot_module);
 
     if (!ngx_http_cache_tag_location_enabled(cplcf)) {
         *tags = NULL;
@@ -281,7 +282,7 @@ ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
 ngx_int_t
 ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
                                   ngx_array_t *headers) {
-    ngx_http_cache_purge_main_conf_t  *pmcf;
+    ngx_http_cache_pilot_main_conf_t  *pmcf;
     ngx_http_cache_tag_zone_t         *zones, *zone;
     ngx_uint_t                         i;
 
@@ -289,7 +290,7 @@ ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
         return NGX_OK;
     }
 
-    pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_purge_module);
+    pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_pilot_module);
     if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_OK;
     }
@@ -299,7 +300,7 @@ ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
         if (zones[i].cache == cache) {
             if (!ngx_http_cache_tag_headers_equal(zones[i].headers, headers)) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "cache_tag_headers must match for all watched locations using cache zone \"%V\"",
+                                   "cache_pilot_tag_headers must match for all watched locations using cache zone \"%V\"",
                                    &zones[i].zone_name);
                 return NGX_ERROR;
             }
@@ -358,8 +359,8 @@ ngx_int_t
 ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
                          ngx_array_t *tags) {
     ngx_http_conf_ctx_t              *http_ctx;
-    ngx_http_cache_purge_main_conf_t *pmcf;
-    ngx_http_cache_purge_loc_conf_t  *cplcf;
+    ngx_http_cache_pilot_main_conf_t *pmcf;
+    ngx_http_cache_pilot_loc_conf_t  *cplcf;
     ngx_http_cache_tag_zone_t        *zone;
     ngx_http_cache_tag_zone_state_t   state;
     ngx_array_t                      *paths;
@@ -373,13 +374,13 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 
     http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
                ngx_http_module);
-    pmcf = http_ctx->main_conf[ngx_http_cache_purge_module.ctx_index];
+    pmcf = http_ctx->main_conf[ngx_http_cache_pilot_module.ctx_index];
     if (!ngx_http_cache_tag_store_configured(pmcf)) {
         return NGX_DECLINED;
     }
 
-    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
-    soft = ngx_http_cache_purge_request_mode(r, cplcf->conf->soft);
+    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_pilot_module);
+    soft = ngx_http_cache_pilot_request_mode(r, cplcf->conf->soft);
     zone = NULL;
 #if (NGX_LINUX)
     zone = ngx_http_cache_tag_lookup_zone(cache);
@@ -457,7 +458,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
     purged = 0;
     path = paths->elts;
     for (i = 0; i < paths->nelts; i++) {
-        rc = ngx_http_cache_purge_by_path(cache, &path[i], soft,
+        rc = ngx_http_cache_pilot_by_path(cache, &path[i], soft,
                                           r->connection->log);
         if (rc == NGX_OK) {
             purged++;
@@ -484,7 +485,7 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 
 ngx_int_t
 ngx_http_cache_tag_process_init(ngx_cycle_t *cycle,
-                                ngx_http_cache_purge_main_conf_t *pmcf) {
+                                ngx_http_cache_pilot_main_conf_t *pmcf) {
 #if !(NGX_LINUX)
     (void) cycle;
     (void) pmcf;

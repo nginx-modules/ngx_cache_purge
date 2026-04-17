@@ -1,4 +1,4 @@
-#include "ngx_cache_purge_tag_store_internal.h"
+#include "ngx_cache_pilot_tag_store_internal.h"
 
 #if (NGX_LINUX)
 
@@ -12,19 +12,19 @@ static ngx_int_t ngx_http_cache_tag_parse_file(ngx_pool_t *pool,
         off_t *size, ngx_log_t *log);
 
 ngx_flag_t
-ngx_http_cache_tag_store_configured(ngx_http_cache_purge_main_conf_t *pmcf) {
+ngx_http_cache_tag_store_configured(ngx_http_cache_pilot_main_conf_t *pmcf) {
     return pmcf != NULL && pmcf->backend != NGX_HTTP_CACHE_TAG_BACKEND_NONE;
 }
 
 ngx_http_cache_tag_store_t *
-ngx_http_cache_tag_store_open_writer(ngx_http_cache_purge_main_conf_t *pmcf,
+ngx_http_cache_tag_store_open_writer(ngx_http_cache_pilot_main_conf_t *pmcf,
                                      ngx_log_t *log) {
     if (pmcf == NULL) {
         return NULL;
     }
 
     switch (pmcf->backend) {
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
     case NGX_HTTP_CACHE_TAG_BACKEND_SQLITE:
         return ngx_http_cache_tag_store_sqlite_open(pmcf, 0, log);
 #endif
@@ -36,14 +36,14 @@ ngx_http_cache_tag_store_open_writer(ngx_http_cache_purge_main_conf_t *pmcf,
 }
 
 ngx_http_cache_tag_store_t *
-ngx_http_cache_tag_store_open_reader(ngx_http_cache_purge_main_conf_t *pmcf,
+ngx_http_cache_tag_store_open_reader(ngx_http_cache_pilot_main_conf_t *pmcf,
                                      ngx_log_t *log) {
     if (pmcf == NULL) {
         return NULL;
     }
 
     switch (pmcf->backend) {
-#if (NGX_CACHE_PURGE_SQLITE)
+#if (NGX_CACHE_PILOT_SQLITE)
     case NGX_HTTP_CACHE_TAG_BACKEND_SQLITE:
         return ngx_http_cache_tag_store_sqlite_open(pmcf, 1, log);
 #endif
@@ -159,7 +159,7 @@ ngx_http_cache_tag_store_process_file(ngx_http_cache_tag_store_t *store,
 
 ngx_int_t
 ngx_http_cache_tag_store_runtime_init(ngx_cycle_t *cycle,
-                                      ngx_http_cache_purge_main_conf_t *pmcf,
+                                      ngx_http_cache_pilot_main_conf_t *pmcf,
                                       ngx_flag_t owner) {
     ngx_memzero(&ngx_http_cache_tag_store_runtime,
                 sizeof(ngx_http_cache_tag_store_runtime));
@@ -192,7 +192,7 @@ ngx_http_cache_tag_store_writer(void) {
 }
 
 ngx_http_cache_tag_store_t *
-ngx_http_cache_tag_store_reader(ngx_http_cache_purge_main_conf_t *pmcf,
+ngx_http_cache_tag_store_reader(ngx_http_cache_pilot_main_conf_t *pmcf,
                                 ngx_log_t *log) {
     if (ngx_http_cache_tag_store_runtime.reader != NULL) {
         return ngx_http_cache_tag_store_runtime.reader;

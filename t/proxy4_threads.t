@@ -1,8 +1,8 @@
 # vi:filetype=perl
 #
 # Wildcard / partial-key purge with a thread pool configured.
-# Verifies that ngx_http_cache_purge_partial() takes the async thread-pool
-# path (NGX_CACHE_PURGE_THREADS) when a "default" thread pool exists, and
+# Verifies that ngx_http_cache_pilot_partial() takes the async thread-pool
+# path (NGX_CACHE_PILOT_THREADS) when a "default" thread pool exists, and
 # still returns the correct response and leaves non-matching entries intact.
 #
 # When nginx is not built with --with-threads the module falls through to the
@@ -20,8 +20,8 @@ our $main_config = <<'_EOC_';
 _EOC_
 
 our $http_config = <<'_EOC_';
-    proxy_cache_path  /tmp/ngx_cache_purge_threads_cache keys_zone=threads_cache:10m;
-    proxy_temp_path   /tmp/ngx_cache_purge_threads_temp 1 2;
+    proxy_cache_path  /tmp/ngx_cache_pilot_threads_cache keys_zone=threads_cache:10m;
+    proxy_temp_path   /tmp/ngx_cache_pilot_threads_temp 1 2;
     map $request_method $purge_method {
         PURGE   1;
         default 0;
