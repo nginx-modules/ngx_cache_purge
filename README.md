@@ -288,43 +288,51 @@ location /_cache_stats {
 }
 ```
 
-**JSON response structure** (aligned with nginx Plus `/api/http/caches/` naming):
+**JSON response structure** (captured from live `/_stats?format=json` output; `zones` list truncated):
 
 ```json
 {
   "version": 1,
-  "timestamp": 1713268800,
+    "timestamp": 1776537836,
   "purges": {
-    "exact":    { "hard": 120, "soft": 45 },
-    "wildcard": { "hard": 12,  "soft": 3  },
-    "tag":      { "hard": 80,  "soft": 200 },
-    "all":      { "hard": 1,   "soft": 0  }
+        "exact": { "hard": 0, "soft": 0 },
+        "wildcard": { "hard": 0, "soft": 0 },
+        "tag": { "hard": 0, "soft": 0 },
+        "all": { "hard": 0, "soft": 0 }
+    },
+    "key_index": {
+        "exact_fanout": 0,
+        "wildcard_hits": 0
   },
   "zones": {
-    "my_cache": {
-      "size": 104857600,
-      "max_size": 1073741824,
-      "cold": false,
+        "demo_soft": {
+            "size": 0,
+            "max_size": 2251799813685247,
+            "cold": true,
       "entries": {
-        "total": 4823,
-        "valid": 4201,
-        "expired": 622,
+                "total": 0,
+                "valid": 0,
+                "expired": 0,
         "updating": 0
       },
       "tag_index": {
+                "state": "configured",
+                "state_code": 1,
         "backend": "sqlite",
         "queue": {
-          "size": 3,
+                    "size": 0,
           "capacity": 256,
           "dropped": 0
         }
       }
-    }
+        }
   }
 }
 ```
 
-`tag_index` is omitted when no `cache_pilot_tag_index` is configured. `purges` counters are global across all zones and survive `nginx -s reload`.
+Additional zones are omitted for brevity.
+
+`tag_index` is omitted when no `cache_pilot_tag_index` is configured. `tag_index.state_code` uses `0=disabled`, `1=configured`, and `2=ready`. `purges` counters are global across all zones and survive `nginx -s reload`.
 
 **Prometheus metrics** (prefix `nginx_cache_pilot_`):
 
@@ -334,6 +342,7 @@ location /_cache_stats {
 - `nginx_cache_pilot_zone_max_size_bytes{zone}` — gauge, configured maximum zone size
 - `nginx_cache_pilot_zone_cold{zone}` — gauge, 1 while the cache loader is still warming the zone
 - `nginx_cache_pilot_zone_entries{zone,state}` — gauge, entry count by state (`valid`, `expired`, `updating`)
+- `nginx_cache_pilot_tag_index_state{zone,state}` — gauge, per-zone key index readiness (`0=disabled`, `1=configured`, `2=ready`)
 - `nginx_cache_pilot_tag_index_info{zone,backend}` — info gauge, tag index backend type
 - `nginx_cache_pilot_tag_queue_size{zone}` — gauge, pending entries in the inotify write queue
 - `nginx_cache_pilot_tag_queue_capacity{zone}` — gauge, maximum queue capacity
@@ -356,13 +365,14 @@ purges fall back to the existing full cache tree walk.
 ## Exact-Key Purge Fanout
 
 With `cache_pilot_tag_index` and `cache_pilot_tag_watch` enabled for a zone,
-exact-key hard purge can fan out to all files that share the same cache key,
+exact-key purge can fan out to all files that share the same cache key,
 including `Vary` variants.
 
 Behavior summary:
 
-- exact-key purge always removes the directly resolved cache file
-- when key-index data is ready for the zone, exact-key hard purge also removes sibling files sharing the same key
+- exact-key hard purge always removes the directly resolved cache file
+- exact-key soft purge always expires the directly resolved cache file
+- when key-index data is ready for the zone, exact-key hard and soft purge also fan out to sibling files sharing the same key
 - if key-index data is unavailable or not yet ready, exact-key purge does not do a full cache scan
 
 ## Soft Purge
@@ -373,7 +383,7 @@ If `cache_pilot_purge_mode_header` is configured, exact-key, wildcard, and cache
 
 The `soft` config parameter still controls `purge_all`, which does not honor `cache_pilot_purge_mode_header`.
 
-- Exact-key soft purge marks the cached entry as expired, so the next request is handled as `EXPIRED` rather than a deletion-driven `MISS`.
+- Exact-key soft purge marks the cached entry as expired, so the next request is handled as `EXPIRED` rather than a deletion-driven `MISS`; when key-index fanout is available it applies this expiration to sibling variants sharing the same key.
 - Wildcard soft purge applies the same expiration behavior to all matching keys.
 - `purge_all` can also be combined with `soft` to expire every cached entry in a zone without removing the underlying cache files immediately.
 
@@ -585,7 +595,7 @@ The minimal cache-tag setup is already shown in Quick Start. Use that pattern wh
 
 ## Known issues
 
-- Exact-key hard purge fanout across `Vary` variants depends on key-index readiness for the zone. If key-index data is unavailable or not yet ready, exact-key purge removes only the directly resolved cache file and does not run a full cache scan.
+- Exact-key fanout across `Vary` variants depends on key-index readiness for the zone. If key-index data is unavailable or not yet ready, exact-key purge targets only the directly resolved cache file and does not run a full cache scan.
 
 ## Development
 

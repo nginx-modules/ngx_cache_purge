@@ -73,6 +73,8 @@ static ngx_int_t ngx_http_cache_tag_store_redis_do_collect_paths_by_exact_key(
 static ngx_int_t ngx_http_cache_tag_store_redis_do_collect_paths_by_key_prefix(
     ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
     ngx_str_t *prefix, ngx_array_t **paths, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_redis_push_unique_path(
+    ngx_pool_t *pool, ngx_array_t *result, ngx_str_t *candidate);
 static ngx_int_t ngx_http_cache_tag_store_redis_read_bulk_string(
     ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *out,
     ngx_log_t *log);
@@ -1584,7 +1586,7 @@ ngx_http_cache_tag_store_redis_do_collect_paths_by_key_prefix(
     ngx_str_t    pfxidx_key, keyidx_key, range_min, range_max;
     ngx_str_t    args[4];
     ngx_array_t *key_texts, *sub_paths, *result;
-    ngx_str_t   *key_text, *sub_path, *out_path;
+    ngx_str_t   *key_text, *sub_path;
     ngx_uint_t   i, j;
 
     result = ngx_array_create(pool, 8, sizeof(ngx_str_t));
@@ -1636,6 +1638,9 @@ ngx_http_cache_tag_store_redis_do_collect_paths_by_key_prefix(
     }
 
     key_text = key_texts->elts;
+
+    /* Pipeline SMEMBERS for all matched keys to reduce round trips. */
+    args[0] = ngx_http_cache_tag_redis_cmd_smembers;
     for (i = 0; i < key_texts->nelts; i++) {
         if (ngx_http_cache_tag_store_redis_make_key(pool,
                 &ngx_http_cache_tag_redis_keyidx_prefix, zone_name, &key_text[i],
@@ -1643,14 +1648,18 @@ ngx_http_cache_tag_store_redis_do_collect_paths_by_key_prefix(
             return NGX_ERROR;
         }
 
-        args[0] = ngx_http_cache_tag_redis_cmd_smembers;
         args[1] = keyidx_key;
 
-        sub_paths = NULL;
         if (ngx_http_cache_tag_store_redis_send_command(store, log, 2, args)
-                != NGX_OK
-                || ngx_http_cache_tag_store_redis_read_string_array(store, pool,
-                        &sub_paths, log) != NGX_OK) {
+                != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    for (i = 0; i < key_texts->nelts; i++) {
+        sub_paths = NULL;
+        if (ngx_http_cache_tag_store_redis_read_string_array(store, pool,
+                &sub_paths, log) != NGX_OK) {
             return NGX_ERROR;
         }
 
@@ -1660,15 +1669,47 @@ ngx_http_cache_tag_store_redis_do_collect_paths_by_key_prefix(
 
         sub_path = sub_paths->elts;
         for (j = 0; j < sub_paths->nelts; j++) {
-            out_path = ngx_array_push(result);
-            if (out_path == NULL) {
+            if (ngx_http_cache_tag_store_redis_push_unique_path(pool, result,
+                    &sub_path[j]) != NGX_OK) {
                 return NGX_ERROR;
             }
-            *out_path = sub_path[j];
         }
     }
 
     *paths = result;
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_redis_push_unique_path(ngx_pool_t *pool,
+        ngx_array_t *result, ngx_str_t *candidate) {
+    ngx_str_t   *path;
+    ngx_str_t   *out_path;
+    ngx_uint_t   i;
+
+    path = result->elts;
+    for (i = 0; i < result->nelts; i++) {
+        if (path[i].len == candidate->len
+                && ngx_strncmp(path[i].data, candidate->data,
+                               candidate->len) == 0) {
+            return NGX_OK;
+        }
+    }
+
+    out_path = ngx_array_push(result);
+    if (out_path == NULL) {
+        return NGX_ERROR;
+    }
+
+    out_path->data = ngx_pnalloc(pool, candidate->len + 1);
+    if (out_path->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(out_path->data, candidate->data, candidate->len);
+    out_path->len = candidate->len;
+    out_path->data[candidate->len] = '\0';
+
     return NGX_OK;
 }
 

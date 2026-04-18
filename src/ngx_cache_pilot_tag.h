@@ -121,6 +121,8 @@ typedef struct {
 typedef struct {
     ngx_rbtree_node_t             node;
     ngx_http_cache_tag_zone_t    *zone;
+    ngx_flag_t                    bootstrap_complete;
+    time_t                        last_bootstrap_at;
 } ngx_http_cache_tag_zone_index_t;
 
 typedef struct ngx_http_cache_tag_watch_s {
@@ -276,6 +278,8 @@ ngx_http_cache_tag_store_t *ngx_http_cache_tag_store_reader(
     ngx_http_cache_pilot_main_conf_t *pmcf, ngx_log_t *log);
 
 ngx_http_cache_tag_zone_t *ngx_http_cache_tag_lookup_zone(
+    ngx_http_file_cache_t *cache);
+ngx_flag_t ngx_http_cache_tag_zone_bootstrap_complete(
     ngx_http_file_cache_t *cache);
 ngx_int_t ngx_http_cache_tag_bootstrap_zone(
     ngx_http_cache_tag_store_t *store, ngx_http_cache_tag_zone_t *zone,

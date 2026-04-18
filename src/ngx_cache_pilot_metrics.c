@@ -7,6 +7,10 @@
 
 #if (NGX_HTTP_CACHE)
 
+#define NGX_CACHE_PILOT_TAG_INDEX_STATE_DISABLED   0
+#define NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED 1
+#define NGX_CACHE_PILOT_TAG_INDEX_STATE_READY      2
+
 /* ── Per-zone snapshot collected before serialization ── */
 typedef struct {
     ngx_str_t  name;
@@ -16,6 +20,7 @@ typedef struct {
     ngx_uint_t entries_valid;
     ngx_uint_t entries_expired;
     ngx_uint_t entries_updating;
+    ngx_uint_t tag_index_state;
     ngx_uint_t has_tag_index;
     ngx_uint_t tag_backend;      /* NGX_HTTP_CACHE_TAG_BACKEND_* */
     ngx_uint_t queue_dropped;
@@ -97,6 +102,7 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
 
     ngx_shmtx_unlock(&cache->shpool->mutex);
 
+    snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_DISABLED;
     snap->has_tag_index  = 0;
     snap->tag_backend    = 0;
     snap->queue_dropped  = 0;
@@ -104,9 +110,14 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
     snap->queue_capacity = 0;
 
 #if (NGX_LINUX)
-    if (pmcf != NULL && pmcf->backend != NGX_HTTP_CACHE_TAG_BACKEND_NONE) {
+    if (ngx_http_cache_tag_store_configured(pmcf)) {
+        snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED;
         snap->has_tag_index = 1;
         snap->tag_backend   = (ngx_uint_t) pmcf->backend;
+
+        if (ngx_http_cache_tag_zone_bootstrap_complete(cache)) {
+            snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_READY;
+        }
 
         if (pmcf->queue_zone != NULL && pmcf->queue_zone->data != NULL) {
             qctx = pmcf->queue_zone->data;
@@ -202,6 +213,18 @@ ngx_http_cache_pilot_backend_str(ngx_uint_t backend) {
     }
 }
 
+static const char *
+ngx_http_cache_pilot_tag_index_state_str(ngx_uint_t state) {
+    switch (state) {
+    case NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED:
+        return "configured";
+    case NGX_CACHE_PILOT_TAG_INDEX_STATE_READY:
+        return "ready";
+    default:
+        return "disabled";
+    }
+}
+
 
 /* ── JSON serializer ── */
 
@@ -272,6 +295,8 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
         if (s->has_tag_index) {
             p = ngx_slprintf(p, last,
                              ",\"tag_index\":{"
+                             "\"state\":\"%s\","
+                             "\"state_code\":%ui,"
                              "\"backend\":\"%s\","
                              "\"queue\":{"
                              "\"size\":%ui,"
@@ -279,6 +304,8 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
                              "\"dropped\":%ui"
                              "}"
                              "}",
+                             ngx_http_cache_pilot_tag_index_state_str(s->tag_index_state),
+                             s->tag_index_state,
                              ngx_http_cache_pilot_backend_str(s->tag_backend),
                              s->queue_size,
                              s->queue_capacity,
@@ -390,6 +417,19 @@ ngx_http_cache_pilot_write_prometheus(u_char *p, u_char *last,
     }
 
     /* Tag index metrics */
+    p = ngx_slprintf(p, last,
+                     "# HELP nginx_cache_pilot_tag_index_state"
+                     " Per-zone tag index state: 0=disabled, 1=configured, 2=ready\n"
+                     "# TYPE nginx_cache_pilot_tag_index_state gauge\n");
+    for (i = 0; i < nzones; i++) {
+        s = &snaps[i];
+        p = ngx_slprintf(p, last,
+                         "nginx_cache_pilot_tag_index_state{zone=\"%V\",state=\"%s\"} %ui\n",
+                         &s->name,
+                         ngx_http_cache_pilot_tag_index_state_str(s->tag_index_state),
+                         s->tag_index_state);
+    }
+
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
         if (!s->has_tag_index) {

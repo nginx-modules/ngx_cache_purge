@@ -19,6 +19,10 @@ static void ngx_http_cache_tag_watch_insert(ngx_rbtree_node_t *temp,
         ngx_rbtree_node_t *node, ngx_rbtree_node_t *sentinel);
 static ngx_http_cache_tag_zone_index_t *ngx_http_cache_tag_lookup_zone_index(
     ngx_http_file_cache_t *cache);
+static void ngx_http_cache_tag_zone_state_cache_set(ngx_http_file_cache_t *cache,
+        ngx_http_cache_tag_zone_state_t *state);
+static ngx_int_t ngx_http_cache_tag_zone_state_cache_sync(ngx_cycle_t *cycle,
+        ngx_http_cache_pilot_main_conf_t *pmcf);
 static ngx_http_cache_tag_watch_t *ngx_http_cache_tag_find_watch(int wd);
 static ngx_int_t ngx_http_cache_tag_remove_watch(int wd);
 static ngx_int_t ngx_http_cache_tag_add_watch(ngx_http_cache_tag_zone_t *zone,
@@ -162,6 +166,18 @@ ngx_http_cache_tag_lookup_zone(ngx_http_file_cache_t *cache) {
     return index->zone;
 }
 
+ngx_flag_t
+ngx_http_cache_tag_zone_bootstrap_complete(ngx_http_file_cache_t *cache) {
+    ngx_http_cache_tag_zone_index_t *index;
+
+    index = ngx_http_cache_tag_lookup_zone_index(cache);
+    if (index == NULL) {
+        return 0;
+    }
+
+    return index->bootstrap_complete;
+}
+
 ngx_int_t
 ngx_http_cache_tag_bootstrap_zone(ngx_http_cache_tag_store_t *store,
                                   ngx_http_cache_tag_zone_t *zone,
@@ -193,6 +209,8 @@ ngx_http_cache_tag_bootstrap_zone(ngx_http_cache_tag_store_t *store,
         ngx_http_cache_tag_store_rollback_batch(store, cycle->log);
         return NGX_ERROR;
     }
+
+    ngx_http_cache_tag_zone_state_cache_set(zone->cache, &state);
 
     if (ngx_http_cache_tag_store_commit_batch(store, cycle->log) != NGX_OK) {
         ngx_http_cache_tag_store_rollback_batch(store, cycle->log);
@@ -867,6 +885,10 @@ ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
         return NGX_ERROR;
     }
 
+    if (ngx_http_cache_tag_zone_state_cache_sync(cycle, pmcf) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     if (!ngx_http_cache_tag_watch_runtime.owner || pmcf->zones->nelts == 0) {
         ngx_http_cache_tag_watch_runtime.initialized = 1;
         return NGX_OK;
@@ -960,6 +982,8 @@ ngx_http_cache_tag_init_runtime(ngx_cycle_t *cycle,
                     &state, cycle->log) != NGX_OK) {
                 return NGX_ERROR;
             }
+
+            ngx_http_cache_tag_zone_state_cache_set(zone[i].cache, &state);
             continue;
         }
 
@@ -1118,6 +1142,8 @@ ngx_http_cache_tag_runtime_init_zones(ngx_cycle_t *cycle,
         }
 
         index->zone = &zone[i];
+        index->bootstrap_complete = 0;
+        index->last_bootstrap_at = 0;
         index->node.key = (ngx_rbtree_key_t)(uintptr_t) zone[i].cache;
         ngx_rbtree_insert(&ngx_http_cache_tag_watch_runtime.zone_index,
                           &index->node);
@@ -1294,6 +1320,60 @@ ngx_http_cache_tag_apply_pending_ops(ngx_http_cache_tag_store_t *store,
     if (ngx_http_cache_tag_store_commit_batch(store, log) != NGX_OK) {
         ngx_http_cache_tag_store_rollback_batch(store, log);
         return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+static void
+ngx_http_cache_tag_zone_state_cache_set(ngx_http_file_cache_t *cache,
+                                        ngx_http_cache_tag_zone_state_t *state) {
+    ngx_http_cache_tag_zone_index_t *index;
+
+    if (cache == NULL || state == NULL) {
+        return;
+    }
+
+    index = ngx_http_cache_tag_lookup_zone_index(cache);
+    if (index == NULL) {
+        return;
+    }
+
+    index->bootstrap_complete = state->bootstrap_complete;
+    index->last_bootstrap_at = state->last_bootstrap_at;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_zone_state_cache_sync(ngx_cycle_t *cycle,
+        ngx_http_cache_pilot_main_conf_t *pmcf) {
+    ngx_http_cache_tag_store_t       *reader;
+    ngx_http_cache_tag_zone_t        *zone;
+    ngx_http_cache_tag_zone_state_t   state;
+    ngx_uint_t                        i;
+
+    if (pmcf == NULL || pmcf->zones == NULL || pmcf->zones->nelts == 0) {
+        return NGX_OK;
+    }
+
+    reader = ngx_http_cache_tag_store_reader(pmcf, cycle->log);
+    if (reader == NULL) {
+        return NGX_ERROR;
+    }
+
+    zone = pmcf->zones->elts;
+    for (i = 0; i < pmcf->zones->nelts; i++) {
+        if (zone[i].cache == NULL) {
+            continue;
+        }
+
+        state.bootstrap_complete = 0;
+        state.last_bootstrap_at = 0;
+        if (ngx_http_cache_tag_store_get_zone_state(reader, &zone[i].zone_name,
+                &state, cycle->log) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+        ngx_http_cache_tag_zone_state_cache_set(zone[i].cache, &state);
     }
 
     return NGX_OK;
