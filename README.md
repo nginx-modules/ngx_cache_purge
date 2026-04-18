@@ -535,7 +535,14 @@ Current upstream status policy during refresh is intentionally conservative:
 - `200 OK`: treat as changed and run the normal invalidate path
 - `404 Not Found` / `410 Gone`: purge the cache entry because the upstream object is gone
 - other HTTP statuses (for example `301`, `302`, `403`, `429`, `500`): keep the cache entry and record the code in `statuses={...}`
-- subrequest creation failure, timeout, transport failure, or internal invalidate/helper failure: increment `errors`
+- subrequest creation failure, timeout, transport failure, premature upstream close, or internal invalidate/helper failure: increment `errors`
+
+The invalidate path used by refresh and scanned wildcard/tree purge intentionally
+trusts stable identity fields (`exists`, `uniq`, `body_start`) but no longer
+uses shm-node `fs_size` as a hard replacement signal. In real nginx cache state,
+`node->uniq` / `node->body_start` may legitimately remain `0`, and `node->fs_size`
+may drift from the currently opened file's block count, without meaning that a
+different cache object replaced the scanned one.
 
 At the end of each refresh request, the module also emits one `error_log notice`
 summary line like:

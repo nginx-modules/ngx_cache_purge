@@ -5112,13 +5112,22 @@ ngx_http_cache_purge_refresh_done(ngx_http_request_t *r, void *data,
         return NGX_OK;
     }
 
+    if (rc != NGX_OK) {
+        ctx->errors++;
+        if (ctx->active > 0) {
+            ctx->active--;
+        }
+
+        return NGX_OK;
+    }
+
     /*
      * Determine upstream response status.
      * If upstream returned a response, check status_n.
      * If subrequest failed (timeout, connect error), status_n will be 0.
      */
     status = 0;
-    if (r->upstream && r->upstream->headers_in.status_n) {
+    if (r->upstream != NULL) {
         status = r->upstream->headers_in.status_n;
     } else if (r->headers_out.status) {
         status = r->headers_out.status;
