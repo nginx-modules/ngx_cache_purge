@@ -659,6 +659,7 @@ PURGE /proxy/multi-a
 Surrogate-Key: sk-multi-a sk-multi-b
 --- error_code: 200
 --- response_body_like: Successful purge
+--- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 

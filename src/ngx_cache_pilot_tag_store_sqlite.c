@@ -10,15 +10,22 @@ static ngx_int_t ngx_http_cache_tag_store_sqlite_commit_batch(
     ngx_http_cache_tag_store_t *store, ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_sqlite_rollback_batch(
     ngx_http_cache_tag_store_t *store, ngx_log_t *log);
-static ngx_int_t ngx_http_cache_tag_store_sqlite_replace_file_tags(
+static ngx_int_t ngx_http_cache_tag_store_sqlite_upsert_file_meta(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
-    time_t mtime, off_t size, ngx_array_t *tags, ngx_log_t *log);
+    ngx_str_t *cache_key_text, time_t mtime, off_t size, ngx_array_t *tags,
+    ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_sqlite_delete_file(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
     ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_sqlite_collect_paths_by_tags(
     ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
     ngx_array_t *tags, ngx_array_t **paths, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_sqlite_collect_paths_by_exact_key(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *key_text, ngx_array_t **paths, ngx_log_t *log);
+static ngx_int_t ngx_http_cache_tag_store_sqlite_collect_paths_by_key_prefix(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *prefix, ngx_array_t **paths, ngx_log_t *log);
 static ngx_int_t ngx_http_cache_tag_store_sqlite_get_zone_state(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name,
     ngx_http_cache_tag_zone_state_t *state, ngx_log_t *log);
@@ -46,9 +53,11 @@ static const ngx_http_cache_tag_store_ops_t ngx_http_cache_tag_store_sqlite_ops 
     ngx_http_cache_tag_store_sqlite_begin_batch,
     ngx_http_cache_tag_store_sqlite_commit_batch,
     ngx_http_cache_tag_store_sqlite_rollback_batch,
-    ngx_http_cache_tag_store_sqlite_replace_file_tags,
+    ngx_http_cache_tag_store_sqlite_upsert_file_meta,
     ngx_http_cache_tag_store_sqlite_delete_file,
     ngx_http_cache_tag_store_sqlite_collect_paths_by_tags,
+    ngx_http_cache_tag_store_sqlite_collect_paths_by_exact_key,
+    ngx_http_cache_tag_store_sqlite_collect_paths_by_key_prefix,
     ngx_http_cache_tag_store_sqlite_get_zone_state,
     ngx_http_cache_tag_store_sqlite_set_zone_state
 };
@@ -116,6 +125,16 @@ ngx_http_cache_tag_store_sqlite_ensure_schema(ngx_http_cache_tag_store_t *store,
         ");",
         "CREATE INDEX IF NOT EXISTS cache_tag_entries_lookup "
         "ON cache_tag_entries(zone, tag);",
+        "CREATE TABLE IF NOT EXISTS cache_file_meta ("
+        " zone TEXT NOT NULL,"
+        " path TEXT NOT NULL,"
+        " cache_key_text TEXT NOT NULL DEFAULT '',"
+        " mtime INTEGER NOT NULL DEFAULT 0,"
+        " size INTEGER NOT NULL DEFAULT 0,"
+        " PRIMARY KEY(zone, path)"
+        ");",
+        "CREATE INDEX IF NOT EXISTS cache_file_meta_key_lookup "
+        "ON cache_file_meta(zone, cache_key_text);",
         "CREATE TABLE IF NOT EXISTS cache_tag_zones ("
         " zone TEXT PRIMARY KEY,"
         " bootstrap_complete INTEGER NOT NULL DEFAULT 0,"
@@ -158,15 +177,59 @@ ngx_http_cache_tag_store_sqlite_rollback_batch(ngx_http_cache_tag_store_t *store
 }
 
 static ngx_int_t
-ngx_http_cache_tag_store_sqlite_replace_file_tags(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_str_t *path, time_t mtime, off_t size,
-        ngx_array_t *tags, ngx_log_t *log) {
+ngx_http_cache_tag_store_sqlite_upsert_file_meta(ngx_http_cache_tag_store_t *store,
+        ngx_str_t *zone_name, ngx_str_t *path, ngx_str_t *cache_key_text,
+        time_t mtime, off_t size, ngx_array_t *tags, ngx_log_t *log) {
+    static u_char empty_key_text_buf[] = "";
+    ngx_str_t   empty_key_text;
+    ngx_str_t  *meta_key_text;
     ngx_str_t  *tag;
     ngx_uint_t  i;
     int         rc;
 
     if (ngx_http_cache_tag_store_sqlite_delete_file(store, zone_name, path, log)
             != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    /* Always upsert cache_file_meta so key-index lookups cannot go stale. */
+    if (cache_key_text != NULL) {
+        meta_key_text = cache_key_text;
+    } else {
+        empty_key_text.data = empty_key_text_buf;
+        empty_key_text.len = 0;
+        meta_key_text = &empty_key_text;
+    }
+
+    if (meta_key_text->data == NULL) {
+        empty_key_text.data = empty_key_text_buf;
+        empty_key_text.len = 0;
+        meta_key_text = &empty_key_text;
+    }
+
+    sqlite3_reset(store->u.sqlite.stmt.insert_file_meta);
+    sqlite3_clear_bindings(store->u.sqlite.stmt.insert_file_meta);
+    sqlite3_bind_text(store->u.sqlite.stmt.insert_file_meta, 1,
+                      (const char *) zone_name->data, zone_name->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(store->u.sqlite.stmt.insert_file_meta, 2,
+                      (const char *) path->data, path->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(store->u.sqlite.stmt.insert_file_meta, 3,
+                      (const char *) meta_key_text->data,
+                      meta_key_text->len, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(store->u.sqlite.stmt.insert_file_meta, 4,
+                       (sqlite3_int64) mtime);
+    sqlite3_bind_int64(store->u.sqlite.stmt.insert_file_meta, 5,
+                       (sqlite3_int64) size);
+
+    rc = ngx_http_cache_tag_store_sqlite_step(
+             store->u.sqlite.stmt.insert_file_meta, store->u.sqlite.db,
+             log, "insert-meta");
+    if (rc != SQLITE_DONE) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite insert file meta failed: %s",
+                      sqlite3_errmsg(store->u.sqlite.db));
         return NGX_ERROR;
     }
 
@@ -225,6 +288,29 @@ ngx_http_cache_tag_store_sqlite_delete_file(ngx_http_cache_tag_store_t *store,
             store->u.sqlite.db, log, "delete");
     if (rc != SQLITE_DONE) {
         ngx_log_error(NGX_LOG_ERR, log, 0, "sqlite delete failed: %s",
+                      sqlite3_errmsg(store->u.sqlite.db));
+        return NGX_ERROR;
+    }
+
+    if (store->u.sqlite.stmt.delete_file_meta == NULL) {
+        return NGX_OK;
+    }
+
+    sqlite3_reset(store->u.sqlite.stmt.delete_file_meta);
+    sqlite3_clear_bindings(store->u.sqlite.stmt.delete_file_meta);
+    sqlite3_bind_text(store->u.sqlite.stmt.delete_file_meta, 1,
+                      (const char *) zone_name->data, zone_name->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(store->u.sqlite.stmt.delete_file_meta, 2,
+                      (const char *) path->data, path->len,
+                      SQLITE_TRANSIENT);
+
+    rc = ngx_http_cache_tag_store_sqlite_step(
+             store->u.sqlite.stmt.delete_file_meta,
+             store->u.sqlite.db, log, "delete-meta");
+    if (rc != SQLITE_DONE) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite delete file meta failed: %s",
                       sqlite3_errmsg(store->u.sqlite.db));
         return NGX_ERROR;
     }
@@ -359,6 +445,150 @@ ngx_http_cache_tag_store_sqlite_collect_paths_by_tags(
     return NGX_OK;
 
 #undef NGX_CACHE_TAG_SQLITE_COLLECT_PREFIX
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_sqlite_collect_paths_by_exact_key(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *key_text, ngx_array_t **paths, ngx_log_t *log) {
+    ngx_array_t    *result;
+    ngx_str_t      *path;
+    const u_char   *text;
+    size_t          len;
+    int             rc;
+    sqlite3_stmt   *stmt;
+
+    result = ngx_array_create(pool, 4, sizeof(ngx_str_t));
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (key_text == NULL || key_text->len == 0
+            || store->u.sqlite.stmt.collect_paths_by_key == NULL) {
+        *paths = result;
+        return NGX_OK;
+    }
+
+    stmt = store->u.sqlite.stmt.collect_paths_by_key;
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_text(stmt, 1, (const char *) zone_name->data, zone_name->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, (const char *) key_text->data, key_text->len,
+                      SQLITE_TRANSIENT);
+
+    while ((rc = ngx_http_cache_tag_store_sqlite_step(stmt, store->u.sqlite.db,
+                 log, "key-exact-lookup")) == SQLITE_ROW) {
+        text = sqlite3_column_text(stmt, 0);
+        if (text == NULL) {
+            continue;
+        }
+
+        len = ngx_strlen(text);
+        path = ngx_array_push(result);
+        if (path == NULL) {
+            return NGX_ERROR;
+        }
+
+        path->data = ngx_pnalloc(pool, len + 1);
+        if (path->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(path->data, text, len);
+        path->len = len;
+        path->data[len] = '\0';
+    }
+
+    if (rc != SQLITE_DONE) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite key-exact lookup failed: %s",
+                      sqlite3_errmsg(store->u.sqlite.db));
+        return NGX_ERROR;
+    }
+
+    *paths = result;
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_tag_store_sqlite_collect_paths_by_key_prefix(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *prefix, ngx_array_t **paths, ngx_log_t *log) {
+    ngx_array_t    *result;
+    ngx_str_t      *path;
+    ngx_str_t       upper;
+    const u_char   *text;
+    u_char         *upper_buf;
+    size_t          len;
+    int             rc;
+    sqlite3_stmt   *stmt;
+
+    result = ngx_array_create(pool, 8, sizeof(ngx_str_t));
+    if (result == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (prefix == NULL || prefix->len == 0
+            || store->u.sqlite.stmt.collect_paths_by_key_prefix == NULL) {
+        *paths = result;
+        return NGX_OK;
+    }
+
+    /* Upper bound: prefix + '\xff' matches all strings with this prefix */
+    upper_buf = ngx_pnalloc(pool, prefix->len + 2);
+    if (upper_buf == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(upper_buf, prefix->data, prefix->len);
+    upper_buf[prefix->len]     = '\xff';
+    upper_buf[prefix->len + 1] = '\0';
+    upper.data = upper_buf;
+    upper.len  = prefix->len + 1;
+
+    stmt = store->u.sqlite.stmt.collect_paths_by_key_prefix;
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_text(stmt, 1, (const char *) zone_name->data, zone_name->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, (const char *) prefix->data, prefix->len,
+                      SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, (const char *) upper.data, upper.len,
+                      SQLITE_TRANSIENT);
+
+    while ((rc = ngx_http_cache_tag_store_sqlite_step(stmt, store->u.sqlite.db,
+                 log, "key-prefix-lookup")) == SQLITE_ROW) {
+        text = sqlite3_column_text(stmt, 0);
+        if (text == NULL) {
+            continue;
+        }
+
+        len = ngx_strlen(text);
+        path = ngx_array_push(result);
+        if (path == NULL) {
+            return NGX_ERROR;
+        }
+
+        path->data = ngx_pnalloc(pool, len + 1);
+        if (path->data == NULL) {
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(path->data, text, len);
+        path->len = len;
+        path->data[len] = '\0';
+    }
+
+    if (rc != SQLITE_DONE) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "sqlite key-prefix lookup failed: %s",
+                      sqlite3_errmsg(store->u.sqlite.db));
+        return NGX_ERROR;
+    }
+
+    *paths = result;
+    return NGX_OK;
 }
 
 static ngx_int_t
@@ -542,6 +772,37 @@ ngx_http_cache_tag_store_sqlite_prepare(ngx_http_cache_tag_store_t *store,
         return NGX_ERROR;
     }
 
+    if (ngx_http_cache_tag_store_sqlite_prepare_one(store->u.sqlite.db,
+            &store->u.sqlite.stmt.insert_file_meta,
+            "INSERT OR REPLACE INTO cache_file_meta "
+            "(zone, path, cache_key_text, mtime, size) VALUES (?1, ?2, ?3, ?4, ?5)",
+            log) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_store_sqlite_prepare_one(store->u.sqlite.db,
+            &store->u.sqlite.stmt.delete_file_meta,
+            "DELETE FROM cache_file_meta WHERE zone = ?1 AND path = ?2",
+            log) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_store_sqlite_prepare_one(store->u.sqlite.db,
+            &store->u.sqlite.stmt.collect_paths_by_key,
+            "SELECT path FROM cache_file_meta WHERE zone = ?1 "
+            "AND cache_key_text = ?2",
+            log) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_tag_store_sqlite_prepare_one(store->u.sqlite.db,
+            &store->u.sqlite.stmt.collect_paths_by_key_prefix,
+            "SELECT path FROM cache_file_meta WHERE zone = ?1 "
+            "AND cache_key_text >= ?2 AND cache_key_text < ?3",
+            log) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     return NGX_OK;
 }
 
@@ -595,6 +856,22 @@ ngx_http_cache_tag_store_sqlite_finalize(ngx_http_cache_tag_store_t *store) {
 
     if (store->u.sqlite.stmt.set_zone_state != NULL) {
         sqlite3_finalize(store->u.sqlite.stmt.set_zone_state);
+    }
+
+    if (store->u.sqlite.stmt.insert_file_meta != NULL) {
+        sqlite3_finalize(store->u.sqlite.stmt.insert_file_meta);
+    }
+
+    if (store->u.sqlite.stmt.delete_file_meta != NULL) {
+        sqlite3_finalize(store->u.sqlite.stmt.delete_file_meta);
+    }
+
+    if (store->u.sqlite.stmt.collect_paths_by_key != NULL) {
+        sqlite3_finalize(store->u.sqlite.stmt.collect_paths_by_key);
+    }
+
+    if (store->u.sqlite.stmt.collect_paths_by_key_prefix != NULL) {
+        sqlite3_finalize(store->u.sqlite.stmt.collect_paths_by_key_prefix);
     }
 }
 

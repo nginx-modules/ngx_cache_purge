@@ -19,6 +19,12 @@ This is a fork of the [`ngx_cache_purge` module](https://github.com/nginx-module
 - wildcard URI purge using a trailing `*`
 - cache-tag and surrogate-key purge
 
+When `cache_pilot_tag_index` and `cache_pilot_tag_watch` are enabled for a zone,
+the module also maintains a cache-key index. That key index is used to:
+
+- fan out exact-key hard purges across files that share the same key (for example, `Vary` variants)
+- serve wildcard key purges from key-prefix lookups before falling back to filesystem walking
+
 For most users, the simplest starting point is a cached location plus a `PURGE` method restricted to trusted clients.
 
 ```nginx
@@ -224,6 +230,11 @@ If configured:
 
 Enable cache-tag indexing backed by SQLite or Redis. This feature is currently Linux-only. SQLite requires a writable database path. Redis currently supports a single instance over `host:port` or `unix:/path`, with optional `db=<n>` and `password=<secret>`, but no TLS, Sentinel, or Cluster support.
 
+This backend also stores cache-key metadata used by key-based purge acceleration:
+
+- exact-key hard purge fanout across sibling files sharing one cache key
+- wildcard key-prefix lookup
+
 #### `cache_pilot_tag_headers`
 
 - **syntax**: `cache_pilot_tag_headers <header> [header ...]`
@@ -241,6 +252,8 @@ All watched locations that share the same cache zone must use the same `cache_pi
 - **context**: `http`, `server`, `location`
 
 Enable cache-tag indexing for the cache used by the current purge-enabled location. When enabled, the module watches the cache directory, indexes tags found in cached response headers, and allows tag-based `PURGE` requests.
+
+When `cache_pilot_tag_index` is also configured, watched cache files also update the cache-key index used by exact-key fanout and wildcard key-prefix purge paths.
 
 For hard tag purges, matching cache files are removed immediately and the corresponding SQLite index deletes are handed off asynchronously to the owner worker. A successful purge response means all required index deletes were accepted for processing; if that handoff cannot be accepted, the request fails with `500`.
 
@@ -316,6 +329,7 @@ location /_cache_stats {
 **Prometheus metrics** (prefix `nginx_cache_pilot_`):
 
 - `nginx_cache_pilot_purges_total{type,mode}` — counter, purge operations by type (`exact`, `wildcard`, `tag`, `all`) and mode (`hard`, `soft`)
+- `nginx_cache_pilot_key_index_total{type}` — counter, key-index assisted purge operations by type (`exact_fanout`, `wildcard_hits`)
 - `nginx_cache_pilot_zone_size_bytes{zone}` — gauge, current zone usage in bytes
 - `nginx_cache_pilot_zone_max_size_bytes{zone}` — gauge, configured maximum zone size
 - `nginx_cache_pilot_zone_cold{zone}` — gauge, 1 while the cache loader is still warming the zone
@@ -334,6 +348,22 @@ curl -X PURGE /page*
 ```
 
 The asterisk must be the last character of the key, so you must put the `$uri` variable at the end of the configured cache key.
+
+When key-index metadata is available and ready for the zone, wildcard purges use
+key-prefix lookups first. If key-index data is unavailable for the zone, wildcard
+purges fall back to the existing full cache tree walk.
+
+## Exact-Key Purge Fanout
+
+With `cache_pilot_tag_index` and `cache_pilot_tag_watch` enabled for a zone,
+exact-key hard purge can fan out to all files that share the same cache key,
+including `Vary` variants.
+
+Behavior summary:
+
+- exact-key purge always removes the directly resolved cache file
+- when key-index data is ready for the zone, exact-key hard purge also removes sibling files sharing the same key
+- if key-index data is unavailable or not yet ready, exact-key purge does not do a full cache scan
 
 ## Soft Purge
 
@@ -359,6 +389,7 @@ When `cache_pilot_tag_index` and `cache_pilot_tag_watch` are enabled:
 - `Surrogate-Key` values are parsed as comma- or whitespace-delimited tags
 - `Cache-Tag` values are parsed as comma- or whitespace-delimited tags
 - the module stores a tag-to-cache-file index in SQLite or Redis
+- the module stores cache-key metadata used for exact-key fanout and wildcard key-prefix purge
 - on Linux, a worker-owned `inotify` watcher keeps the index up to date as cache files are created, replaced, or removed
 
 To purge by tag, send a normal `PURGE` request and include one or more tag headers:
@@ -392,7 +423,13 @@ This section describes how the cache index works internally. It is not required 
 
 ### Overview
 
-The cache index maps cache tags to the physical file paths of cached responses. When a `PURGE` request arrives with tag headers, the module looks up all paths associated with those tags in the index and purges each file. Without an index there would be no efficient way to find which files carry a given tag across a potentially large cache directory tree.
+The cache index stores both:
+
+- tag-to-path associations for cache-tag and surrogate-key purge
+- cache-key metadata used by exact-key fanout and wildcard key-prefix lookup
+
+Without index data, tag purge would have no efficient path lookup, and wildcard
+key purge relies on filesystem walking.
 
 ### Index population
 
@@ -428,6 +465,20 @@ CREATE TABLE cache_tag_entries (
 CREATE INDEX cache_tag_entries_lookup ON cache_tag_entries (zone, tag);
 ```
 
+`cache_file_meta` — one row per (zone, path) with key metadata:
+
+```sql
+CREATE TABLE cache_file_meta (
+    zone           TEXT    NOT NULL,
+    path           TEXT    NOT NULL,
+    cache_key_text TEXT    NOT NULL DEFAULT '',
+    mtime          INTEGER NOT NULL DEFAULT 0,
+    size           INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (zone, path)
+);
+CREATE INDEX cache_file_meta_key_lookup ON cache_file_meta (zone, cache_key_text);
+```
+
 `cache_tag_zones` — one row per zone, tracks bootstrap state:
 
 ```sql
@@ -455,7 +506,9 @@ The Redis backend implements the RESP protocol directly without an external clie
 | `cache_tag:zone:<zone>` | Hash | `bootstrap_complete` (0 or 1), `last_bootstrap_at` (Unix timestamp) |
 | `cache_tag:tag:<zone>:<tag>` | Set | All cache file paths that carry this tag |
 | `cache_tag:file:<zone>:<path>` | Set | All tags associated with this file |
-| `cache_tag:filemeta:<zone>:<path>` | Hash | `mtime` and `size` for the cached file |
+| `cache_tag:filemeta:<zone>:<path>` | Hash | `mtime`, `size`, and `cache_key` for the cached file |
+| `cache_key:keyidx:<zone>:<key>` | Set | All cache file paths associated with one exact cache key |
+| `cache_key:pfxidx:<zone>` | Sorted set | Cache key texts used for prefix range lookups (`ZRANGEBYLEX`) |
 
 **Read path.** A single-tag purge queries `SMEMBERS cache_tag:tag:<zone>:<tag>`. A multi-tag purge uses `SUNION cache_tag:tag:<zone>:<tag1> cache_tag:tag:<zone>:<tag2> …` to collect all matching paths in one round trip.
 
@@ -532,7 +585,7 @@ The minimal cache-tag setup is already shown in Quick Start. Use that pattern wh
 
 ## Known issues
 
-- **`gzip_vary` and Vary-based cache variants** — When [`gzip_vary`](https://nginx.org/r/gzip_vary) (or `brotli_vary` / `zstd_vary`) is enabled, nginx stores a separate cache file for each `Accept-Encoding` variant of the same URL. A key-based purge uses `ngx_http_file_cache_open`, which resolves to the single variant whose `Vary` headers match the incoming purge request, leaving other variants in the cache. **Recommended fix:** use cache tags. Every cached file — including each encoding variant — is registered in the tag store independently at write time, so a tag-based purge removes all variants regardless of encoding. See [#20](https://github.com/nginx-modules/ngx_cache_purge/issues/20).
+- Exact-key hard purge fanout across `Vary` variants depends on key-index readiness for the zone. If key-index data is unavailable or not yet ready, exact-key purge removes only the directly resolved cache file and does not run a full cache scan.
 
 ## Development
 

@@ -8,8 +8,6 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
-    tty: true
-    stdin_open: true
     depends_on:
       - redis
 

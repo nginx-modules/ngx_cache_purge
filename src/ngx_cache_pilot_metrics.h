@@ -21,6 +21,8 @@ struct ngx_http_cache_pilot_metrics_shctx_s {
     ngx_atomic_t  purges_tag_soft;
     ngx_atomic_t  purges_all_hard;
     ngx_atomic_t  purges_all_soft;
+    ngx_atomic_t  key_index_exact_fanout;
+    ngx_atomic_t  key_index_wildcard_hits;
 };
 
 /* Increment one field in the metrics shctx (no-op when metrics == NULL). */

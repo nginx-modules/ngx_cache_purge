@@ -8,8 +8,8 @@ static ngx_int_t ngx_http_cache_tag_push_unique(ngx_pool_t *pool,
         ngx_array_t *tags, u_char *data, size_t len);
 static ngx_int_t ngx_http_cache_tag_path_known(ngx_str_t *path);
 static ngx_int_t ngx_http_cache_tag_parse_file(ngx_pool_t *pool,
-        ngx_str_t *path, ngx_array_t *headers, ngx_array_t **tags, time_t *mtime,
-        off_t *size, ngx_log_t *log);
+        ngx_str_t *path, ngx_array_t *headers, ngx_array_t **tags,
+        ngx_str_t *cache_key_text, time_t *mtime, off_t *size, ngx_log_t *log);
 
 ngx_flag_t
 ngx_http_cache_tag_store_configured(ngx_http_cache_pilot_main_conf_t *pmcf) {
@@ -85,11 +85,29 @@ ngx_http_cache_tag_store_rollback_batch(ngx_http_cache_tag_store_t *store,
 }
 
 ngx_int_t
-ngx_http_cache_tag_store_replace_file_tags(ngx_http_cache_tag_store_t *store,
-        ngx_str_t *zone_name, ngx_str_t *path, time_t mtime, off_t size,
-        ngx_array_t *tags, ngx_log_t *log) {
-    return store->ops->replace_file_tags(store, zone_name, path, mtime, size,
-                                         tags, log);
+ngx_http_cache_tag_store_upsert_file_meta(ngx_http_cache_tag_store_t *store,
+        ngx_str_t *zone_name, ngx_str_t *path, ngx_str_t *cache_key_text,
+        time_t mtime, off_t size, ngx_array_t *tags, ngx_log_t *log) {
+    return store->ops->upsert_file_meta(store, zone_name, path, cache_key_text,
+                                        mtime, size, tags, log);
+}
+
+ngx_int_t
+ngx_http_cache_tag_store_collect_paths_by_exact_key(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool,
+    ngx_str_t *zone_name, ngx_str_t *key_text,
+    ngx_array_t **paths, ngx_log_t *log) {
+    return store->ops->collect_paths_by_exact_key(store, pool, zone_name,
+            key_text, paths, log);
+}
+
+ngx_int_t
+ngx_http_cache_tag_store_collect_paths_by_key_prefix(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool,
+    ngx_str_t *zone_name, ngx_str_t *prefix,
+    ngx_array_t **paths, ngx_log_t *log) {
+    return store->ops->collect_paths_by_key_prefix(store, pool, zone_name,
+            prefix, paths, log);
 }
 
 ngx_int_t
@@ -130,6 +148,7 @@ ngx_http_cache_tag_store_process_file(ngx_http_cache_tag_store_t *store,
                                       ngx_log_t *log) {
     ngx_pool_t   *pool;
     ngx_array_t  *tags;
+    ngx_str_t     cache_key_text;
     time_t        mtime;
     off_t         size;
     ngx_int_t     rc;
@@ -139,19 +158,34 @@ ngx_http_cache_tag_store_process_file(ngx_http_cache_tag_store_t *store,
         return NGX_ERROR;
     }
 
+    ngx_str_null(&cache_key_text);
+
     if (headers == NULL || headers->nelts == 0) {
+        /* No configured tag headers: still parse for KEY: so the key index
+         * is populated even when tag indexing is not in use. */
+        if (ngx_http_cache_tag_parse_file(pool, path, NULL, &tags,
+                                          &cache_key_text, &mtime, &size,
+                                          log) != NGX_OK) {
+            ngx_destroy_pool(pool);
+            return ngx_http_cache_tag_store_delete_file(store, zone_name, path,
+                    log);
+        }
+
+        rc = ngx_http_cache_tag_store_upsert_file_meta(store, zone_name, path,
+                &cache_key_text, mtime, size, NULL, log);
         ngx_destroy_pool(pool);
-        return ngx_http_cache_tag_store_delete_file(store, zone_name, path, log);
+        return rc;
     }
 
-    if (ngx_http_cache_tag_parse_file(pool, path, headers, &tags, &mtime, &size,
+    if (ngx_http_cache_tag_parse_file(pool, path, headers, &tags,
+                                      &cache_key_text, &mtime, &size,
                                       log) != NGX_OK) {
         ngx_destroy_pool(pool);
         return ngx_http_cache_tag_store_delete_file(store, zone_name, path, log);
     }
 
-    rc = ngx_http_cache_tag_store_replace_file_tags(store, zone_name, path,
-            mtime, size, tags, log);
+    rc = ngx_http_cache_tag_store_upsert_file_meta(store, zone_name, path,
+            &cache_key_text, mtime, size, tags, log);
     ngx_destroy_pool(pool);
 
     return rc;
@@ -294,14 +328,16 @@ ngx_http_cache_tag_path_known(ngx_str_t *path) {
 static ngx_int_t
 ngx_http_cache_tag_parse_file(ngx_pool_t *pool, ngx_str_t *path,
                               ngx_array_t *headers, ngx_array_t **tags,
+                              ngx_str_t *cache_key_text,
                               time_t *mtime, off_t *size, ngx_log_t *log) {
-    ngx_file_info_t  fi;
-    ngx_file_t       file;
-    u_char          *buf;
-    ssize_t          n;
-    size_t           max_read, i, j, line_end, value_start;
-    ngx_array_t     *result;
-    ngx_str_t       *header;
+    static u_char        key_hdr[] = "KEY:";
+    ngx_file_info_t      fi;
+    ngx_file_t           file;
+    u_char              *buf;
+    ssize_t              n;
+    size_t               max_read, i, j, line_end, value_start;
+    ngx_array_t         *result;
+    ngx_str_t           *header;
 
     if (!ngx_http_cache_tag_path_known(path)) {
         return NGX_DECLINED;
@@ -341,12 +377,43 @@ ngx_http_cache_tag_parse_file(ngx_pool_t *pool, ngx_str_t *path,
         return NGX_ERROR;
     }
 
-    header = headers->elts;
     for (i = 0; i < (size_t) n; i++) {
         if (i != 0 && buf[i - 1] != '\n') {
             continue;
         }
 
+        /* Extract KEY: line (capture whole value, not token-split) */
+        if (cache_key_text->len == 0
+                && i + 4 <= (size_t) n
+                && ngx_strncasecmp(buf + i, key_hdr, 4) == 0) {
+            value_start = i + 4;
+            while (value_start < (size_t) n
+                    && (buf[value_start] == ' ' || buf[value_start] == '\t')) {
+                value_start++;
+            }
+            line_end = value_start;
+            while (line_end < (size_t) n
+                    && buf[line_end] != '\n' && buf[line_end] != '\r') {
+                line_end++;
+            }
+            if (line_end > value_start) {
+                cache_key_text->data = ngx_pnalloc(pool,
+                                                   line_end - value_start + 1);
+                if (cache_key_text->data == NULL) {
+                    return NGX_ERROR;
+                }
+                ngx_memcpy(cache_key_text->data, buf + value_start,
+                           line_end - value_start);
+                cache_key_text->len = line_end - value_start;
+                cache_key_text->data[cache_key_text->len] = '\0';
+            }
+        }
+
+        if (headers == NULL) {
+            continue;
+        }
+
+        header = headers->elts;
         for (j = 0; j < headers->nelts; j++) {
             if (i + header[j].len + 1 >= (size_t) n) {
                 continue;

@@ -221,6 +221,10 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
                      "\"wildcard\":{\"hard\":%uA,\"soft\":%uA},"
                      "\"tag\":{\"hard\":%uA,\"soft\":%uA},"
                      "\"all\":{\"hard\":%uA,\"soft\":%uA}"
+                     "},"
+                     "\"key_index\":{"
+                     "\"exact_fanout\":%uA,"
+                     "\"wildcard_hits\":%uA"
                      "},",
                      ngx_time(),
                      m ? ngx_cache_pilot_metrics_read(&m->purges_exact_hard)    : (ngx_atomic_uint_t)0,
@@ -230,7 +234,9 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_tag_hard)      : (ngx_atomic_uint_t)0,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_tag_soft)      : (ngx_atomic_uint_t)0,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_all_hard)      : (ngx_atomic_uint_t)0,
-                     m ? ngx_cache_pilot_metrics_read(&m->purges_all_soft)      : (ngx_atomic_uint_t)0);
+                     m ? ngx_cache_pilot_metrics_read(&m->purges_all_soft)      : (ngx_atomic_uint_t)0,
+                     m ? ngx_cache_pilot_metrics_read(&m->key_index_exact_fanout)  : (ngx_atomic_uint_t)0,
+                     m ? ngx_cache_pilot_metrics_read(&m->key_index_wildcard_hits) : (ngx_atomic_uint_t)0);
 
     p = ngx_slprintf(p, last, "\"zones\":{");
 
@@ -320,6 +326,16 @@ ngx_http_cache_pilot_write_prometheus(u_char *p, u_char *last,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_tag_soft)      : (ngx_atomic_uint_t)0,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_all_hard)      : (ngx_atomic_uint_t)0,
                      m ? ngx_cache_pilot_metrics_read(&m->purges_all_soft)      : (ngx_atomic_uint_t)0);
+
+    /* Key-index efficiency counters */
+    p = ngx_slprintf(p, last,
+                     "# HELP nginx_cache_pilot_key_index_total"
+                     " Cache purges served via the key index (avoids filesystem walk)\n"
+                     "# TYPE nginx_cache_pilot_key_index_total counter\n"
+                     "nginx_cache_pilot_key_index_total{type=\"exact_fanout\"} %uA\n"
+                     "nginx_cache_pilot_key_index_total{type=\"wildcard_hits\"} %uA\n",
+                     m ? ngx_cache_pilot_metrics_read(&m->key_index_exact_fanout)  : (ngx_atomic_uint_t)0,
+                     m ? ngx_cache_pilot_metrics_read(&m->key_index_wildcard_hits) : (ngx_atomic_uint_t)0);
 
     /* Zone size */
     p = ngx_slprintf(p, last,

@@ -242,9 +242,16 @@ ngx_int_t ngx_http_cache_tag_store_commit_batch(
     ngx_http_cache_tag_store_t *store, ngx_log_t *log);
 ngx_int_t ngx_http_cache_tag_store_rollback_batch(
     ngx_http_cache_tag_store_t *store, ngx_log_t *log);
-ngx_int_t ngx_http_cache_tag_store_replace_file_tags(
+ngx_int_t ngx_http_cache_tag_store_upsert_file_meta(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
-    time_t mtime, off_t size, ngx_array_t *tags, ngx_log_t *log);
+    ngx_str_t *cache_key_text, time_t mtime, off_t size, ngx_array_t *tags,
+    ngx_log_t *log);
+ngx_int_t ngx_http_cache_tag_store_collect_paths_by_exact_key(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *key_text, ngx_array_t **paths, ngx_log_t *log);
+ngx_int_t ngx_http_cache_tag_store_collect_paths_by_key_prefix(
+    ngx_http_cache_tag_store_t *store, ngx_pool_t *pool, ngx_str_t *zone_name,
+    ngx_str_t *prefix, ngx_array_t **paths, ngx_log_t *log);
 ngx_int_t ngx_http_cache_tag_store_delete_file(
     ngx_http_cache_tag_store_t *store, ngx_str_t *zone_name, ngx_str_t *path,
     ngx_log_t *log);

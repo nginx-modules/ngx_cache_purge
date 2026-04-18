@@ -52,7 +52,7 @@ format:
 	dos2unix src/*
 
 test:
-	$(MAKE) nginx-build >/tmp/nginx-build.log
+	$(MAKE) nginx-build
 	TEST_NGINX_BINARY="$(NGINX_BUILD_PREFIX)/sbin/nginx" prove ./t
 
 bench: nginx-build
