@@ -474,6 +474,10 @@ request URI portion.
 
 - Do not try refresh on `fastcgi`, `scgi`, or `uwsgi` caches.
 
+- If you add a custom `X-Cache-Status` header based on `$upstream_cache_status`, use `always` so it appears on error responses too:
+
+      add_header X-Cache-Status $upstream_cache_status always;
+
 ### Response Format
 
 Refresh success responses return `200 OK`. The exact body format depends on

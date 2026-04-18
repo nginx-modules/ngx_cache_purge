@@ -3061,17 +3061,17 @@ ngx_http_cache_purge_cache_matches_node(ngx_http_cache_t *c)
         return 0;
     }
 
-    if (c->uniq != 0 && c->node->uniq != c->uniq) {
+    /*
+     * A live shm node may legitimately keep uniq/body_start at 0 even though
+     * the cache file on disk has already been populated and opened into "c".
+     * Treat 0 here as "unknown" rather than "replaced"; otherwise refresh
+     * and scanned purge paths keep stale entries due to false races.
+     */
+    if (c->uniq != 0 && c->node->uniq != 0 && c->node->uniq != c->uniq) {
         return 0;
     }
 
-#  if (nginx_version >= 1000001)
-    if (c->node->fs_size != c->fs_size) {
-        return 0;
-    }
-#  endif
-
-    if (c->node->body_start != c->body_start) {
+    if (c->node->body_start != 0 && c->node->body_start != c->body_start) {
         return 0;
     }
 
@@ -5049,23 +5049,25 @@ ngx_http_cache_purge_refresh_do_invalidate(
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
                       "refresh invalidate failed (%ui) for \"%V\"",
                       status, &file->uri);
-    } else if (invalidate_result == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED) {
-        ctx->purged++;
-        ctx->purged_bytes += file->item.fs_size;
-        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "refresh: %ui purged \"%V\"", status, &file->uri);
-    } else if (invalidate_result
-               == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
-               || invalidate_result
-               == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
-    {
-        ctx->refreshed++;
-        ctx->kept_bytes += file->item.fs_size;
-        ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "refresh: %ui race-kept (%ui) \"%V\"",
-                       status, invalidate_result, &file->uri);
     } else {
-        ctx->errors++;
+        if (invalidate_result == NGX_HTTP_CACHE_PURGE_INVALIDATE_PURGED) {
+            ctx->purged++;
+            ctx->purged_bytes += file->item.fs_size;
+            ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "refresh: %ui purged \"%V\"", status, &file->uri);
+        } else if (invalidate_result
+                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_MISSING
+                   || invalidate_result
+                   == NGX_HTTP_CACHE_PURGE_INVALIDATE_RACED_REPLACED)
+        {
+            ctx->refreshed++;
+            ctx->kept_bytes += file->item.fs_size;
+            ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                           "refresh: %ui race-kept (%ui) \"%V\"",
+                           status, invalidate_result, &file->uri);
+        } else {
+            ctx->errors++;
+        }
     }
 
     ngx_destroy_pool(pool);
