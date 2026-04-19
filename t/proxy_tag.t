@@ -17,7 +17,7 @@ our $http_config = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_hard = <<'_EOC_';
@@ -30,7 +30,7 @@ our $http_config_hard = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_hard.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_cache_tag = <<'_EOC_';
@@ -43,7 +43,7 @@ our $http_config_cache_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_cache_tag.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_override = <<'_EOC_';
@@ -56,7 +56,7 @@ our $http_config_override = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_override.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_restart = <<'_EOC_';
@@ -69,7 +69,7 @@ our $http_config_restart = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_restart.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_plain = <<'_EOC_';
@@ -82,7 +82,7 @@ our $http_config_plain = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_plain.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_custom = <<'_EOC_';
@@ -95,7 +95,7 @@ our $http_config_custom = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_custom.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $http_config_multi_tag = <<'_EOC_';
@@ -108,7 +108,7 @@ our $http_config_multi_tag = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_multi_tag.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $config_multi_tag = <<'_EOC_';
@@ -171,7 +171,7 @@ our $http_config_overload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_tags_overload.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $config_overload = <<'_EOC_';
@@ -637,7 +637,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 23: second tag purge reuses persisted index after restart
+=== TEST 23: second tag purge uses in-memory index after restart bootstrap
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft_json
 --- request
@@ -648,11 +648,7 @@ X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: application/json
---- response_body_like: ^\{\"key\": \"\/proxy\/a\?t=restart\", \"cache_pilot\": \{\"purge_path\": \"reused-persisted-index\"\}\}$
---- grep_error_log eval
-qr/cache_tag request reusing persisted index for zone "test_cache"/
---- grep_error_log_out
-cache_tag request reusing persisted index for zone "test_cache"
+--- response_body_like: ^\{\"key\": \"\/proxy\/a\?t=restart\"\}$
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 

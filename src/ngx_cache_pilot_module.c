@@ -188,11 +188,11 @@ static ngx_conf_enum_t  ngx_http_cache_pilot_response_types[] = {
 
 static ngx_command_t  ngx_http_cache_pilot_module_commands[] = {
     {
-        ngx_string("cache_pilot_index_store"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_2MORE,
-        ngx_http_cache_index_store_conf,
+        ngx_string("cache_pilot_index_zone_size"),
+        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
         NGX_HTTP_MAIN_CONF_OFFSET,
-        0,
+        offsetof(ngx_http_cache_pilot_main_conf_t, index_shm_size),
         NULL
     },
     {
@@ -211,15 +211,6 @@ static ngx_command_t  ngx_http_cache_pilot_module_commands[] = {
         offsetof(ngx_http_cache_pilot_loc_conf_t, cache_index),
         NULL
     },
-    {
-        ngx_string("cache_pilot_tag_queue_size"),
-        NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
-        ngx_conf_set_size_slot,
-        NGX_HTTP_MAIN_CONF_OFFSET,
-        offsetof(ngx_http_cache_pilot_main_conf_t, queue_shm_size),
-        NULL
-    },
-
 # if (NGX_HTTP_FASTCGI)
     {
         ngx_string("fastcgi_cache_purge"),
@@ -2031,54 +2022,7 @@ ngx_http_cache_pilot_init(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 
 static ngx_int_t
 ngx_http_cache_pilot_init_module(ngx_cycle_t *cycle) {
-#if (NGX_LINUX)
-    ngx_http_cache_pilot_main_conf_t  *pmcf;
-    u_char                            *p, dir[NGX_MAX_PATH];
-    size_t                             dir_len;
-    ngx_file_info_t                    fi;
-
-    pmcf = ngx_http_cycle_get_module_main_conf(cycle,
-            ngx_http_cache_pilot_module);
-    if (pmcf == NULL || pmcf->backend != NGX_HTTP_CACHE_TAG_BACKEND_SQLITE) {
-        return NGX_OK;
-    }
-
-    /* Validate that the directory component of sqlite_path exists.
-     * Runs once in the master process so config reload fails fast. */
-    p = pmcf->sqlite_path.data + pmcf->sqlite_path.len;
-    while (p > pmcf->sqlite_path.data && p[-1] != '/') {
-        p--;
-    }
-
-    if (p == pmcf->sqlite_path.data) {
-        return NGX_OK;  /* no directory component — relative to cwd, skip */
-    }
-
-    dir_len = (size_t)(p - pmcf->sqlite_path.data);
-    if (dir_len >= sizeof(dir)) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "cache_pilot_index_store sqlite: path too long");
-        return NGX_ERROR;
-    }
-
-    ngx_memcpy(dir, pmcf->sqlite_path.data, dir_len);
-    dir[dir_len] = '\0';
-
-    if (ngx_file_info(dir, &fi) == NGX_FILE_ERROR) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
-                      "cache_pilot_index_store sqlite: directory \"%s\" not found",
-                      dir);
-        return NGX_ERROR;
-    }
-
-    if (!ngx_is_dir(&fi)) {
-        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
-                      "cache_pilot_index_store sqlite: \"%s\" is not a directory",
-                      dir);
-        return NGX_ERROR;
-    }
-#endif
-
+    (void) cycle;
     return NGX_OK;
 }
 
@@ -2889,7 +2833,11 @@ ngx_http_cache_pilot_create_main_conf(ngx_conf_t *cf) {
         return NULL;
     }
 
-    conf->queue_shm_size = NGX_CONF_UNSET_SIZE;
+    conf->backend = NGX_HTTP_CACHE_TAG_BACKEND_NONE;
+    conf->index_shm_size = NGX_CONF_UNSET_SIZE;
+#if (NGX_LINUX)
+    conf->backend = NGX_HTTP_CACHE_TAG_BACKEND_SHM;
+#endif
 
     return conf;
 }
@@ -2898,11 +2846,10 @@ char *
 ngx_http_cache_pilot_init_main_conf(ngx_conf_t *cf, void *conf) {
     ngx_http_cache_pilot_main_conf_t  *pmcf = conf;
 
-    ngx_conf_init_size_value(pmcf->queue_shm_size, NGX_HTTP_CACHE_TAG_QUEUE_SIZE);
+    ngx_conf_init_size_value(pmcf->index_shm_size, NGX_HTTP_CACHE_INDEX_SHM_SIZE);
 
 #if (NGX_LINUX)
-    if (ngx_http_cache_index_store_configured(pmcf)
-            && ngx_http_cache_index_queue_init_conf(cf, pmcf) != NGX_OK) {
+    if (ngx_http_cache_index_store_init_conf(cf, pmcf) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
 #endif

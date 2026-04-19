@@ -5,26 +5,43 @@
 
 #if (NGX_LINUX)
 
-#if (NGX_CACHE_PILOT_SQLITE)
-#include <sqlite3.h>
+typedef struct ngx_http_cache_index_store_ctx_s
+    ngx_http_cache_index_store_ctx_t;
+typedef struct ngx_http_cache_index_store_shctx_s
+    ngx_http_cache_index_store_shctx_t;
+typedef struct ngx_http_cache_index_shm_zone_s
+    ngx_http_cache_index_shm_zone_t;
+typedef struct ngx_http_cache_index_shm_file_s
+    ngx_http_cache_index_shm_file_t;
 
-typedef struct {
-    sqlite3_stmt                 *delete_file;
-    sqlite3_stmt                 *insert_entry;
-    sqlite3_stmt                 *collect_paths;
-    sqlite3_stmt                 *get_zone_state;
-    sqlite3_stmt                 *set_zone_state;
-    sqlite3_stmt                 *insert_file_meta;
-    sqlite3_stmt                 *delete_file_meta;
-    sqlite3_stmt                 *collect_paths_by_key;
-    sqlite3_stmt                 *collect_paths_by_key_prefix;
-} ngx_http_cache_index_sqlite_stmt_cache_t;
-#endif
+struct ngx_http_cache_index_store_shctx_s {
+    ngx_queue_t                    zones;
+    ngx_uint_t                     alloc_failures;
+};
 
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
+struct ngx_http_cache_index_store_ctx_s {
+    ngx_slab_pool_t               *shpool;
+    ngx_http_cache_index_store_shctx_t *sh;
+};
+
+struct ngx_http_cache_index_shm_zone_s {
+    ngx_queue_t                    queue;
+    ngx_queue_t                    files;
+    ngx_flag_t                     bootstrap_complete;
+    time_t                         last_bootstrap_at;
+    size_t                         name_len;
+    u_char                         name[1];
+};
+
+struct ngx_http_cache_index_shm_file_s {
+    ngx_queue_t                    queue;
+    time_t                         mtime;
+    off_t                          size;
+    ngx_uint_t                     tag_count;
+    size_t                         path_len;
+    size_t                         key_len;
+    u_char                         data[1];
+};
 
 typedef struct ngx_http_cache_index_store_ops_s
     ngx_http_cache_index_store_ops_t;
@@ -34,21 +51,10 @@ struct ngx_http_cache_index_store_s {
     ngx_http_cache_index_backend_e          backend;
     ngx_flag_t                            readonly;
     union {
-#if (NGX_CACHE_PILOT_SQLITE)
         struct {
-            sqlite3                      *db;
-            ngx_flag_t                    schema_ready;
-            ngx_http_cache_index_sqlite_stmt_cache_t stmt;
-        } sqlite;
-#endif
-        struct {
-            ngx_connection_t             *conn;   /* owns fd lifecycle */
-            ngx_socket_t                  fd;     /* cached conn->fd for send/recv */
-            ngx_http_cache_pilot_main_conf_t *pmcf;
-            u_char                        recv_buf[4096];
-            size_t                        recv_pos;
-            size_t                        recv_len;
-        } redis;
+            ngx_http_cache_index_store_ctx_t *ctx;
+            ngx_flag_t                    batch_locked;
+        } shm;
     } u;
 };
 
@@ -82,13 +88,6 @@ struct ngx_http_cache_index_store_ops_s {
                                 ngx_str_t *zone_name, ngx_http_cache_index_zone_state_t *state,
                                 ngx_log_t *log);
 };
-
-#if (NGX_CACHE_PILOT_SQLITE)
-ngx_http_cache_index_store_t *ngx_http_cache_index_store_sqlite_open(
-    ngx_http_cache_pilot_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
-#endif
-ngx_http_cache_index_store_t *ngx_http_cache_index_store_redis_open(
-    ngx_http_cache_pilot_main_conf_t *pmcf, ngx_flag_t readonly, ngx_log_t *log);
 
 #endif
 

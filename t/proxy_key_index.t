@@ -7,7 +7,6 @@ use File::Path qw(remove_tree);
 BEGIN {
     remove_tree('/tmp/ngx_cache_pilot_key_cache_test');
     remove_tree('/tmp/ngx_cache_pilot_key_temp_test');
-    unlink '/tmp/ngx_cache_pilot_key_index_test.sqlite';
 }
 
 repeat_each(1);
@@ -21,7 +20,7 @@ our $http_config = <<'_EOC_';
         PURGE   1;
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_key_index_test.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 our $config = <<'_EOC_';
@@ -205,7 +204,7 @@ GET /_stats
 --- error_code: 200
 --- response_headers
 Content-Type: application/json
---- response_body_like: (?s)"key_cache_test":\{.*"index":\{"state":"ready","state_code":2,"backend":"sqlite"
+--- response_body_like: (?s)"key_cache_test":\{.*"index":\{"state":"ready","state_code":2,"backend":"shm"
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/

@@ -9,11 +9,8 @@
 #   1. "cache_tag bootstrap zone" appears in the error log (the thread ran and
 #      indexed the zone at startup — verified by grep of the accumulated log).
 #   2. A tag purge after thread bootstrap finds and expires the correct entry.
-#   3. After a second nginx start against the same SQLite file the tag purge
-#      still returns 200 and expires the correct entry.  Whether the bootstrap
-#      thread logs "reusing persisted index" or "bootstrap zone" depends on
-#      whether Phase 2a's async bootstrap committed bootstrap_complete=1 before
-#      the restart — this is inherently racy so we do not assert the log message.
+#   3. After a second nginx start against the same cache directory the tag
+#      purge still returns 200 and expires the correct entry after rebuild.
 #
 # A second nginx start is forced by $http_config_persist_reload, which has
 # identical functional content to $http_config_persist but differs by one
@@ -34,7 +31,7 @@ our $main_config = <<'_EOC_';
     thread_pool default threads=4 max_queue=65536;
 _EOC_
 
-# ── Phase 1: fresh SQLite, confirms bootstrap thread ran ─────────────────────
+# ── Phase 1: fresh shm index, confirms bootstrap thread ran ──────────────────
 
 our $http_config_boot = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_pilot_threads_tag_cache keys_zone=threads_tag_cache:10m;
@@ -46,10 +43,10 @@ our $http_config_boot = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_tags_boot.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
-# ── Phase 2a: persisted SQLite, first start ───────────────────────────────────
+# ── Phase 2a: cold-start rebuild, first start ────────────────────────────────
 # Uses a distinct cache zone name so Test::Nginx restarts nginx when switching
 # from $http_config_boot.
 
@@ -63,12 +60,12 @@ our $http_config_persist = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
+    cache_pilot_index_zone_size 32m;
 _EOC_
 
 # ── Phase 2b: same functional config as Phase 2a plus a harmless comment ─────
 # The comment makes the nginx.conf string differ → Test::Nginx forces a restart
-# while keeping the same cache directory and SQLite file on disk.
+# while keeping the same cache directory on disk.
 
 our $http_config_persist_reload = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_pilot_threads_persist_cache keys_zone=threads_persist_cache:10m;
@@ -80,7 +77,7 @@ our $http_config_persist_reload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
+    cache_pilot_index_zone_size 32m;
     # second-start (forces nginx restart in Test::Nginx)
 _EOC_
 
@@ -128,7 +125,7 @@ no_diff();
 
 __DATA__
 
-# ── Phase 1: thread-pool bootstrap on a fresh SQLite database ────────────────
+# ── Phase 1: thread-pool bootstrap on a fresh shm index ──────────────────────
 
 === TEST 1: populate cache entry before bootstrap-aware purge
 --- main_config eval: $::main_config
@@ -177,11 +174,11 @@ X-Cache-Status: EXPIRED
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
-# ── Phase 2a: first start against a fresh SQLite database ─────────────────────
+# ── Phase 2a: first start against a cold in-memory index ─────────────────────
 # Switching to $http_config_persist triggers a nginx restart (different zone
 # name in the generated config).
 
-=== TEST 4: populate cache entry for persisted-index test
+=== TEST 4: populate cache entry for restart-rebuild test
 --- main_config eval: $::main_config
 --- http_config eval: $::http_config_persist
 --- config eval: $::config_persist
@@ -196,7 +193,7 @@ X-Cache-Status: MISS
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
-=== TEST 5: tag purge succeeds with fresh persist index
+=== TEST 5: tag purge succeeds with fresh rebuild
 --- main_config eval: $::main_config
 --- http_config eval: $::http_config_persist
 --- config eval: $::config_persist
@@ -226,7 +223,7 @@ X-Cache-Status: EXPIRED
 qr/\[(warn|error|crit|alert|emerg)\]/
 
 
-# ── Phase 2b: second start against the same persisted SQLite ──────────────────
+# ── Phase 2b: second start against the same cache directory ──────────────────
 # $http_config_persist_reload has identical functional content to
 # $http_config_persist but differs by one nginx comment, forcing a restart.
 # On this second start the bootstrap thread runs again.  If bootstrap_complete=1
@@ -236,8 +233,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 === TEST 7: second start tag purge still works
 # Force a restart by switching to $http_config_persist_reload (identical
 # functional content to $http_config_persist plus a harmless comment).
-# After the restart the bootstrap re-runs (thread or sync).  The tag purge
-# must still return 200 regardless of whether bootstrap_complete was persisted.
+# After the restart the bootstrap re-runs (thread or sync). The tag purge
+# must still return 200 after the cold rebuild.
 --- main_config eval: $::main_config
 --- http_config eval: $::http_config_persist_reload
 --- config eval: $::config_persist
