@@ -21,17 +21,17 @@ fi
 ngx_addon_name=ngx_http_cache_pilot_module
 
 CACHE_PILOT_SRCS="$ngx_addon_dir/src/ngx_cache_pilot_module.c \
-$ngx_addon_dir/src/ngx_cache_pilot_tag.c \
-$ngx_addon_dir/src/ngx_cache_pilot_tag_store.c \
-$ngx_addon_dir/src/ngx_cache_pilot_tag_store_redis.c \
-$ngx_addon_dir/src/ngx_cache_pilot_tag_watch_linux.c \
+$ngx_addon_dir/src/ngx_cache_pilot_index.c \
+$ngx_addon_dir/src/ngx_cache_pilot_index_store.c \
+$ngx_addon_dir/src/ngx_cache_pilot_index_store_redis.c \
+$ngx_addon_dir/src/ngx_cache_pilot_index_watch_linux.c \
 $ngx_addon_dir/src/ngx_cache_pilot_metrics.c"
 
-CACHE_PURGE_DEPS="$ngx_addon_dir/src/ngx_cache_pilot_tag.h \
-$ngx_addon_dir/src/ngx_cache_pilot_tag_store_internal.h \
+CACHE_PURGE_DEPS="$ngx_addon_dir/src/ngx_cache_pilot_index.h \
+$ngx_addon_dir/src/ngx_cache_pilot_index_store_internal.h \
 $ngx_addon_dir/src/ngx_cache_pilot_metrics.h"
 
-# Probe for SQLite3 — needed for the 'cache_pilot_tag_index sqlite' backend.
+# Probe for SQLite3 — needed for the 'cache_pilot_index_store sqlite' backend.
 # If not found the module still builds but only the Redis backend is available.
 ngx_feature="SQLite3 library"
 ngx_feature_name="NGX_CACHE_PILOT_SQLITE"
@@ -45,7 +45,7 @@ ngx_feature_test='sqlite3 *db; (void)sqlite3_open(":memory:", &db); sqlite3_clos
 NGX_CACHE_PILOT_MODULE_LIBS=
 if [ $ngx_found = yes ]; then
     CACHE_PILOT_SRCS="$CACHE_PILOT_SRCS \
-$ngx_addon_dir/src/ngx_cache_pilot_tag_store_sqlite.c"
+$ngx_addon_dir/src/ngx_cache_pilot_index_store_sqlite.c"
     NGX_CACHE_PILOT_MODULE_LIBS="-lsqlite3"
 fi
 

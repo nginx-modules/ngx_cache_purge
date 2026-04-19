@@ -24,7 +24,7 @@ our $http_config = <<'_EOC_';
         PURGE   1;
         default 0;
     }
-    cache_pilot_tag_index   redis 127.0.0.1:6380 db=2;
+    cache_pilot_index_store   redis 127.0.0.1:6380 db=2;
 _EOC_
 
 our $config = <<'_EOC_';
@@ -36,7 +36,6 @@ our $config = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
         cache_pilot_purge_mode_header X-Purge-Mode;
-        cache_pilot_tag_watch on;
     }
 
     location = /origin/vary {

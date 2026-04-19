@@ -5,6 +5,7 @@ use warnings;
 
 use File::Basename qw(dirname);
 use File::Path qw(make_path remove_tree);
+use File::Temp qw(tempdir);
 use FindBin;
 use Getopt::Long qw(GetOptions);
 use JSON::PP ();
@@ -13,7 +14,7 @@ use POSIX qw(setpgid strftime);
 use Time::HiRes qw(sleep);
 
 use lib "$FindBin::Bin/lib";
-use Bench qw(fetch_stats format_table stats_delta write_json);
+use Bench qw(fetch_stats format_table hires_time stats_delta write_json);
 
 my %options = (
     count       => 1000,
@@ -37,17 +38,26 @@ die "--count must be > 0\n" unless $options{count} > 0;
 die "--concurrency must be > 0\n" unless $options{concurrency} > 0;
 
 my $duration = $options{quick} ? 15 : 60;
+my $scenario_ready_timeout_s = 10;
 my $perl = $^X;
 my $nginx = '/opt/nginx/sbin/nginx';
-my $nginx_error_log = '/tmp/bench_nginx_error.log';
-my $nginx_prefix = '/tmp/bench_nginx';
 my $get_worker = "$FindBin::Bin/worker_get.pl";
 my $purge_worker = "$FindBin::Bin/worker_purge.pl";
-my $redis_pid_file = '/tmp/bench_redis.pid';
 my $redis_port = 16379;
 my $redis_db = 5;
 my $stats_url = "http://127.0.0.1:$options{port}/bench_stats";
 my $ua = LWP::UserAgent->new(agent => 'ngx-cache-pilot-bench/1.0', keep_alive => 5, timeout => 5);
+my $runtime_root;
+my $runtime_conf_dir;
+my $worker_scratch_dir;
+my $nginx_prefix;
+my $nginx_error_log;
+my $nginx_pid_file;
+my $redis_runtime_dir;
+my $redis_pid_file;
+my $redis_log_file;
+my $sqlite_runtime_dir;
+my $sqlite_db_path;
 
 die "nginx binary not found at $nginx; run make nginx-build first\n"
     unless -x $nginx;
@@ -66,6 +76,7 @@ my @all_scenarios = (
         prefix     => '/exact/',
         mode       => 'exact',
         backend    => 'sqlite',
+        index_tracking_mode => 'disabled',
     },
     {
         key        => 'wild',
@@ -75,6 +86,7 @@ my @all_scenarios = (
         prefix     => '/wild/',
         mode       => 'wildcard',
         backend    => 'sqlite',
+        index_tracking_mode => 'disabled',
     },
     {
         key        => 'tag-sqlite',
@@ -85,6 +97,7 @@ my @all_scenarios = (
         mode       => 'tag',
         tag_base   => 'bench-tag',
         backend    => 'sqlite',
+        index_tracking_mode => 'disabled',
     },
     {
         key        => 'tag-redis',
@@ -95,6 +108,7 @@ my @all_scenarios = (
         mode       => 'tag',
         tag_base   => 'bench-rtag',
         backend    => 'redis',
+        index_tracking_mode => 'disabled',
     },
 );
 
@@ -122,6 +136,7 @@ my @active_child_pids;
 my $shutdown_signal;
 my $shutting_down = 0;
 my $nginx_error_log_offset = 0;
+my $pending_nginx_error_log = '';
 
 $SIG{INT} = sub { handle_signal('INT'); };
 $SIG{TERM} = sub { handle_signal('TERM'); };
@@ -130,73 +145,97 @@ END {
     cleanup_active_children();
     eval { stop_nginx($current_conf) if defined $current_conf; };
     eval { stop_redis() if $redis_started; };
+    eval { cleanup_runtime_root(); };
 }
 
 prepare_output_dir($options{out_dir});
-log_info('Preparing benchmark runtime state');
-cleanup_runtime_state();
-
 my $timestamp = strftime('%Y%m%d-%H%M%S', localtime());
 my $run_dir = "$options{out_dir}/$timestamp";
 make_path($run_dir);
+ensure_empty_file("$run_dir/nginx_error.log");
+initialize_runtime_paths($run_dir);
+log_info('Preparing benchmark runtime state');
+cleanup_runtime_state();
 log_info("Writing run artifacts to $run_dir");
 
 my @results;
 my $active_runtime;
+my $active_scenario;
+my $failure;
 
-for my $scenario (@scenarios) {
-    my $runtime_key = join("\0",
-        $scenario->{config_template_path},
-        $scenario->{backend},
-    );
+eval {
+    for my $scenario (@scenarios) {
+        $active_scenario = $scenario;
 
-    if (!defined $active_runtime || $active_runtime ne $runtime_key) {
-        log_info(sprintf(
-            'Switching runtime: template=%s backend=%s',
-            $scenario->{config_template_name},
+        my $runtime_key = join("\0",
+            $scenario->{config_template_path},
             $scenario->{backend},
+        );
+
+        if (!defined $active_runtime || $active_runtime ne $runtime_key) {
+            log_info(sprintf(
+                'Switching runtime: template=%s backend=%s',
+                $scenario->{config_template_name},
+                $scenario->{backend},
+            ));
+            stop_nginx($current_conf) if defined $current_conf;
+            $current_conf = undef;
+
+            if ($redis_started) {
+                log_info('Stopping Redis sidecar');
+                stop_redis();
+                $redis_started = 0;
+            }
+
+            cleanup_runtime_state();
+
+            if ($scenario->{backend} eq 'redis') {
+                log_info('Starting Redis sidecar');
+                start_redis();
+                $redis_started = 1;
+            }
+
+            $current_conf = render_runtime_config($scenario);
+
+            log_info("Starting nginx with $current_conf");
+            start_nginx($current_conf);
+            wait_for_stats($stats_url);
+            log_info('Metrics endpoint is ready');
+            record_nginx_error_log($run_dir, join('_', $scenario->{config_template_name}, $scenario->{backend}, 'startup'));
+            $active_runtime = $runtime_key;
+        }
+
+        log_info(sprintf(
+            'Running scenario %s (%ss)',
+            $scenario->{name},
+            $duration,
         ));
-        stop_nginx($current_conf) if defined $current_conf;
-        $current_conf = undef;
-
-        if ($redis_started) {
-            log_info('Stopping Redis sidecar');
-            stop_redis();
-            $redis_started = 0;
-        }
-
-        cleanup_runtime_state();
-
-        if ($scenario->{backend} eq 'redis') {
-            log_info('Starting Redis sidecar');
-            start_redis();
-            $redis_started = 1;
-        }
-
-        $current_conf = render_runtime_config($scenario);
-
-        log_info("Starting nginx with $current_conf");
-        start_nginx($current_conf);
-        wait_for_stats($stats_url);
-        log_info('Metrics endpoint is ready');
-        record_nginx_error_log($run_dir, join('_', $scenario->{config_template_name}, $scenario->{backend}, 'startup'));
-        $active_runtime = $runtime_key;
+        my $result = run_scenario($scenario, $duration, $run_dir, $stats_url);
+        push @results, $result;
+        log_info(sprintf(
+            'Completed scenario %s: GET rps=%.1f purge_count=%d',
+            $scenario->{name},
+            $result->{get}->{rps} || 0,
+            $result->{purge}->{purge_count} || 0,
+        ));
     }
+    1;
+} or do {
+    my $error = $@ || 'benchmark failed';
+    chomp $error;
+    $failure = {
+        message => $error,
+        scenario => defined $active_scenario ? $active_scenario->{key} : undef,
+        name => defined $active_scenario ? $active_scenario->{name} : undef,
+    };
 
-    log_info(sprintf(
-        'Running scenario %s (%ss)',
-        $scenario->{name},
-        $duration,
-    ));
-    my $result = run_scenario($scenario, $duration, $run_dir, $stats_url);
-    push @results, $result;
-    log_info(sprintf(
-        'Completed scenario %s: GET rps=%.1f purge_count=%d',
-        $scenario->{name},
-        $result->{get}->{rps} || 0,
-        $result->{purge}->{purge_count} || 0,
-    ));
-}
+    eval {
+        my $label = defined $active_scenario
+            ? $active_scenario->{name} . '_failure'
+            : 'run_failure';
+        record_nginx_error_log($run_dir, $label);
+    };
+};
 
 stop_nginx($current_conf) if defined $current_conf;
 $current_conf = undef;
@@ -210,6 +249,7 @@ if ($redis_started) {
 my $summary = {
     generated_at => $timestamp,
     quick        => $options{quick} ? JSON::PP::true : JSON::PP::false,
+    completed    => $failure ? JSON::PP::false : JSON::PP::true,
     duration_s   => $duration,
     count        => $options{count},
     concurrency  => $options{concurrency},
@@ -217,7 +257,11 @@ my $summary = {
     scenarios    => \@results,
 };
 
-if (defined $options{assert_file}) {
+if ($failure) {
+    $summary->{failure} = $failure;
+}
+
+if (defined $options{assert_file} && !$failure) {
     log_info("Evaluating assertions from $options{assert_file}");
     my @violations = evaluate_assertions($summary, $options{assert_file});
     $summary->{assertions} = {
@@ -244,13 +288,20 @@ if (defined $summary->{assertions}) {
     exit 1 unless $summary->{assertions}->{passed};
 }
 
+if ($failure) {
+    die "$failure->{message}\n";
+}
+
 sub run_scenario {
     my ($scenario, $duration_s, $run_dir, $stats_endpoint) = @_;
+    my $before;
+
+    wait_for_scenario_ready($scenario, $stats_endpoint, $scenario_ready_timeout_s);
+    log_info("Warming cache for $scenario->{name}");
+    warm_cache($scenario->{prefix}, $options{count}, $scenario);
 
     log_info("Fetching baseline stats for $scenario->{name}");
-    my $before = fetch_stats($stats_endpoint);
-    log_info("Warming cache for $scenario->{name}");
-    warm_cache($scenario->{prefix}, $options{count});
+    $before = fetch_stats($stats_endpoint);
 
     my $get_out = "$run_dir/$scenario->{name}_get.json";
     my $purge_out = "$run_dir/$scenario->{name}_purge.json";
@@ -266,6 +317,13 @@ sub run_scenario {
         '--duration', $duration_s,
         '--port', $options{port},
         '--out', $get_out,
+        '--scratch-dir', $worker_scratch_dir,
+        (defined $scenario->{vary_header}
+            ? ('--vary-header', $scenario->{vary_header})
+            : ()),
+        (defined $scenario->{vary_values}
+            ? ('--vary-values', join(',', @{ $scenario->{vary_values} }))
+            : ()),
     );
 
     sleep(2);
@@ -287,6 +345,14 @@ sub run_scenario {
         push @purge_command, '--tag-base', $scenario->{tag_base};
     }
 
+    if (defined $scenario->{purge_header}) {
+        push @purge_command, '--purge-header', $scenario->{purge_header};
+    }
+
+    if (defined $scenario->{purge_header_value}) {
+        push @purge_command, '--purge-header-value', $scenario->{purge_header_value};
+    }
+
     my $purge_pid = fork_exec(@purge_command);
 
     log_info("Waiting for workers to finish for $scenario->{name}");
@@ -299,6 +365,9 @@ sub run_scenario {
     my $purge_result = read_json($purge_out);
     my $metrics_delta = stats_delta($before, $after);
     my $nginx_log = record_nginx_error_log($run_dir, $scenario->{name});
+    my $index_plan = scenario_index_plan($scenario);
+    my $index_report = build_index_report($scenario, $before, $after,
+                                          $metrics_delta, $nginx_log);
 
     my $scenario_result = {
         scenario      => $scenario->{key},
@@ -312,6 +381,10 @@ sub run_scenario {
         stats_before  => $before,
         stats_after   => $after,
         metrics_delta => $metrics_delta,
+        index_plan    => $index_plan,
+        index_report  => $index_report,
+        table_index_plan => $index_plan->{short_label},
+        table_index_observed => $index_report->{short_label},
         nginx_error_log => $nginx_log,
     };
 
@@ -327,17 +400,25 @@ sub prepare_output_dir {
     make_path($out_dir) unless -d $out_dir;
 }
 
+sub initialize_runtime_paths {
+    my ($run_dir) = @_;
+
+    $runtime_root = tempdir('ngx-cache-pilot-bench-XXXXXX', TMPDIR => 1, CLEANUP => 0);
+    $runtime_conf_dir = "$runtime_root/conf";
+    $worker_scratch_dir = "$runtime_root/workers";
+    $sqlite_runtime_dir = "$runtime_root/sqlite";
+    $sqlite_db_path = "$sqlite_runtime_dir/bench_tags.db";
+    $nginx_prefix = "$runtime_root/nginx";
+    $nginx_error_log = "$nginx_prefix/logs/error.log";
+    $nginx_pid_file = "$nginx_prefix/nginx.pid";
+    $redis_runtime_dir = "$runtime_root/redis";
+    $redis_pid_file = "$redis_runtime_dir/redis.pid";
+    $redis_log_file = "$redis_runtime_dir/redis.log";
+}
+
 sub cleanup_runtime_state {
-    for my $path (
-        '/tmp/bench_cache_exact',
-        '/tmp/bench_cache_wild',
-        '/tmp/bench_cache_tag_sqlite',
-        '/tmp/bench_cache_tag_redis',
-        '/tmp/bench_proxy_temp',
-        '/tmp/bench_client_body_temp',
-        $nginx_prefix,
-    ) {
-        remove_tree($path, { error => \my $error });
+    if (defined $runtime_root && -e $runtime_root) {
+        remove_tree($runtime_root, { error => \my $error });
         if ($error && @{$error}) {
             for my $entry (@{$error}) {
                 my ($failed_path, $message) = %{$entry};
@@ -346,29 +427,38 @@ sub cleanup_runtime_state {
         }
     }
 
-    for my $file (
-        '/tmp/bench_tags.db',
-        '/tmp/bench_tags.db-shm',
-        '/tmp/bench_tags.db-wal',
-        '/tmp/bench_nginx.pid',
-        $nginx_error_log,
-        '/tmp/bench_redis.log',
-        $redis_pid_file,
-    ) {
-        unlink $file if -e $file;
-    }
-
     $nginx_error_log_offset = 0;
-
-    unlink $_ for glob('/tmp/bench_nginx_*.conf');
+    $pending_nginx_error_log = '';
 
     make_path(
-        '/tmp/bench_proxy_temp',
-        '/tmp/bench_client_body_temp',
+        $runtime_conf_dir,
+        $worker_scratch_dir,
+        $sqlite_runtime_dir,
+        "$runtime_root/proxy_temp",
+        "$runtime_root/client_body_temp",
+        "$runtime_root/cache_exact",
+        "$runtime_root/cache_wild",
+        "$runtime_root/cache_fanout",
+        "$runtime_root/cache_tag_sqlite",
+        "$runtime_root/cache_tag_redis",
         $nginx_prefix,
         "$nginx_prefix/logs",
+        $redis_runtime_dir,
     );
+
+    prepare_sqlite_runtime();
     ensure_nginx_prefix();
+}
+
+sub prepare_sqlite_runtime {
+    chmod 0777, $sqlite_runtime_dir
+        or die "chmod($sqlite_runtime_dir): $!\n";
+
+    open my $fh, '>', $sqlite_db_path or die "open($sqlite_db_path): $!";
+    close $fh or die "close($sqlite_db_path): $!";
+
+    chmod 0666, $sqlite_db_path
+        or die "chmod($sqlite_db_path): $!\n";
 }
 
 sub render_runtime_config {
@@ -376,7 +466,7 @@ sub render_runtime_config {
 
     my $backend = $scenario->{backend};
     my $template_name = sanitize_config_name($scenario->{config_template_name});
-    my $target = "/tmp/bench_nginx_${template_name}_${backend}.conf";
+    my $target = "$runtime_conf_dir/bench_nginx_${template_name}_${backend}.conf";
 
     render_config($scenario->{config_template_path}, $target, $options{port});
 
@@ -392,6 +482,24 @@ sub render_config {
     close $in or die "close($source): $!";
 
     $config =~ s/listen\s+18080;/listen $port;/;
+
+    my %path_map = (
+        '/tmp/bench_nginx_error.log' => $nginx_error_log,
+        '/tmp/bench_nginx.pid' => $nginx_pid_file,
+        '/tmp/bench_client_body_temp' => "$runtime_root/client_body_temp",
+        '/tmp/bench_proxy_temp' => "$runtime_root/proxy_temp",
+        '/tmp/bench_cache_exact' => "$runtime_root/cache_exact",
+        '/tmp/bench_cache_wild' => "$runtime_root/cache_wild",
+        '/tmp/bench_cache_fanout' => "$runtime_root/cache_fanout",
+        '/tmp/bench_cache_tag_sqlite' => "$runtime_root/cache_tag_sqlite",
+        '/tmp/bench_cache_tag_redis' => "$runtime_root/cache_tag_redis",
+        '/tmp/bench_tags.db' => $sqlite_db_path,
+    );
+
+    for my $from (sort { length($b) <=> length($a) } keys %path_map) {
+        my $to = $path_map{$from};
+        $config =~ s/\Q$from\E/$to/g;
+    }
 
     open my $out, '>', $target or die "open($target): $!";
     print {$out} $config or die "write($target): $!";
@@ -409,22 +517,18 @@ sub stop_nginx {
     my ($conf) = @_;
 
     return unless defined $conf;
-    return unless -e '/tmp/bench_nginx.pid';
+    return unless defined $nginx_pid_file && -e $nginx_pid_file;
 
     ensure_nginx_prefix();
     system($nginx, '-p', $nginx_prefix, '-c', $conf, '-s', 'stop');
     sleep(0.2);
-    unlink '/tmp/bench_nginx.pid' if -e '/tmp/bench_nginx.pid';
+    unlink $nginx_pid_file if -e $nginx_pid_file;
 }
 
 sub ensure_nginx_prefix {
-    make_path($nginx_prefix, "$nginx_prefix/logs");
+    return unless defined $nginx_prefix;
 
-    my $prefix_error_log = "$nginx_prefix/logs/error.log";
-    if (!-e $prefix_error_log) {
-        open my $prefix_fh, '>', $prefix_error_log or die "open($prefix_error_log): $!";
-        close $prefix_fh or die "close($prefix_error_log): $!";
-    }
+    make_path($nginx_prefix, "$nginx_prefix/logs");
 
     return if -e $nginx_error_log;
 
@@ -441,22 +545,310 @@ sub wait_for_stats {
             die "stats payload missing zones\n" unless ref($payload->{zones}) eq 'HASH';
         };
         return if !$@;
+
+        my $startup_failure = detect_nginx_startup_failure();
+        die "$startup_failure\n" if defined $startup_failure;
+
         sleep(0.2);
     }
 
     die "nginx did not become ready at $url\n";
 }
 
+sub cleanup_runtime_root {
+    return unless defined $runtime_root && -e $runtime_root;
+
+    remove_tree($runtime_root, { error => \my $error });
+    if ($error && @{$error}) {
+        for my $entry (@{$error}) {
+            my ($failed_path, $message) = %{$entry};
+            die "remove_tree($failed_path): $message\n" if defined $message;
+        }
+    }
+}
+
+sub detect_nginx_startup_failure {
+    my $chunk = stash_nginx_error_log_chunk();
+    my @lines = grep { length $_ } split /\n/, $chunk;
+
+    for my $line (@lines) {
+        if ($line =~ /\[emerg\]/
+                || $line =~ /cannot be respawned/
+                || $line =~ /exited with fatal code/
+                || $line =~ /sqlite (?:prepare|exec) failed/
+                || $line =~ /attempt to write a readonly database/
+                || $line =~ /no such table/) {
+            return "nginx startup failed: $line";
+        }
+    }
+
+    if (defined $nginx_pid_file && -e $nginx_pid_file) {
+        my $pid = read_pid_file($nginx_pid_file);
+        if (defined $pid && $pid > 0 && !kill(0, $pid)) {
+            return "nginx master exited during startup";
+        }
+    }
+
+    return undef;
+}
+
+sub read_pid_file {
+    my ($file) = @_;
+
+    open my $fh, '<', $file or return undef;
+    my $pid = <$fh>;
+    close $fh;
+
+    return undef unless defined $pid;
+    chomp $pid;
+    return undef unless $pid =~ /^\d+$/;
+
+    return 0 + $pid;
+}
+
 sub warm_cache {
-    my ($prefix, $count) = @_;
+    my ($prefix, $count, $scenario) = @_;
+
+    my @vary_values;
+    my $vary_header;
+    if (defined $scenario && ref($scenario->{vary_values}) eq 'ARRAY') {
+        @vary_values = @{ $scenario->{vary_values} };
+        $vary_header = $scenario->{vary_header};
+    }
 
     for my $index (0 .. ($count - 1)) {
+        if (@vary_values > 0 && defined $vary_header && length $vary_header) {
+            for my $vary_value (@vary_values) {
+                my $response = $ua->get(
+                    "http://127.0.0.1:$options{port}$prefix$index",
+                    $vary_header => $vary_value,
+                );
+                die "warm-up failed for $prefix$index [$vary_header=$vary_value]: "
+                    . $response->status_line . "\n"
+                    unless $response->is_success;
+            }
+            next;
+        }
+
         my $response = $ua->get("http://127.0.0.1:$options{port}$prefix$index");
         die "warm-up failed for $prefix$index: " . $response->status_line . "\n"
             unless $response->is_success;
     }
 
     sleep(0.5);
+}
+
+sub wait_for_scenario_ready {
+    my ($scenario, $stats_url, $timeout_s) = @_;
+    my $deadline = hires_time() + $timeout_s;
+    my @requests = scenario_ready_requests($scenario);
+    my $last_status = 'not attempted';
+
+    while (hires_time() < $deadline) {
+        my $all_ready = 1;
+
+        for my $request (@requests) {
+            my $response = $ua->get($request->{url}, @{ $request->{headers} });
+            if (!$response->is_success) {
+                $all_ready = 0;
+                $last_status = $response->status_line;
+                last;
+            }
+        }
+
+        if ($all_ready && scenario_ready_state($scenario, $stats_url)) {
+            return;
+        }
+
+        sleep(0.2);
+    }
+
+    die sprintf(
+        'scenario readiness timed out for %s after %ss: %s' . "\n",
+        $scenario->{name},
+        $timeout_s,
+        $last_status,
+    );
+}
+
+sub scenario_ready_state {
+    my ($scenario, $stats_url) = @_;
+    my $zone;
+    my $state;
+    my $stats;
+
+    return 1 unless $scenario->{require_index_zone_ready};
+    return 1 unless defined $scenario->{index_target_zone}
+                    && length $scenario->{index_target_zone};
+
+    $stats = fetch_stats($stats_url);
+    $zone = $stats->{zones}->{$scenario->{index_target_zone}};
+    return 0 unless ref($zone) eq 'HASH';
+
+    $state = $zone->{index}->{state_code};
+    return defined $state && $state == 2;
+}
+
+sub scenario_index_plan {
+    my ($scenario) = @_;
+    my $mode = $scenario->{index_tracking_mode} || 'disabled';
+    my $zone = defined $scenario->{index_target_zone}
+               ? $scenario->{index_target_zone} : '';
+
+    return {
+        tracking_mode   => $mode,
+        target_zone     => $zone,
+        ready_gate      => $scenario->{require_index_zone_ready} ? 1 : 0,
+        expected_assist => ($mode eq 'wildcard_prefix' || $mode eq 'exact_fanout')
+                           ? 1 : 0,
+        short_label     => index_plan_short_label($mode),
+    };
+}
+
+sub build_index_report {
+    my ($scenario, $before, $after, $metrics_delta, $nginx_log) = @_;
+    my $mode = $scenario->{index_tracking_mode} || 'disabled';
+    my $zone = $scenario->{index_target_zone};
+    my $before_state = zone_index_state_code($before, $zone);
+    my $after_state = zone_index_state_code($after, $zone);
+    my $wildcard_hits = key_index_counter_delta($metrics_delta, 'wildcard_hits');
+    my $exact_fanout = key_index_counter_delta($metrics_delta, 'exact_fanout');
+    my $used_assist = 0;
+    my $expected_assist = ($mode eq 'wildcard_prefix' || $mode eq 'exact_fanout') ? 1 : 0;
+
+    if ($mode eq 'wildcard_prefix' && $wildcard_hits > 0) {
+        $used_assist = 1;
+    }
+
+    if ($mode eq 'exact_fanout' && $exact_fanout > 0) {
+        $used_assist = 1;
+    }
+
+    my $ready_before = defined $before_state && $before_state == 2 ? 1 : 0;
+    my $ready_after = defined $after_state && $after_state == 2 ? 1 : 0;
+    my $ready_degraded = $ready_before && !$ready_after ? 1 : 0;
+    my $assist_missed = $expected_assist && !$used_assist ? 1 : 0;
+
+    my $sqlite_prepare_failed = 0;
+    my $sqlite_locked = 0;
+    my $sqlite_no_table = 0;
+    if (defined $nginx_log && ref($nginx_log->{error_summary}) eq 'HASH') {
+        $sqlite_prepare_failed = $nginx_log->{error_summary}->{sqlite_prepare_failed} || 0;
+        $sqlite_locked = $nginx_log->{error_summary}->{sqlite_locked} || 0;
+        $sqlite_no_table = $nginx_log->{error_summary}->{sqlite_no_table} || 0;
+    }
+
+    return {
+        target_zone                => defined $zone ? $zone : '',
+        target_state_before_code   => defined $before_state ? $before_state : -1,
+        target_state_after_code    => defined $after_state ? $after_state : -1,
+        ready_before               => $ready_before,
+        ready_after                => $ready_after,
+        ready_degraded             => $ready_degraded,
+        expected_assist            => $expected_assist,
+        used_assist                => $used_assist,
+        assist_missed              => $assist_missed,
+        wildcard_prefix_hits_delta => $wildcard_hits,
+        exact_fanout_delta         => $exact_fanout,
+        sqlite_prepare_failed      => $sqlite_prepare_failed,
+        sqlite_locked              => $sqlite_locked,
+        sqlite_no_table            => $sqlite_no_table,
+        short_label                => index_report_short_label($mode, $used_assist,
+                                                               $ready_before,
+                                                               $ready_after),
+    };
+}
+
+sub zone_index_state_code {
+    my ($stats, $zone_name) = @_;
+    my $zones;
+    my $zone;
+    my $index;
+    my $state;
+
+    return undef unless defined $stats && ref($stats) eq 'HASH';
+    return undef unless defined $zone_name && length $zone_name;
+
+    $zones = $stats->{zones};
+    return undef unless ref($zones) eq 'HASH';
+
+    $zone = $zones->{$zone_name};
+    return undef unless ref($zone) eq 'HASH';
+
+    $index = $zone->{index};
+    return undef unless ref($index) eq 'HASH';
+
+    $state = $index->{state_code};
+    return undef unless defined $state && !ref($state)
+                        && $state =~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+
+    return 0 + $state;
+}
+
+sub key_index_counter_delta {
+    my ($metrics_delta, $counter_name) = @_;
+    my $key_index;
+    my $value;
+
+    return 0 unless defined $metrics_delta && ref($metrics_delta) eq 'HASH';
+
+    $key_index = $metrics_delta->{key_index};
+    return 0 unless ref($key_index) eq 'HASH';
+
+    $value = $key_index->{$counter_name};
+    return 0 unless defined $value && !ref($value)
+                    && $value =~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+
+    return 0 + $value;
+}
+
+sub index_plan_short_label {
+    my ($mode) = @_;
+
+    return 'off' if $mode eq 'disabled';
+    return 'ready' if $mode eq 'readiness_only';
+    return 'fanout' if $mode eq 'exact_fanout';
+    return 'w-prefix' if $mode eq 'wildcard_prefix';
+
+    return 'other';
+}
+
+sub index_report_short_label {
+    my ($mode, $used_assist, $ready_before, $ready_after) = @_;
+
+    return 'off' if $mode eq 'disabled';
+
+    if ($mode eq 'wildcard_prefix' || $mode eq 'exact_fanout') {
+        return 'assist' if $used_assist;
+        return 'miss-rdy' if $ready_before;
+        return 'miss';
+    }
+
+    return 'ready' if $ready_after;
+    return 'cfg';
+}
+
+sub scenario_ready_requests {
+    my ($scenario) = @_;
+    my $base_url = "http://127.0.0.1:$options{port}$scenario->{prefix}0";
+
+    if (defined $scenario->{vary_values}
+            && ref($scenario->{vary_values}) eq 'ARRAY'
+            && @{ $scenario->{vary_values} }
+            && defined $scenario->{vary_header}
+            && length $scenario->{vary_header}) {
+        return map {
+            {
+                url => $base_url,
+                headers => [ $scenario->{vary_header} => $_ ],
+            }
+        } @{ $scenario->{vary_values} };
+    }
+
+    return ({
+        url => $base_url,
+        headers => [],
+    });
 }
 
 sub fork_exec {
@@ -502,23 +894,59 @@ sub update_latest_symlink {
 sub record_nginx_error_log {
     my ($run_dir, $label) = @_;
 
-    my $chunk = consume_nginx_error_log();
-    return undef unless length $chunk;
+    my $chunk = $pending_nginx_error_log;
+    $pending_nginx_error_log = '';
+    $chunk .= consume_nginx_error_log();
 
     my $safe_label = sanitize_config_name($label);
     my $scenario_log = "$run_dir/${safe_label}_nginx_error.log";
-    append_text_file($scenario_log, $chunk);
-    append_text_file("$run_dir/nginx_error.log", $chunk);
+    ensure_empty_file($scenario_log);
+    ensure_empty_file("$run_dir/nginx_error.log");
+
+    if (length $chunk) {
+        append_text_file($scenario_log, $chunk);
+        append_text_file("$run_dir/nginx_error.log", $chunk);
+    }
 
     my $line_count = scalar grep { length $_ } split /\n/, $chunk;
+    my $error_summary = summarize_nginx_error_chunk($chunk);
 
-    log_info("nginx emitted error-log output for $label");
-    print_nginx_error_log($label, $chunk);
+    if (length $chunk) {
+        log_info("nginx emitted error-log output for $label");
+        print_nginx_error_log($label, $chunk);
+    }
 
     return {
         file       => $scenario_log,
         line_count => $line_count,
+        error_summary => $error_summary,
     };
+}
+
+sub summarize_nginx_error_chunk {
+    my ($chunk) = @_;
+
+    my $summary = {
+        sqlite_prepare_failed => 0,
+        sqlite_locked => 0,
+        sqlite_no_table => 0,
+    };
+
+    for my $line (split /\n/, $chunk) {
+        if ($line =~ /sqlite prepare failed/) {
+            $summary->{sqlite_prepare_failed}++;
+        }
+
+        if ($line =~ /database is locked/) {
+            $summary->{sqlite_locked}++;
+        }
+
+        if ($line =~ /no such table/) {
+            $summary->{sqlite_no_table}++;
+        }
+    }
+
+    return $summary;
 }
 
 sub consume_nginx_error_log {
@@ -542,11 +970,28 @@ sub consume_nginx_error_log {
     return $chunk;
 }
 
+sub stash_nginx_error_log_chunk {
+    my $chunk = consume_nginx_error_log();
+
+    if (length $chunk) {
+        $pending_nginx_error_log .= $chunk;
+    }
+
+    return $chunk;
+}
+
 sub append_text_file {
     my ($file, $text) = @_;
 
     open my $fh, '>>', $file or die "open($file): $!";
     print {$fh} $text or die "write($file): $!";
+    close $fh or die "close($file): $!";
+}
+
+sub ensure_empty_file {
+    my ($file) = @_;
+
+    open my $fh, '>>', $file or die "open($file): $!";
     close $fh or die "close($file): $!";
 }
 
@@ -623,6 +1068,8 @@ sub print_assertion_result {
 sub start_redis {
     stop_redis() if -e $redis_pid_file;
 
+    make_path($redis_runtime_dir);
+
     run_system(
         'redis-server',
         '--port', $redis_port,
@@ -630,7 +1077,7 @@ sub start_redis {
         '--save', '',
         '--loglevel', 'warning',
         '--pidfile', $redis_pid_file,
-        '--logfile', '/tmp/bench_redis.log',
+        '--logfile', $redis_log_file,
     );
 
     for (1 .. 50) {

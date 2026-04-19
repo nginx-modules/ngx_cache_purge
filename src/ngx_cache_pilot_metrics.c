@@ -2,14 +2,14 @@
 #include <nginx.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-#include "ngx_cache_pilot_tag.h"
+#include "ngx_cache_pilot_index.h"
 #include "ngx_cache_pilot_metrics.h"
 
 #if (NGX_HTTP_CACHE)
 
-#define NGX_CACHE_PILOT_TAG_INDEX_STATE_DISABLED   0
-#define NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED 1
-#define NGX_CACHE_PILOT_TAG_INDEX_STATE_READY      2
+#define NGX_CACHE_PILOT_INDEX_STATE_DISABLED   0
+#define NGX_CACHE_PILOT_INDEX_STATE_CONFIGURED 1
+#define NGX_CACHE_PILOT_INDEX_STATE_READY      2
 
 /* ── Per-zone snapshot collected before serialization ── */
 typedef struct {
@@ -20,9 +20,9 @@ typedef struct {
     ngx_uint_t entries_valid;
     ngx_uint_t entries_expired;
     ngx_uint_t entries_updating;
-    ngx_uint_t tag_index_state;
-    ngx_uint_t has_tag_index;
-    ngx_uint_t tag_backend;      /* NGX_HTTP_CACHE_TAG_BACKEND_* */
+    ngx_uint_t index_state;
+    ngx_uint_t has_index;
+    ngx_uint_t index_backend;      /* NGX_HTTP_CACHE_TAG_BACKEND_* */
     ngx_uint_t queue_dropped;
     ngx_uint_t queue_size;
     ngx_uint_t queue_capacity;
@@ -76,7 +76,7 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
                                    ngx_http_cache_pilot_zone_snapshot_t *snap) {
     ngx_http_file_cache_t *cache;
 #if (NGX_LINUX)
-    ngx_http_cache_tag_queue_ctx_t *qctx;
+    ngx_http_cache_index_queue_ctx_t *qctx;
 #endif
 
     cache = sz->cache;
@@ -102,21 +102,22 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
 
     ngx_shmtx_unlock(&cache->shpool->mutex);
 
-    snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_DISABLED;
-    snap->has_tag_index  = 0;
-    snap->tag_backend    = 0;
+    snap->index_state    = NGX_CACHE_PILOT_INDEX_STATE_DISABLED;
+    snap->has_index      = 0;
+    snap->index_backend  = 0;
     snap->queue_dropped  = 0;
     snap->queue_size     = 0;
     snap->queue_capacity = 0;
 
 #if (NGX_LINUX)
-    if (ngx_http_cache_tag_store_configured(pmcf)) {
-        snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED;
-        snap->has_tag_index = 1;
-        snap->tag_backend   = (ngx_uint_t) pmcf->backend;
+    if (ngx_http_cache_index_store_configured(pmcf)) {
+        snap->index_state   = NGX_CACHE_PILOT_INDEX_STATE_CONFIGURED;
+        snap->has_index     = 1;
+        snap->index_backend = (ngx_uint_t) pmcf->backend;
 
-        if (ngx_http_cache_tag_zone_bootstrap_complete(cache)) {
-            snap->tag_index_state = NGX_CACHE_PILOT_TAG_INDEX_STATE_READY;
+        if (ngx_http_cache_index_zone_bootstrap_complete_sync(pmcf, cache,
+                ngx_cycle->log)) {
+            snap->index_state = NGX_CACHE_PILOT_INDEX_STATE_READY;
         }
 
         if (pmcf->queue_zone != NULL && pmcf->queue_zone->data != NULL) {
@@ -214,11 +215,11 @@ ngx_http_cache_pilot_backend_str(ngx_uint_t backend) {
 }
 
 static const char *
-ngx_http_cache_pilot_tag_index_state_str(ngx_uint_t state) {
+ngx_http_cache_pilot_index_state_str(ngx_uint_t state) {
     switch (state) {
-    case NGX_CACHE_PILOT_TAG_INDEX_STATE_CONFIGURED:
+    case NGX_CACHE_PILOT_INDEX_STATE_CONFIGURED:
         return "configured";
-    case NGX_CACHE_PILOT_TAG_INDEX_STATE_READY:
+    case NGX_CACHE_PILOT_INDEX_STATE_READY:
         return "ready";
     default:
         return "disabled";
@@ -292,9 +293,9 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
                          s->entries_expired,
                          s->entries_updating);
 
-        if (s->has_tag_index) {
+        if (s->has_index) {
             p = ngx_slprintf(p, last,
-                             ",\"tag_index\":{"
+                             ",\"index\":{"
                              "\"state\":\"%s\","
                              "\"state_code\":%ui,"
                              "\"backend\":\"%s\","
@@ -304,9 +305,9 @@ ngx_http_cache_pilot_write_json(u_char *p, u_char *last,
                              "\"dropped\":%ui"
                              "}"
                              "}",
-                             ngx_http_cache_pilot_tag_index_state_str(s->tag_index_state),
-                             s->tag_index_state,
-                             ngx_http_cache_pilot_backend_str(s->tag_backend),
+                             ngx_http_cache_pilot_index_state_str(s->index_state),
+                             s->index_state,
+                             ngx_http_cache_pilot_backend_str(s->index_backend),
                              s->queue_size,
                              s->queue_capacity,
                              s->queue_dropped);
@@ -416,46 +417,46 @@ ngx_http_cache_pilot_write_prometheus(u_char *p, u_char *last,
                          &s->name, s->entries_updating);
     }
 
-    /* Tag index metrics */
+    /* Cache index metrics */
     p = ngx_slprintf(p, last,
-                     "# HELP nginx_cache_pilot_tag_index_state"
-                     " Per-zone tag index state: 0=disabled, 1=configured, 2=ready\n"
-                     "# TYPE nginx_cache_pilot_tag_index_state gauge\n");
+                     "# HELP nginx_cache_pilot_index_state"
+                     " Per-zone cache index state: 0=disabled, 1=configured, 2=ready\n"
+                     "# TYPE nginx_cache_pilot_index_state gauge\n");
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
         p = ngx_slprintf(p, last,
-                         "nginx_cache_pilot_tag_index_state{zone=\"%V\",state=\"%s\"} %ui\n",
+                         "nginx_cache_pilot_index_state{zone=\"%V\",state=\"%s\"} %ui\n",
                          &s->name,
-                         ngx_http_cache_pilot_tag_index_state_str(s->tag_index_state),
-                         s->tag_index_state);
+                         ngx_http_cache_pilot_index_state_str(s->index_state),
+                         s->index_state);
     }
 
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
-        if (!s->has_tag_index) {
+        if (!s->has_index) {
             continue;
         }
 
-        if (i == 0 || !snaps[i - 1].has_tag_index) {
+        if (i == 0 || !snaps[i - 1].has_index) {
             p = ngx_slprintf(p, last,
-                             "# HELP nginx_cache_pilot_tag_index_info"
+                             "# HELP nginx_cache_pilot_index_info"
                              " Static metadata about the configured tag index backend (always 1)\n"
-                             "# TYPE nginx_cache_pilot_tag_index_info gauge\n");
+                             "# TYPE nginx_cache_pilot_index_info gauge\n");
         }
         p = ngx_slprintf(p, last,
-                         "nginx_cache_pilot_tag_index_info"
+                         "nginx_cache_pilot_index_info"
                          "{zone=\"%V\",backend=\"%s\"} 1\n",
                          &s->name,
-                         ngx_http_cache_pilot_backend_str(s->tag_backend));
+                         ngx_http_cache_pilot_backend_str(s->index_backend));
     }
 
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
-        if (!s->has_tag_index) {
+        if (!s->has_index) {
             continue;
         }
 
-        if (i == 0 || !snaps[i - 1].has_tag_index) {
+        if (i == 0 || !snaps[i - 1].has_index) {
             p = ngx_slprintf(p, last,
                              "# HELP nginx_cache_pilot_tag_queue_size"
                              " Current number of pending tag index operations in the queue\n"
@@ -468,11 +469,11 @@ ngx_http_cache_pilot_write_prometheus(u_char *p, u_char *last,
 
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
-        if (!s->has_tag_index) {
+        if (!s->has_index) {
             continue;
         }
 
-        if (i == 0 || !snaps[i - 1].has_tag_index) {
+        if (i == 0 || !snaps[i - 1].has_index) {
             p = ngx_slprintf(p, last,
                              "# HELP nginx_cache_pilot_tag_queue_capacity"
                              " Maximum capacity of the tag index operation queue\n"
@@ -485,11 +486,11 @@ ngx_http_cache_pilot_write_prometheus(u_char *p, u_char *last,
 
     for (i = 0; i < nzones; i++) {
         s = &snaps[i];
-        if (!s->has_tag_index) {
+        if (!s->has_index) {
             continue;
         }
 
-        if (i == 0 || !snaps[i - 1].has_tag_index) {
+        if (i == 0 || !snaps[i - 1].has_index) {
             p = ngx_slprintf(p, last,
                              "# HELP nginx_cache_pilot_tag_queue_dropped_total"
                              " Tag index operations dropped due to queue overflow\n"

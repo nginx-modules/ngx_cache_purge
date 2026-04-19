@@ -11,11 +11,11 @@ our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
     proxy_temp_path   /tmp/ngx_cache_pilot_temp 1 2;
     map $request_method $purge_method {
-        PURGE   1;
-        default 0;
+        PURGE   on;
+        default off;
     }
     map $request_method $purge_never {
-        default 0;
+        default off;
     }
 _EOC_
 

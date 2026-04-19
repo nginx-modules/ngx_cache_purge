@@ -1,16 +1,16 @@
-#include "ngx_cache_pilot_tag.h"
+#include "ngx_cache_pilot_index.h"
 
 #if (NGX_LINUX)
     #include <netdb.h>
 #endif
 
-static ngx_flag_t ngx_http_cache_tag_headers_equal(ngx_array_t *left,
+static ngx_flag_t ngx_http_cache_index_headers_equal(ngx_array_t *left,
         ngx_array_t *right);
-static char *ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
+static char *ngx_http_cache_index_store_conf_redis(ngx_conf_t *cf,
         ngx_http_cache_pilot_main_conf_t *pmcf, ngx_str_t *value);
 
 char *
-ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+ngx_http_cache_index_store_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_cache_pilot_main_conf_t  *pmcf;
     ngx_str_t                         *value;
 
@@ -23,7 +23,7 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 
 #if !(NGX_LINUX)
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                       "cache_pilot_tag_index requires Linux inotify support");
+                       "cache_pilot_index_store requires Linux inotify support");
     return NGX_CONF_ERROR;
 #else
 #if (NGX_CACHE_PILOT_SQLITE)
@@ -39,27 +39,27 @@ ngx_http_cache_tag_index_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 #else
     if (ngx_strcmp(value[1].data, "sqlite") == 0) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "cache_pilot_tag_index sqlite backend requires SQLite3 "
+                           "cache_pilot_index_store sqlite backend requires SQLite3 "
                            "library (not found at build time)");
         return NGX_CONF_ERROR;
     }
 #endif
 
     if (ngx_strcmp(value[1].data, "redis") == 0) {
-        return ngx_http_cache_tag_index_conf_redis(cf, pmcf, value);
+        return ngx_http_cache_index_store_conf_redis(cf, pmcf, value);
     }
 
     ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                       "invalid cache_pilot_tag_index backend \"%V\"",
+                       "invalid cache_pilot_index_store backend \"%V\"",
                        &value[1]);
     return NGX_CONF_ERROR;
 #endif
 }
 
 static char *
-ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
-                                    ngx_http_cache_pilot_main_conf_t *pmcf,
-                                    ngx_str_t *value) {
+ngx_http_cache_index_store_conf_redis(ngx_conf_t *cf,
+                                      ngx_http_cache_pilot_main_conf_t *pmcf,
+                                      ngx_str_t *value) {
     ngx_uint_t  i;
     u_char     *colon;
     ngx_int_t   port, db;
@@ -174,7 +174,7 @@ ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
         }
 
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "unknown redis cache_pilot_tag_index option \"%V\"",
+                           "unknown redis cache_pilot_index_store option \"%V\"",
                            &value[i]);
         return NGX_CONF_ERROR;
     }
@@ -183,7 +183,7 @@ ngx_http_cache_tag_index_conf_redis(ngx_conf_t *cf,
 }
 
 char *
-ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+ngx_http_cache_index_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_cache_pilot_loc_conf_t  *cplcf;
     ngx_str_t                        *value, *header;
     ngx_uint_t                        i;
@@ -215,12 +215,12 @@ ngx_http_cache_tag_headers_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) 
 }
 
 ngx_flag_t
-ngx_http_cache_tag_location_enabled(ngx_http_cache_pilot_loc_conf_t *cplcf) {
-    return cplcf->cache_tag_watch && cplcf->cache_tag_headers != NULL;
+ngx_http_cache_index_location_enabled(ngx_http_cache_pilot_loc_conf_t *cplcf) {
+    return cplcf->cache_index && cplcf->cache_tag_headers != NULL;
 }
 
 ngx_int_t
-ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
+ngx_http_cache_index_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
     ngx_http_cache_pilot_loc_conf_t  *cplcf;
     ngx_list_part_t                  *part;
     ngx_table_elt_t                  *header;
@@ -230,7 +230,7 @@ ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
 
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_pilot_module);
 
-    if (!ngx_http_cache_tag_location_enabled(cplcf)) {
+    if (!ngx_http_cache_index_location_enabled(cplcf)) {
         *tags = NULL;
         return NGX_DECLINED;
     }
@@ -265,9 +265,9 @@ ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
                 continue;
             }
 
-            if (ngx_http_cache_tag_extract_tokens(r->pool, header[i].value.data,
-                                                  header[i].value.len, result,
-                                                  r->connection->log)
+            if (ngx_http_cache_index_extract_tokens(r->pool, header[i].value.data,
+                                                    header[i].value.len, result,
+                                                    r->connection->log)
                     != NGX_OK) {
                 return NGX_ERROR;
             }
@@ -280,10 +280,10 @@ ngx_http_cache_tag_request_headers(ngx_http_request_t *r, ngx_array_t **tags) {
 }
 
 ngx_int_t
-ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
-                                  ngx_array_t *headers) {
+ngx_http_cache_index_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
+                                    ngx_array_t *headers) {
     ngx_http_cache_pilot_main_conf_t  *pmcf;
-    ngx_http_cache_tag_zone_t         *zones, *zone;
+    ngx_http_cache_index_zone_t         *zones, *zone;
     ngx_uint_t                         i;
 
     if (cache == NULL) {
@@ -291,14 +291,14 @@ ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
     }
 
     pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_pilot_module);
-    if (!ngx_http_cache_tag_store_configured(pmcf)) {
+    if (!ngx_http_cache_index_store_configured(pmcf)) {
         return NGX_OK;
     }
 
     zones = pmcf->zones->elts;
     for (i = 0; i < pmcf->zones->nelts; i++) {
         if (zones[i].cache == cache) {
-            if (!ngx_http_cache_tag_headers_equal(zones[i].headers, headers)) {
+            if (!ngx_http_cache_index_headers_equal(zones[i].headers, headers)) {
                 ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
                                    "cache_pilot_tag_headers must match for all watched locations using cache zone \"%V\"",
                                    &zones[i].zone_name);
@@ -322,7 +322,7 @@ ngx_http_cache_tag_register_cache(ngx_conf_t *cf, ngx_http_file_cache_t *cache,
 }
 
 static ngx_flag_t
-ngx_http_cache_tag_headers_equal(ngx_array_t *left, ngx_array_t *right) {
+ngx_http_cache_index_headers_equal(ngx_array_t *left, ngx_array_t *right) {
     ngx_str_t   *left_header, *right_header;
     ngx_uint_t   i, j;
 
@@ -356,26 +356,26 @@ ngx_http_cache_tag_headers_equal(ngx_array_t *left, ngx_array_t *right) {
 }
 
 ngx_int_t
-ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
-                         ngx_array_t *tags) {
+ngx_http_cache_index_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
+                           ngx_array_t *tags) {
     ngx_http_conf_ctx_t              *http_ctx;
     ngx_http_cache_pilot_main_conf_t *pmcf;
     ngx_http_cache_pilot_loc_conf_t  *cplcf;
-    ngx_http_cache_tag_zone_t        *zone;
-    ngx_http_cache_tag_zone_state_t   state;
+    ngx_http_cache_index_zone_t        *zone;
+    ngx_http_cache_index_zone_state_t   state;
     ngx_array_t                      *paths;
     ngx_str_t                        *path;
     ngx_uint_t                        i;
     ngx_int_t                         rc, purged;
     ngx_int_t                         soft;
 #if (NGX_LINUX)
-    ngx_http_cache_tag_store_t       *reader, *writer;
+    ngx_http_cache_index_store_t       *reader, *writer;
 #endif
 
     http_ctx = (ngx_http_conf_ctx_t *) ngx_get_conf(ngx_cycle->conf_ctx,
                ngx_http_module);
     pmcf = http_ctx->main_conf[ngx_http_cache_pilot_module.ctx_index];
-    if (!ngx_http_cache_tag_store_configured(pmcf)) {
+    if (!ngx_http_cache_index_store_configured(pmcf)) {
         return NGX_DECLINED;
     }
 
@@ -383,10 +383,10 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
     soft = ngx_http_cache_pilot_request_mode(r, cplcf->conf->soft);
     zone = NULL;
 #if (NGX_LINUX)
-    zone = ngx_http_cache_tag_lookup_zone(cache);
+    zone = ngx_http_cache_index_lookup_zone(cache);
 #endif
     if (zone == NULL) {
-        zone = ngx_pcalloc(r->pool, sizeof(ngx_http_cache_tag_zone_t));
+        zone = ngx_pcalloc(r->pool, sizeof(ngx_http_cache_index_zone_t));
         if (zone == NULL) {
             return NGX_ERROR;
         }
@@ -398,16 +398,17 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 #if !(NGX_LINUX)
     return NGX_DECLINED;
 #else
-    reader = ngx_http_cache_tag_store_reader(pmcf, r->connection->log);
+    reader = ngx_http_cache_index_store_reader(pmcf, r->connection->log);
     if (reader == NULL) {
         return NGX_ERROR;
     }
 
-    if (ngx_http_cache_tag_flush_pending((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
-        return NGX_ERROR;
+    if (ngx_http_cache_index_flush_pending((ngx_cycle_t *) ngx_cycle) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "cache_tag purge continuing after pending-op flush failure");
     }
 
-    if (ngx_http_cache_tag_store_get_zone_state(reader, &zone->zone_name, &state,
+    if (ngx_http_cache_index_store_get_zone_state(reader, &zone->zone_name, &state,
             r->connection->log) != NGX_OK) {
         return NGX_ERROR;
     }
@@ -418,37 +419,37 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
                       &zone->zone_name);
     }
 
-    if (ngx_http_cache_tag_store_collect_paths_by_tags(reader, r->pool,
+    if (ngx_http_cache_index_store_collect_paths_by_tags(reader, r->pool,
             &zone->zone_name, tags, &paths, r->connection->log)
             != NGX_OK) {
         return NGX_ERROR;
     }
 
     if (paths->nelts == 0 && !state.bootstrap_complete && cache->path != NULL) {
-        writer = ngx_http_cache_tag_is_owner()
-                 ? ngx_http_cache_tag_store_writer()
-                 : ngx_http_cache_tag_store_open_writer(pmcf,
+        writer = ngx_http_cache_index_is_owner()
+                 ? ngx_http_cache_index_store_writer()
+                 : ngx_http_cache_index_store_open_writer(pmcf,
                          r->connection->log);
         if (writer == NULL) {
             return NGX_ERROR;
         }
 
-        rc = ngx_http_cache_tag_bootstrap_zone(writer, zone,
-                                               (ngx_cycle_t *) ngx_cycle);
-        if (!ngx_http_cache_tag_is_owner()) {
-            ngx_http_cache_tag_store_close(writer);
+        rc = ngx_http_cache_index_bootstrap_zone(writer, zone,
+                (ngx_cycle_t *) ngx_cycle);
+        if (!ngx_http_cache_index_is_owner()) {
+            ngx_http_cache_index_store_close(writer);
         }
 
         if (rc != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (ngx_http_cache_tag_store_get_zone_state(reader, &zone->zone_name,
+        if (ngx_http_cache_index_store_get_zone_state(reader, &zone->zone_name,
                 &state, r->connection->log) != NGX_OK) {
             return NGX_ERROR;
         }
 
-        if (ngx_http_cache_tag_store_collect_paths_by_tags(reader, r->pool,
+        if (ngx_http_cache_index_store_collect_paths_by_tags(reader, r->pool,
                 &zone->zone_name, tags, &paths, r->connection->log)
                 != NGX_OK) {
             return NGX_ERROR;
@@ -471,10 +472,11 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
         }
 
         if (rc == NGX_OK || rc == NGX_DECLINED) {
-            rc = ngx_http_cache_tag_queue_enqueue_delete(pmcf,
+            rc = ngx_http_cache_index_queue_enqueue_delete(pmcf,
                     &zone->zone_name, &path[i], r->connection->log);
             if (rc != NGX_OK) {
-                return NGX_ERROR;
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                              "cache_tag purge continuing after index delete enqueue failure");
             }
         }
     }
@@ -484,20 +486,20 @@ ngx_http_cache_tag_purge(ngx_http_request_t *r, ngx_http_file_cache_t *cache,
 }
 
 ngx_int_t
-ngx_http_cache_tag_process_init(ngx_cycle_t *cycle,
-                                ngx_http_cache_pilot_main_conf_t *pmcf) {
+ngx_http_cache_index_process_init(ngx_cycle_t *cycle,
+                                  ngx_http_cache_pilot_main_conf_t *pmcf) {
 #if !(NGX_LINUX)
     (void) cycle;
     (void) pmcf;
     return NGX_OK;
 #else
-    return ngx_http_cache_tag_init_runtime(cycle, pmcf);
+    return ngx_http_cache_index_init_runtime(cycle, pmcf);
 #endif
 }
 
 void
-ngx_http_cache_tag_process_exit(void) {
+ngx_http_cache_index_process_exit(void) {
 #if (NGX_LINUX)
-    ngx_http_cache_tag_shutdown_runtime();
+    ngx_http_cache_index_shutdown_runtime();
 #endif
 }

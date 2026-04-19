@@ -33,6 +33,16 @@ RUN mkdir -p /opt/nginx-src \
     && tar -xzf /tmp/nginx.tar.gz -C /opt/nginx-src \
     && rm /tmp/nginx.tar.gz
 
+RUN cd "${NGINX_SRC_DIR}" \
+    && ./configure \
+        --prefix="${NGINX_BUILD_PREFIX}" \
+        --with-http_ssl_module \
+        --with-http_stub_status_module \
+        --with-http_realip_module \
+        --with-threads \
+    && make -j"$(nproc)" \
+    && make install
+
 RUN git clone --depth=1 "${TEST_NGINX_REPO}" /opt/test-nginx \
     && cpanm --notest /opt/test-nginx
 

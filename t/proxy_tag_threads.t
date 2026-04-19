@@ -46,7 +46,7 @@ our $http_config_boot = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_tags_boot.sqlite;
+    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_tags_boot.sqlite;
 _EOC_
 
 # ── Phase 2a: persisted SQLite, first start ───────────────────────────────────
@@ -63,7 +63,7 @@ our $http_config_persist = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
+    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
 _EOC_
 
 # ── Phase 2b: same functional config as Phase 2a plus a harmless comment ─────
@@ -80,7 +80,7 @@ our $http_config_persist_reload = <<'_EOC_';
     map $request_method $purge_never {
         default 0;
     }
-    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
+    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_threads_persist_tags.sqlite;
     # second-start (forces nginx restart in Test::Nginx)
 _EOC_
 
@@ -93,7 +93,7 @@ our $config_boot = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
         cache_pilot_purge_mode_header X-Purge-Mode;
-        cache_pilot_tag_watch    on;
+        cache_pilot_index    on;
     }
 
     location = /origin/a {
@@ -111,7 +111,7 @@ our $config_persist = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method soft;
         cache_pilot_purge_mode_header X-Purge-Mode;
-        cache_pilot_tag_watch    on;
+        cache_pilot_index    on;
     }
 
     location = /origin/p {

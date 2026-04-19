@@ -28,6 +28,8 @@ GetOptions(
     'mode=s'     => \$options{mode},
     'out=s'      => \$options{out},
     'port=i'     => \$options{port},
+    'purge-header=s' => \$options{purge_header},
+    'purge-header-value=s' => \$options{purge_header_value},
     'prefix=s'   => \$options{prefix},
     'scenario=s' => \$options{scenario},
     'tag-base=s' => \$options{tag_base},
@@ -68,6 +70,11 @@ while (hires_time() < $deadline) {
         my $index = int(rand($options{count}));
         $url = $base_url . $options{prefix} . $index;
         $request = HTTP::Request->new('PURGE', $url);
+
+        if (defined $options{purge_header} && length $options{purge_header}
+                && defined $options{purge_header_value}) {
+            $request->header($options{purge_header} => $options{purge_header_value});
+        }
 
     } elsif ($options{mode} eq 'wildcard') {
         my $digit = $iteration % 10;

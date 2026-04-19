@@ -4,13 +4,13 @@
 #include <ngx_config.h>
 #include <ngx_core.h>
 #include <ngx_http.h>
-#include "ngx_cache_pilot_tag.h"
+#include "ngx_cache_pilot_index.h"
 
 /*
  * Global purge operation counters in shared memory.
  * All fields are ngx_atomic_t — no mutex needed for reads or increments.
  *
- * The struct tag matches the forward declaration in ngx_cache_pilot_tag.h.
+ * The struct tag matches the forward declaration in ngx_cache_pilot_index.h.
  */
 struct ngx_http_cache_pilot_metrics_shctx_s {
     ngx_atomic_t  purges_exact_hard;

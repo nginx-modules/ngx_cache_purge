@@ -21,7 +21,7 @@ our $http_config = <<'_EOC_';
         PURGE   1;
         default 0;
     }
-    cache_pilot_tag_index   sqlite /tmp/ngx_cache_pilot_key_index_test.sqlite;
+    cache_pilot_index_store   sqlite /tmp/ngx_cache_pilot_key_index_test.sqlite;
 _EOC_
 
 our $config = <<'_EOC_';
@@ -33,7 +33,7 @@ our $config = <<'_EOC_';
         add_header         X-Cache-Status $upstream_cache_status;
         proxy_cache_purge  $purge_method;
         cache_pilot_purge_mode_header X-Purge-Mode;
-        cache_pilot_tag_watch on;
+        cache_pilot_index on;
     }
 
     location = /origin/vary {
