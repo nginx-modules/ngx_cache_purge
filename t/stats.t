@@ -186,13 +186,13 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 --- response_headers eval
 [
     'Content-Type: text/plain',
-    'Content-Type: text/html',
+    'Content-Type: application/json',
     'Content-Type: application/json',
 ]
 --- response_body_like eval
 [
     'root',
-    'Successful purge',
+    '{"key": ',
     '"exact":\{"hard":[1-9]',
 ]
 --- timeout: 10

@@ -80,8 +80,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /purge/proxy/passwd
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/

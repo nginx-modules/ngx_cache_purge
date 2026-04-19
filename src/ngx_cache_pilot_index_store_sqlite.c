@@ -36,9 +36,11 @@ static ngx_http_cache_index_store_t *ngx_http_cache_index_store_sqlite_open_one(
     ngx_str_t *path, int flags, ngx_flag_t readonly, ngx_log_t *log,
     ngx_flag_t log_errors);
 static ngx_int_t ngx_http_cache_index_store_sqlite_prepare(
-    ngx_http_cache_index_store_t *store, ngx_log_t *log);
+    ngx_http_cache_index_store_t *store, ngx_log_t *log,
+    ngx_flag_t log_errors);
 static ngx_int_t ngx_http_cache_index_store_sqlite_prepare_one(
-    sqlite3 *db, sqlite3_stmt **stmt, const char *sql, ngx_log_t *log);
+    sqlite3 *db, sqlite3_stmt **stmt, const char *sql, ngx_log_t *log,
+    ngx_flag_t log_errors);
 static ngx_int_t ngx_http_cache_index_store_sqlite_exec(
     ngx_http_cache_index_store_t *store, const char *sql, ngx_log_t *log);
 static ngx_int_t ngx_http_cache_index_store_sqlite_ensure_schema(
@@ -81,14 +83,16 @@ ngx_http_cache_index_store_sqlite_open(ngx_http_cache_pilot_main_conf_t *pmcf,
              * another worker does not cause an immediate SQLITE_BUSY
              * failure before the tables are visible. */
             sqlite3_busy_timeout(store->u.sqlite.db, 5000);
-            if (ngx_http_cache_index_store_sqlite_prepare(store, log) == NGX_OK) {
+            if (ngx_http_cache_index_store_sqlite_prepare(store, log, 0)
+                    == NGX_OK) {
                 sqlite3_busy_timeout(store->u.sqlite.db, 0);
                 return store;
             }
             sqlite3_busy_timeout(store->u.sqlite.db, 0);
+            ngx_http_cache_index_store_close(store);
         }
 
-        ngx_http_cache_index_store_close(store);
+        return NULL;
     }
 
     store = ngx_http_cache_index_store_sqlite_open_one(&pmcf->sqlite_path,
@@ -109,7 +113,7 @@ ngx_http_cache_index_store_sqlite_open(ngx_http_cache_pilot_main_conf_t *pmcf,
      * also retry on a transient SQLITE_BUSY from a sibling worker's
      * concurrent WAL recovery or checkpointing. */
     sqlite3_busy_timeout(store->u.sqlite.db, 5000);
-    if (ngx_http_cache_index_store_sqlite_prepare(store, log) != NGX_OK) {
+    if (ngx_http_cache_index_store_sqlite_prepare(store, log, 1) != NGX_OK) {
         sqlite3_busy_timeout(store->u.sqlite.db, 0);
         ngx_http_cache_index_store_close(store);
         return NULL;
@@ -780,11 +784,11 @@ ngx_http_cache_index_store_sqlite_step(sqlite3_stmt *stmt, sqlite3 *db,
 
 static ngx_int_t
 ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
-        ngx_log_t *log) {
+        ngx_log_t *log, ngx_flag_t log_errors) {
     if (ngx_http_cache_index_store_sqlite_prepare_one(store->u.sqlite.db,
             &store->u.sqlite.stmt.delete_file,
             "DELETE FROM cache_tag_entries WHERE zone = ?1 AND path = ?2",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -792,14 +796,14 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             &store->u.sqlite.stmt.insert_entry,
             "INSERT OR REPLACE INTO cache_tag_entries "
             "(zone, tag, path, mtime, size) VALUES (?1, ?2, ?3, ?4, ?5)",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
     if (ngx_http_cache_index_store_sqlite_prepare_one(store->u.sqlite.db,
             &store->u.sqlite.stmt.collect_paths,
             "SELECT path FROM cache_tag_entries WHERE zone = ?1 AND tag = ?2",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -807,7 +811,7 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             &store->u.sqlite.stmt.get_zone_state,
             "SELECT bootstrap_complete, last_bootstrap_at "
             "FROM cache_tag_zones WHERE zone = ?1",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -816,7 +820,7 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             "INSERT OR REPLACE INTO cache_tag_zones "
             "(zone, bootstrap_complete, last_bootstrap_at) "
             "VALUES (?1, ?2, ?3)",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -824,14 +828,14 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             &store->u.sqlite.stmt.insert_file_meta,
             "INSERT OR REPLACE INTO cache_file_meta "
             "(zone, path, cache_key_text, mtime, size) VALUES (?1, ?2, ?3, ?4, ?5)",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
     if (ngx_http_cache_index_store_sqlite_prepare_one(store->u.sqlite.db,
             &store->u.sqlite.stmt.delete_file_meta,
             "DELETE FROM cache_file_meta WHERE zone = ?1 AND path = ?2",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -839,7 +843,7 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             &store->u.sqlite.stmt.collect_paths_by_key,
             "SELECT path FROM cache_file_meta WHERE zone = ?1 "
             "AND cache_key_text = ?2",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -847,7 +851,7 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
             &store->u.sqlite.stmt.collect_paths_by_key_prefix,
             "SELECT path FROM cache_file_meta WHERE zone = ?1 "
             "AND substr(cache_key_text, 1, length(?2)) = ?2",
-            log) != NGX_OK) {
+            log, log_errors) != NGX_OK) {
         return NGX_ERROR;
     }
 
@@ -856,10 +860,12 @@ ngx_http_cache_index_store_sqlite_prepare(ngx_http_cache_index_store_t *store,
 
 static ngx_int_t
 ngx_http_cache_index_store_sqlite_prepare_one(sqlite3 *db, sqlite3_stmt **stmt,
-        const char *sql, ngx_log_t *log) {
+        const char *sql, ngx_log_t *log, ngx_flag_t log_errors) {
     if (sqlite3_prepare_v2(db, sql, -1, stmt, NULL) != SQLITE_OK) {
-        ngx_log_error(NGX_LOG_ERR, log, 0, "sqlite prepare failed: %s",
-                      sqlite3_errmsg(db));
+        if (log_errors) {
+            ngx_log_error(NGX_LOG_ERR, log, 0, "sqlite prepare failed: %s",
+                          sqlite3_errmsg(db));
+        }
         return NGX_ERROR;
     }
 

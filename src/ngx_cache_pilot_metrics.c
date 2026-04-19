@@ -77,6 +77,7 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
     ngx_http_file_cache_t *cache;
 #if (NGX_LINUX)
     ngx_http_cache_index_queue_ctx_t *qctx;
+    ngx_http_cache_index_store_t     *reader;
 #endif
 
     cache = sz->cache;
@@ -115,8 +116,14 @@ ngx_http_cache_pilot_snapshot_zone(ngx_http_cache_pilot_stat_zone_t *sz,
         snap->has_index     = 1;
         snap->index_backend = (ngx_uint_t) pmcf->backend;
 
-        if (ngx_http_cache_index_zone_bootstrap_complete_sync(pmcf, cache,
-                ngx_cycle->log)) {
+        reader = ngx_http_cache_index_store_reader(pmcf, ngx_cycle->log);
+        if (reader == NULL && ngx_http_cache_index_is_owner()) {
+            reader = ngx_http_cache_index_store_writer();
+        }
+
+        if ((ngx_http_cache_index_lookup_zone(cache) != NULL && reader != NULL)
+                || ngx_http_cache_index_zone_bootstrap_complete_sync(pmcf, cache,
+                        ngx_cycle->log)) {
             snap->index_state = NGX_CACHE_PILOT_INDEX_STATE_READY;
         }
 
@@ -590,6 +597,10 @@ ngx_http_cache_pilot_metrics_handler(ngx_http_request_t *r) {
 
     pmcf  = ngx_http_get_module_main_conf(r, ngx_http_cache_pilot_module);
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_pilot_module);
+
+    if (pmcf->metrics == NULL && pmcf->metrics_zone != NULL) {
+        pmcf->metrics = pmcf->metrics_zone->data;
+    }
 
     if (cplcf->stat_zones == NULL || cplcf->stat_zones->nelts == 0) {
         return NGX_HTTP_NO_CONTENT;

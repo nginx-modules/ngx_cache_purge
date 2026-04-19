@@ -5,7 +5,7 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4 + 5 * 1);
+plan tests => repeat_each() * (blocks() * 4 + 4 * 1);
 
 our $http_config = <<'_EOC_';
     proxy_cache_path    /tmp/ngx_cache_pilot_proxy_cache keys_zone=proxy_cache:10m;
@@ -31,7 +31,6 @@ our $config = <<'_EOC_';
         proxy_cache_key            $1$is_args$args;
         proxy_cache_purge  1 soft;
         cache_pilot_purge_mode_header    X-Purge-Mode;
-        cache_pilot_purge_response_type  html;
     }
 
     location ~ /purge_proxy_json(/.*) {
@@ -39,14 +38,6 @@ our $config = <<'_EOC_';
         proxy_cache_key            $1$is_args$args;
         proxy_cache_purge  1 soft;
         cache_pilot_purge_mode_header    X-Purge-Mode;
-    }
-
-    location ~ /purge_proxy_xml(/.*) {
-        proxy_cache                proxy_cache;
-        proxy_cache_key            $1$is_args$args;
-        proxy_cache_purge  1 soft;
-        cache_pilot_purge_mode_header    X-Purge-Mode;
-        cache_pilot_purge_response_type  xml;
     }
 
     location ~ /purge_proxy_text(/.*) {
@@ -108,7 +99,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 2: separate-location proxy soft purge succeeds
+=== TEST 2: separate-location proxy soft purge uses default JSON response
 --- http_config eval: $::http_config
 --- config eval: $::config
 --- request
@@ -117,8 +108,8 @@ PURGE /purge_proxy/proxy/passwd?t=proxy-soft-html
 X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: ^\{\"key\": \"\/proxy\/passwd\?t=proxy-soft-html\"\}$
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -170,42 +161,7 @@ X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: application/json
---- response_body_like: {\"Key\": \"\/proxy\/passwd\?t=proxy-soft-json\"
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx2: 4: < 0.8.3 or < 0.7.62
-
-
-
-=== TEST 6: prepare XML soft purge target
---- http_config eval: $::http_config
---- config eval: $::config
---- request
-GET /proxy/passwd?t=proxy-soft-xml
---- error_code: 200
---- response_headers
-Content-Type: text/plain
-X-Cache-Status: MISS
---- response_body_like: root
---- timeout: 10
---- no_error_log eval
-qr/\[(warn|error|crit|alert|emerg)\]/
---- skip_nginx2: 5: < 0.8.3 or < 0.7.62
-
-
-
-=== TEST 7: soft purge keeps XML response type
---- http_config eval: $::http_config
---- config eval: $::config
---- request
-PURGE /purge_proxy_xml/proxy/passwd?t=proxy-soft-xml
---- more_headers
-X-Purge-Mode: soft
---- error_code: 200
---- response_headers
-Content-Type: text/xml
---- response_body_like: \<\?xml version=\"1.0\" encoding=\"UTF-8\"\?><status><Key><\!\[CDATA\[\/proxy\/passwd\?t=proxy-soft-xml\]\]><\/Key>
+--- response_body_like: ^\{\"key\": \"\/proxy\/passwd\?t=proxy-soft-json\"\}$
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/

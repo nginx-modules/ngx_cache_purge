@@ -216,20 +216,44 @@ ngx_int_t
 ngx_http_cache_index_store_runtime_init(ngx_cycle_t *cycle,
                                         ngx_http_cache_pilot_main_conf_t *pmcf,
                                         ngx_flag_t owner) {
+    ngx_uint_t  attempt;
+
     ngx_memzero(&ngx_http_cache_index_store_runtime,
                 sizeof(ngx_http_cache_index_store_runtime));
 
     ngx_http_cache_index_store_runtime.cycle = cycle;
     ngx_http_cache_index_store_runtime.owner = owner;
 
-    if (!ngx_http_cache_index_store_configured(pmcf) || !owner) {
+    if (!ngx_http_cache_index_store_configured(pmcf)) {
         return NGX_OK;
     }
 
-    ngx_http_cache_index_store_runtime.writer =
-        ngx_http_cache_index_store_open_writer(pmcf, cycle->log);
+    if (owner) {
+        ngx_http_cache_index_store_runtime.writer =
+            ngx_http_cache_index_store_open_writer(pmcf, cycle->log);
 
-    return ngx_http_cache_index_store_runtime.writer != NULL ? NGX_OK : NGX_ERROR;
+        return ngx_http_cache_index_store_runtime.writer != NULL
+               ? NGX_OK : NGX_ERROR;
+    }
+
+#if (NGX_CACHE_PILOT_SQLITE)
+    if (pmcf->backend == NGX_HTTP_CACHE_TAG_BACKEND_SQLITE) {
+        for (attempt = 0; attempt < 100; attempt++) {
+            ngx_http_cache_index_store_runtime.reader =
+                ngx_http_cache_index_store_open_reader(pmcf, cycle->log);
+            if (ngx_http_cache_index_store_runtime.reader != NULL) {
+                return NGX_OK;
+            }
+
+            usleep(10000);
+        }
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "cache_tag: sqlite reader not ready after worker startup wait");
+    }
+#endif
+
+    return NGX_OK;
 }
 
 void

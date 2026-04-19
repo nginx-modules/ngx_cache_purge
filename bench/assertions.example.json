@@ -24,6 +24,38 @@
         "max": 40000
       }
     },
+    "exact-scan": {
+      "get.rps": {
+        "min": 2500
+      },
+      "get.latency_us.p95": {
+        "max": 40000
+      }
+    },
+    "exact-index": {
+      "get.rps": {
+        "min": 2500
+      },
+      "get.latency_us.p95": {
+        "max": 40000
+      }
+    },
+    "wild-scan": {
+      "get.rps": {
+        "min": 2000
+      },
+      "get.latency_us.p95": {
+        "max": 50000
+      }
+    },
+    "wild-index": {
+      "get.rps": {
+        "min": 2000
+      },
+      "get.latency_us.p95": {
+        "max": 50000
+      }
+    },
     "tag-sqlite": {
       "get.latency_us.p95": {
         "max": 40000

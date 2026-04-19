@@ -101,8 +101,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /proxy/passwd?t=soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -170,8 +170,8 @@ PURGE /proxy/passwd?t=soft-header
 X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -205,8 +205,8 @@ PURGE /proxy/passwd?t=soft-header
 X-Purge-Mode: hard
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -255,8 +255,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /proxy/passwd?t=soft-repeat
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -271,8 +271,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /proxy/passwd?t=soft-repeat
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -289,8 +289,8 @@ PURGE /proxy/passwd?t=soft-repeat
 X-Purge-Mode: hard
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -356,8 +356,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /proxy/pass*
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -459,8 +459,8 @@ PURGE /proxy/pass-soft-*
 X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -545,8 +545,8 @@ PURGE /proxy/any
 X-Purge-Mode: hard
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/

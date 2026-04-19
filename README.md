@@ -219,7 +219,7 @@ http {
 
 ### Response types
 
-Use `cache_pilot_purge_response_type` to switch between `html`, `json`, `xml`, and `text` responses in the scope where the purge response is generated.
+Use `cache_pilot_purge_response_type` to switch between `json` and `text` responses in the scope where the purge response is generated.
 
 ### Cache tags
 
@@ -273,11 +273,17 @@ For dedicated purge locations, configure the cache zone with `*_cache`, the purg
 
 #### `cache_pilot_purge_response_type`
 
-- **syntax**: `cache_pilot_purge_response_type html|json|xml|text`
-- **default**: `html`
+- **syntax**: `cache_pilot_purge_response_type json|text`
+- **default**: `json`
 - **context**: `http`, `server`, `location`
 
 Set the response type returned after a purge.
+
+When `json` is selected, successful purges may also include `cache_pilot.purge_path`
+to describe the request path that completed the purge, for example
+`filesystem-fallback`, `key-prefix-index`, `reused-persisted-index`,
+`bootstrapped-on-demand`, or `exact-key-fanout`. Text responses keep the
+existing plain body format.
 
 #### `cache_pilot_purge_mode_header`
 
@@ -301,6 +307,8 @@ If configured:
 - **context**: `http`
 
 Enable cache-tag indexing backed by SQLite or Redis. This feature is currently Linux-only. SQLite requires a writable database path. Redis currently supports a single instance over `host:port` or `unix:/path`, with optional `db=<n>` and `password=<secret>`, but no TLS, Sentinel, or Cluster support.
+
+The SQLite database is opened and initialized by the runtime worker that owns index writes. `nginx -t` validates the configured path but does not create or migrate the database file. Other workers open the database read-only; if the schema is not ready yet, index-assisted purge paths remain unavailable until the owner worker finishes initialization.
 
 This backend also stores cache-key metadata used by key-based purge acceleration:
 
@@ -657,12 +665,18 @@ make bench-quick
 
 ### Benchmark suite
 
-The repository includes a container-only benchmark harness under `bench/` for measuring purge behavior under concurrent GET load. It runs four scenarios against the built module with no extra container dependencies:
+The repository includes a container-only benchmark harness under `bench/` for measuring purge performance under concurrent GET load. Feature validation for key-index readiness, exact-key fanout, and wildcard key-prefix assist now lives in the regular `Test::Nginx` suite (`t/proxy_key_index.t` and `t/proxy_key_index_redis.t`), so the benchmark stays focused on steady-state throughput and latency.
+
+By default it runs all benchmark scenarios in a single run (and one summary table):
 
 - exact-key soft purge
 - wildcard soft purge
 - cache-tag soft purge with SQLite index
 - cache-tag soft purge with Redis index
+- exact soft purge with index disabled (`exact-scan`)
+- exact soft purge with index enabled and `Vary` siblings (`exact-index`)
+- wildcard soft purge with index disabled (filesystem walk, `wild-scan`)
+- wildcard soft purge with index enabled (key-prefix assist when ready, `wild-index`)
 
 Each scenario warms 1000 cached objects, starts 50 keep-alive GET workers, then runs a sequential PURGE worker in parallel while collecting:
 
@@ -683,9 +697,9 @@ cat /workspace/bench/results/latest/summary.txt
 
 Results are written under `bench/results/<timestamp>/` with one JSON file per scenario plus `summary.json`, `summary.txt`, and nginx log artifacts. The `bench/results/latest` symlink points at the most recent run. During the Redis scenario, `bench/bench.pl` starts a local `redis-server` on `127.0.0.1:16379`, uses `bench/nginx_redis.conf`, and shuts Redis down during teardown. The runner always creates an aggregated `nginx_error.log` plus per-startup and per-scenario `*_nginx_error.log` files so CI artifact paths stay stable; when nginx emits log output, `bench/bench.pl` also prints that chunk inline and appends it to those files.
 
-The benchmark suite uses `bench/nginx.conf` for SQLite-backed scenarios and `bench/nginx_redis.conf` for the Redis-backed scenario. If more benchmark layouts are added later, drop another `*.conf` template into `bench/`, assign scenarios to it in `bench/bench.pl`, and the runner will restart nginx when either the template or backend changes. You can also override the template for a whole run with `--config-template <name-or-path>`.
+The benchmark suite uses `bench/nginx.conf` for the baseline SQLite-backed scenarios and `bench/nginx_redis.conf` for the Redis-backed scenario. If more benchmark layouts are added later, drop another `*.conf` template into `bench/`, assign scenarios to it in `bench/bench.pl`, and the runner will restart nginx when either the template or backend changes. You can also override the template for a whole run with `--config-template <name-or-path>`.
 
-`bench/bench.pl` can also fail the run on threshold regressions with `--assert-file <path>`. The assertion file is JSON with optional `defaults` and per-scenario rules under `scenarios`, keyed by the scenario ids `exact`, `wild`, `tag-sqlite`, and `tag-redis`. Metrics use dot-paths into the summary object, for example `get.rps`, `get.cache_hit_rate`, `get.latency_us.p95`, and `purge.rps`. Each rule supports `min` and/or `max`. See `bench/assertions.example.json` for a concrete example.
+`bench/bench.pl` can also fail the run on threshold regressions with `--assert-file <path>`. The default assertion file is JSON with optional `defaults` and per-scenario rules under `scenarios`, keyed by scenario ids (for example `exact`, `wild`, `tag-sqlite`, `tag-redis`, `exact-scan`, `exact-index`, `wild-scan`, and `wild-index`). Metrics use dot-paths into the summary object, for example `get.rps`, `get.cache_hit_rate`, `get.latency_us.p95`, and `purge.rps`. Each rule supports `min` and/or `max`. See `bench/assertions.example.json` for the current performance thresholds.
 
 ### Docker Validation Config
 

@@ -8,6 +8,7 @@ use File::Path qw(make_path remove_tree);
 use File::Temp qw(tempdir);
 use FindBin;
 use Getopt::Long qw(GetOptions);
+use HTTP::Request;
 use JSON::PP ();
 use LWP::UserAgent;
 use POSIX qw(setpgid strftime);
@@ -21,6 +22,7 @@ my %options = (
     concurrency => 50,
     out_dir     => "$FindBin::Bin/results",
     port        => 18080,
+    scenario_set => 'default',
 );
 
 GetOptions(
@@ -31,6 +33,7 @@ GetOptions(
     'out-dir=s'     => \$options{out_dir},
     'port=i'        => \$options{port},
     'quick'         => \$options{quick},
+    'scenario-set=s' => \$options{scenario_set},
     'scenarios=s'   => \$options{scenarios},
 ) or die "invalid arguments\n";
 
@@ -38,6 +41,7 @@ die "--count must be > 0\n" unless $options{count} > 0;
 die "--concurrency must be > 0\n" unless $options{concurrency} > 0;
 
 my $duration = $options{quick} ? 15 : 60;
+my $index_probe_timeout_s = 15;
 my $scenario_ready_timeout_s = 10;
 my $perl = $^X;
 my $nginx = '/opt/nginx/sbin/nginx';
@@ -97,7 +101,9 @@ my @all_scenarios = (
         mode       => 'tag',
         tag_base   => 'bench-tag',
         backend    => 'sqlite',
-        index_tracking_mode => 'disabled',
+        index_target_zone => 'bench_tag_sqlite',
+        require_index_zone_ready => 0,
+        index_tracking_mode => 'readiness_only',
     },
     {
         key        => 'tag-redis',
@@ -108,14 +114,80 @@ my @all_scenarios = (
         mode       => 'tag',
         tag_base   => 'bench-rtag',
         backend    => 'redis',
+        index_target_zone => 'bench_tag_redis',
+        require_index_zone_ready => 0,
+        index_tracking_mode => 'readiness_only',
+    },
+    {
+        key        => 'exact-scan',
+        name       => 'exact_scan_purge',
+        table_name => 'exact_scan_purge',
+        config_template => 'nginx',
+        prefix     => '/exact-scan/',
+        mode       => 'exact',
+        backend    => 'sqlite',
         index_tracking_mode => 'disabled',
+    },
+    {
+        key        => 'exact-index',
+        name       => 'exact_indexed_purge',
+        table_name => 'exact_indexed_purge',
+        config_template => 'nginx',
+        prefix     => '/exact-index/',
+        mode       => 'exact',
+        backend    => 'sqlite',
+        index_target_zone => 'bench_exact_index',
+        require_index_zone_ready => 1,
+        index_tracking_mode => 'exact_fanout',
+        vary_header => 'X-Bench-Variant',
+        vary_values => [qw(a b c)],
+        purge_header => 'X-Bench-Variant',
+        purge_header_value => 'a',
+    },
+    {
+        key        => 'wild-scan',
+        name       => 'wildcard_scan_purge',
+        table_name => 'wildcard_scan_purge',
+        config_template => 'nginx',
+        prefix     => '/wild-scan/',
+        mode       => 'wildcard',
+        backend    => 'sqlite',
+        index_tracking_mode => 'disabled',
+    },
+    {
+        key        => 'wild-index',
+        name       => 'wildcard_indexed_purge',
+        table_name => 'wildcard_indexed_purge',
+        config_template => 'nginx',
+        prefix     => '/wild-index/',
+        mode       => 'wildcard',
+        backend    => 'sqlite',
+        index_target_zone => 'bench_wild_index',
+        require_index_zone_ready => 1,
+        index_tracking_mode => 'wildcard_prefix',
     },
 );
 
+my %scenario_sets = (
+    default => [ map { $_->{key} } @all_scenarios ],
+    all => [ map { $_->{key} } @all_scenarios ],
+);
+
 my %scenario_by_key = map { $_->{key} => $_ } @all_scenarios;
-my @selected_keys = defined $options{scenarios}
-    ? split(/,/, $options{scenarios})
-    : map { $_->{key} } @all_scenarios;
+my @selected_keys;
+my $selection_mode;
+
+if (defined $options{scenarios}) {
+    @selected_keys = grep { length $_ } split(/,/, $options{scenarios});
+    $selection_mode = 'scenarios';
+} else {
+    die "unknown scenario set: $options{scenario_set}\n"
+        unless exists $scenario_sets{$options{scenario_set}};
+    @selected_keys = @{ $scenario_sets{$options{scenario_set}} };
+    $selection_mode = 'scenario-set';
+}
+
+die "no scenarios selected\n" unless @selected_keys;
 
 my @scenarios;
 for my $key (@selected_keys) {
@@ -254,6 +326,11 @@ my $summary = {
     count        => $options{count},
     concurrency  => $options{concurrency},
     port         => $options{port},
+    scenario_selection => {
+        mode => $selection_mode,
+        scenario_set => defined $options{scenarios} ? 'custom' : $options{scenario_set},
+        keys => \@selected_keys,
+    },
     scenarios    => \@results,
 };
 
@@ -295,10 +372,20 @@ if ($failure) {
 sub run_scenario {
     my ($scenario, $duration_s, $run_dir, $stats_endpoint) = @_;
     my $before;
+    my $probe_report;
 
     wait_for_scenario_ready($scenario, $stats_endpoint, $scenario_ready_timeout_s);
     log_info("Warming cache for $scenario->{name}");
     warm_cache($scenario->{prefix}, $options{count}, $scenario);
+
+    if (($scenario->{index_tracking_mode} || '') eq 'wildcard_prefix') {
+        # Wildcard index metadata is written asynchronously; give it a brief
+        # settle window before running wildcard preflight probes.
+        sleep(1.0);
+    }
+
+    $probe_report = ensure_index_probe_ready($scenario, $stats_endpoint,
+                                             $index_probe_timeout_s);
 
     log_info("Fetching baseline stats for $scenario->{name}");
     $before = fetch_stats($stats_endpoint);
@@ -367,7 +454,8 @@ sub run_scenario {
     my $nginx_log = record_nginx_error_log($run_dir, $scenario->{name});
     my $index_plan = scenario_index_plan($scenario);
     my $index_report = build_index_report($scenario, $before, $after,
-                                          $metrics_delta, $nginx_log);
+                                          $metrics_delta, $nginx_log,
+                                          $probe_report);
 
     my $scenario_result = {
         scenario      => $scenario->{key},
@@ -438,6 +526,10 @@ sub cleanup_runtime_state {
         "$runtime_root/client_body_temp",
         "$runtime_root/cache_exact",
         "$runtime_root/cache_wild",
+        "$runtime_root/cache_exact_scan",
+        "$runtime_root/cache_exact_index",
+        "$runtime_root/cache_wild_scan",
+        "$runtime_root/cache_wild_index",
         "$runtime_root/cache_fanout",
         "$runtime_root/cache_tag_sqlite",
         "$runtime_root/cache_tag_redis",
@@ -490,6 +582,10 @@ sub render_config {
         '/tmp/bench_proxy_temp' => "$runtime_root/proxy_temp",
         '/tmp/bench_cache_exact' => "$runtime_root/cache_exact",
         '/tmp/bench_cache_wild' => "$runtime_root/cache_wild",
+        '/tmp/bench_cache_exact_scan' => "$runtime_root/cache_exact_scan",
+        '/tmp/bench_cache_exact_index' => "$runtime_root/cache_exact_index",
+        '/tmp/bench_cache_wild_scan' => "$runtime_root/cache_wild_scan",
+        '/tmp/bench_cache_wild_index' => "$runtime_root/cache_wild_index",
         '/tmp/bench_cache_fanout' => "$runtime_root/cache_fanout",
         '/tmp/bench_cache_tag_sqlite' => "$runtime_root/cache_tag_sqlite",
         '/tmp/bench_cache_tag_redis' => "$runtime_root/cache_tag_redis",
@@ -638,6 +734,86 @@ sub warm_cache {
     sleep(0.5);
 }
 
+sub ensure_index_probe_ready {
+    my ($scenario, $stats_url, $timeout_s) = @_;
+    my $mode = $scenario->{index_tracking_mode} || 'disabled';
+    my $probe_prefix;
+    my @probe_urls;
+    my $purge_url;
+    my $before;
+    my $after;
+    my $delta;
+    my $request;
+    my $response;
+    my $deadline;
+    my $attempts = 0;
+    my $last_hits = 0;
+
+    return {
+        attempted => 0,
+        succeeded => 0,
+    } unless $mode eq 'wildcard_prefix';
+
+    $probe_prefix = $options{count};
+    $deadline = hires_time() + $timeout_s;
+    @probe_urls = map {
+        "http://127.0.0.1:$options{port}$scenario->{prefix}${probe_prefix}$_"
+    } 0 .. 9;
+    $purge_url = "http://127.0.0.1:$options{port}$scenario->{prefix}${probe_prefix}*";
+
+    log_info("Running wildcard index preflight for $scenario->{name}");
+
+    while (hires_time() < $deadline) {
+        $attempts++;
+
+        for my $probe_url (@probe_urls) {
+            $response = $ua->get($probe_url);
+            die "wildcard index preflight warm-up failed for $probe_url: "
+                . $response->status_line . "\n"
+                unless $response->is_success;
+        }
+
+        sleep(0.3);
+
+        $before = fetch_stats($stats_url);
+        $request = HTTP::Request->new('PURGE', $purge_url);
+        $response = $ua->request($request);
+        die "wildcard index preflight purge failed for $purge_url: "
+            . $response->status_line . "\n"
+            unless $response->is_success;
+
+        sleep(0.3);
+
+        $after = fetch_stats($stats_url);
+        $delta = stats_delta($before, $after);
+        $last_hits = key_index_counter_delta($delta, 'wildcard_hits');
+
+        if ($last_hits > 0) {
+            return {
+                attempted => 1,
+                succeeded => 1,
+                attempts => $attempts,
+                probe_key_count => scalar @probe_urls,
+                observed_hits => $last_hits,
+            };
+        }
+    }
+
+    log_info(sprintf(
+        'wildcard index preflight timed out for %s after %ss: metadata never produced a wildcard index hit',
+        $scenario->{name},
+        $timeout_s,
+    ));
+
+    return {
+        attempted => 1,
+        succeeded => 0,
+        attempts => $attempts,
+        probe_key_count => scalar @probe_urls,
+        observed_hits => $last_hits,
+    };
+}
+
 sub wait_for_scenario_ready {
     my ($scenario, $stats_url, $timeout_s) = @_;
     my $deadline = hires_time() + $timeout_s;
@@ -706,7 +882,7 @@ sub scenario_index_plan {
 }
 
 sub build_index_report {
-    my ($scenario, $before, $after, $metrics_delta, $nginx_log) = @_;
+    my ($scenario, $before, $after, $metrics_delta, $nginx_log, $probe_report) = @_;
     my $mode = $scenario->{index_tracking_mode} || 'disabled';
     my $zone = $scenario->{index_target_zone};
     my $before_state = zone_index_state_code($before, $zone);
@@ -729,16 +905,7 @@ sub build_index_report {
     my $ready_degraded = $ready_before && !$ready_after ? 1 : 0;
     my $assist_missed = $expected_assist && !$used_assist ? 1 : 0;
 
-    my $sqlite_prepare_failed = 0;
-    my $sqlite_locked = 0;
-    my $sqlite_no_table = 0;
-    if (defined $nginx_log && ref($nginx_log->{error_summary}) eq 'HASH') {
-        $sqlite_prepare_failed = $nginx_log->{error_summary}->{sqlite_prepare_failed} || 0;
-        $sqlite_locked = $nginx_log->{error_summary}->{sqlite_locked} || 0;
-        $sqlite_no_table = $nginx_log->{error_summary}->{sqlite_no_table} || 0;
-    }
-
-    return {
+    my $report = {
         target_zone                => defined $zone ? $zone : '',
         target_state_before_code   => defined $before_state ? $before_state : -1,
         target_state_after_code    => defined $after_state ? $after_state : -1,
@@ -748,15 +915,55 @@ sub build_index_report {
         expected_assist            => $expected_assist,
         used_assist                => $used_assist,
         assist_missed              => $assist_missed,
-        wildcard_prefix_hits_delta => $wildcard_hits,
-        exact_fanout_delta         => $exact_fanout,
-        sqlite_prepare_failed      => $sqlite_prepare_failed,
-        sqlite_locked              => $sqlite_locked,
-        sqlite_no_table            => $sqlite_no_table,
         short_label                => index_report_short_label($mode, $used_assist,
                                                                $ready_before,
                                                                $ready_after),
     };
+
+    if ($mode eq 'wildcard_prefix') {
+        $report->{wildcard_prefix_hits_delta} = $wildcard_hits;
+        add_probe_diagnostic_summary($report, $probe_report);
+        add_sqlite_diagnostic_summary($report, $nginx_log);
+    }
+
+    if ($mode eq 'exact_fanout') {
+        $report->{exact_fanout_delta} = $exact_fanout;
+        add_sqlite_diagnostic_summary($report, $nginx_log);
+    }
+
+    return $report;
+}
+
+sub add_sqlite_diagnostic_summary {
+    my ($report, $nginx_log) = @_;
+
+    $report->{sqlite_prepare_failed} = 0;
+    $report->{sqlite_locked} = 0;
+    $report->{sqlite_no_table} = 0;
+
+    return unless defined $nginx_log && ref($nginx_log->{error_summary}) eq 'HASH';
+
+    $report->{sqlite_prepare_failed} = $nginx_log->{error_summary}->{sqlite_prepare_failed} || 0;
+    $report->{sqlite_locked} = $nginx_log->{error_summary}->{sqlite_locked} || 0;
+    $report->{sqlite_no_table} = $nginx_log->{error_summary}->{sqlite_no_table} || 0;
+}
+
+sub add_probe_diagnostic_summary {
+    my ($report, $probe_report) = @_;
+
+    $report->{wildcard_preflight_attempted} = 0;
+    $report->{wildcard_preflight_succeeded} = 0;
+    $report->{wildcard_preflight_attempts} = 0;
+    $report->{wildcard_preflight_probe_key_count} = 0;
+    $report->{wildcard_preflight_observed_hits} = 0;
+
+    return unless defined $probe_report && ref($probe_report) eq 'HASH';
+
+    $report->{wildcard_preflight_attempted} = $probe_report->{attempted} ? 1 : 0;
+    $report->{wildcard_preflight_succeeded} = $probe_report->{succeeded} ? 1 : 0;
+    $report->{wildcard_preflight_attempts} = $probe_report->{attempts} || 0;
+    $report->{wildcard_preflight_probe_key_count} = $probe_report->{probe_key_count} || 0;
+    $report->{wildcard_preflight_observed_hits} = $probe_report->{observed_hits} || 0;
 }
 
 sub zone_index_state_code {

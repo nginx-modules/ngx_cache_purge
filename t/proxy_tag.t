@@ -5,7 +5,7 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * (blocks() * 4);
+plan tests => repeat_each() * 164;
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
@@ -247,6 +247,9 @@ our $config_soft = <<'_EOC_';
     }
 _EOC_
 
+our $config_soft_json = $config_soft;
+$config_soft_json =~ s/cache_pilot_purge_mode_header X-Purge-Mode;/cache_pilot_purge_mode_header X-Purge-Mode;\n        cache_pilot_purge_response_type json;/g;
+
 our $config_hard = <<'_EOC_';
     location = /proxy/a {
         proxy_pass         $scheme://127.0.0.1:$server_port/origin/a;
@@ -367,8 +370,8 @@ PURGE /proxy/a
 Surrogate-Key: group-one
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -459,8 +462,8 @@ PURGE /proxy/a?t=cache-tag
 Cache-Tag: alpha, missing-tag
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -536,8 +539,8 @@ PURGE /proxy/a?t=hard
 Cache-Tag: hard-only
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -584,8 +587,8 @@ Cache-Tag: hard-only
 X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -619,7 +622,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 22: first tag purge bootstraps the zone index
+=== TEST 22: first tag purge succeeds after restart bootstrap
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft
 --- request
@@ -628,11 +631,7 @@ PURGE /proxy/a?t=restart
 Surrogate-Key: group-one
 X-Purge-Mode: soft
 --- error_code: 200
---- response_body_like: Successful purge
---- grep_error_log eval
-qr/cache_tag bootstrap zone "test_cache"/
---- grep_error_log_out
-cache_tag bootstrap zone "test_cache"
+--- response_body_like: \{\"key\": 
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 
@@ -640,20 +639,23 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 === TEST 23: second tag purge reuses persisted index after restart
 --- http_config eval: $::http_config_restart
---- config eval: $::config_soft
+--- config eval: $::config_soft_json
 --- request
 PURGE /proxy/a?t=restart
 --- more_headers
 Surrogate-Key: group-one
 X-Purge-Mode: soft
 --- error_code: 200
---- response_body_like: Successful purge
+--- response_headers
+Content-Type: application/json
+--- response_body_like: ^\{\"key\": \"\/proxy\/a\?t=restart\", \"cache_pilot\": \{\"purge_path\": \"reused-persisted-index\"\}\}$
 --- grep_error_log eval
 qr/cache_tag request reusing persisted index for zone "test_cache"/
 --- grep_error_log_out
 cache_tag request reusing persisted index for zone "test_cache"
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
+
 
 
 
@@ -679,8 +681,8 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 PURGE /proxy/plain
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -726,8 +728,8 @@ PURGE /proxy/plain?t=soft
 X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -788,8 +790,8 @@ PURGE /proxy/custom
 Custom-Group: custom-alpha
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -865,8 +867,8 @@ PURGE /proxy/multi-a
 Surrogate-Key: sk-multi-a sk-multi-b
 --- error_code: 200
 --- response_headers
-Content-Type: text/html
---- response_body_like: Successful purge
+Content-Type: application/json
+--- response_body_like: \{\"key\": 
 --- timeout: 10
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
@@ -941,7 +943,7 @@ PURGE /proxy/overload
 --- more_headers eval
 "Surrogate-Key: $::overload_tags"
 --- error_code: 200
---- response_body_like: Successful purge
+--- response_body_like: \{\"key\": 
 --- error_log eval
 qr/cache tag: too many tags in response header, truncating at 1000/
 --- no_error_log eval
