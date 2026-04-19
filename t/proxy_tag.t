@@ -5,7 +5,7 @@ use Test::Nginx::Socket;
 
 repeat_each(1);
 
-plan tests => repeat_each() * 164;
+plan tests => repeat_each() * 163;
 
 our $http_config = <<'_EOC_';
     proxy_cache_path  /tmp/ngx_cache_pilot_cache keys_zone=test_cache:10m;
@@ -637,7 +637,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 23: second tag purge uses in-memory index after restart bootstrap
+=== TEST 23: second tag purge reports reused index after restart bootstrap
 --- http_config eval: $::http_config_restart
 --- config eval: $::config_soft_json
 --- request
@@ -648,7 +648,7 @@ X-Purge-Mode: soft
 --- error_code: 200
 --- response_headers
 Content-Type: application/json
---- response_body_like: ^\{\"key\": \"\/proxy\/a\?t=restart\"\}$
+--- response_body_like: ^\{\"key\": \"\/proxy\/a\?t=restart\", \"cache_pilot\": \{\"purge_path\": \"reused-persisted-index\"\}\}$
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 

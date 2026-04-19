@@ -721,13 +721,14 @@ ngx_http_cache_index_store_shm_push_path_unique(ngx_pool_t *pool,
         return NGX_ERROR;
     }
 
-    path->data = ngx_pnalloc(pool, len);
+    path->data = ngx_pnalloc(pool, len + 1);
     if (path->data == NULL) {
         return NGX_ERROR;
     }
 
     ngx_memcpy(path->data, data, len);
     path->len = len;
+    path->data[len] = '\0';
 
     return NGX_OK;
 }
