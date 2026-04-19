@@ -8,9 +8,3 @@ services:
     working_dir: /workspace
     volumes:
       - .:/workspace
-    depends_on:
-      - redis
-
-  redis:
-    image: redis:7-alpine
-    command: ["redis-server", "--save", "", "--appendonly", "no"]

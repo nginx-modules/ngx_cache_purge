@@ -22,8 +22,6 @@ RUN apt-get update \
         libpcre3-dev \
         libssl-dev \
         perl \
-        redis-server \
-        redis-tools \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
