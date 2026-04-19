@@ -809,7 +809,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 34: prepare sqlite multi-tag-a cache entry
+=== TEST 34: prepare multi-tag-a cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -824,7 +824,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 35: prepare sqlite multi-tag-b cache entry
+=== TEST 35: prepare multi-tag-b cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -839,7 +839,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 36: prepare sqlite unrelated multi-tag-c cache entry
+=== TEST 36: prepare unrelated multi-tag-c cache entry
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -854,7 +854,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 37: sqlite purge by two tags exercises IN clause path
+=== TEST 37: purge by two tags matches both entries
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -871,7 +871,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 38: sqlite multi-tag-a entry is expired after two-tag purge
+=== TEST 38: multi-tag-a entry is expired after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -886,7 +886,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 39: sqlite multi-tag-b entry is expired after two-tag purge
+=== TEST 39: multi-tag-b entry is expired after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -901,7 +901,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 40: sqlite unrelated entry remains a hit after two-tag purge
+=== TEST 40: unrelated entry remains a hit after two-tag purge
 --- http_config eval: $::http_config_multi_tag
 --- config eval: $::config_multi_tag
 --- request
@@ -916,7 +916,7 @@ qr/\[(warn|error|crit|alert|emerg)\]/
 
 
 
-=== TEST 41: prepare sqlite overload cache entry for truncation test
+=== TEST 41: prepare overload cache entry for truncation test
 --- http_config eval: $::http_config_overload
 --- config eval: $::config_overload
 --- request
@@ -931,7 +931,7 @@ qr/\[(error|crit|alert|emerg)\]/
 
 
 
-=== TEST 42: sqlite purge with 1001 tags logs truncation warning at 1000
+=== TEST 42: purge with 1001 tags logs truncation warning at 1000
 --- http_config eval: $::http_config_overload
 --- config eval: $::config_overload
 --- request

@@ -234,6 +234,8 @@ parallel synonyms or replacement spellings:
 - `fastcgi_cache_purge`, `proxy_cache_purge`, `scgi_cache_purge`, and `uwsgi_cache_purge` for upstream-cache purge integration
 - `cache_pilot_*` for module-owned features such as indexing, tag handling, purge response behavior, metrics, and tuning
 
+### Directives
+
 #### `fastcgi_cache_purge`
 
 - **syntax**: `fastcgi_cache_purge string ... [soft] [purge_all]`
@@ -349,7 +351,7 @@ Expose a read-only metrics endpoint for the configured cache zones. With no argu
 The endpoint returns `Cache-Control: no-store` and supports two output formats:
 
 | Trigger | Format | Content-Type |
-|---------|--------|--------------|
+| --- | --- | --- |
 | Default, `?format=json`, or `Accept: application/json` | JSON | `application/json` |
 | `?format=prometheus`, `Accept: text/plain`, or `Accept: application/openmetrics-text` | Prometheus text | `text/plain; version=0.0.4` |
 

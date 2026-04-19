@@ -40,7 +40,6 @@ nginx-build-dynamic:
 		--with-debug \
 		--with-threads \
 		--with-http_ssl_module \
-		--with-ld-opt="-lsqlite3" \
 		--add-dynamic-module="$(MODULE_DIR)"
 	$(MAKE) -C "$(NGINX_SRC_DIR)" -j"$(JOBS)" modules
 

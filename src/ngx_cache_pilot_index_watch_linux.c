@@ -800,7 +800,7 @@ ngx_http_cache_index_bootstrap_thread(void *data, ngx_log_t *log) {
 
         if (ngx_http_cache_index_store_get_zone_state(writer, &zone[i].zone_name,
                 &state, log) != NGX_OK) {
-            /* Store unavailable (e.g. Redis not yet reachable).  Mark
+            /* Store unavailable. Mark
              * partial failure but continue with remaining zones so that
              * inotify watches are registered for the zones that do succeed. */
             ngx_log_error(NGX_LOG_WARN, log, 0,
@@ -1034,7 +1034,7 @@ ngx_http_cache_index_init_runtime(ngx_cycle_t *cycle,
 
         if (ngx_http_cache_index_store_get_zone_state(writer, &zone[i].zone_name,
                 &state, cycle->log) != NGX_OK) {
-            /* Store unavailable (e.g. Redis not yet reachable at startup).
+            /* Store unavailable at startup.
              * Skip this zone — inotify is still armed below and the zone
              * will be bootstrapped on the first incoming purge request. */
             ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
@@ -1349,7 +1349,7 @@ ngx_http_cache_index_zone_state_cache_sync(ngx_cycle_t *cycle,
         state.last_bootstrap_at = 0;
         if (ngx_http_cache_index_store_get_zone_state(reader, &zone[i].zone_name,
                 &state, cycle->log) != NGX_OK) {
-            /* Store unavailable at startup (e.g. Redis not yet reachable).
+            /* Store unavailable at startup.
              * Default to not-bootstrapped so the zone is re-bootstrapped on
              * the first purge request.  Do not fail the worker — it will
              * reconnect and pick up new entries via inotify. */

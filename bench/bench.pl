@@ -47,8 +47,6 @@ my $perl = $^X;
 my $nginx = '/opt/nginx/sbin/nginx';
 my $get_worker = "$FindBin::Bin/worker_get.pl";
 my $purge_worker = "$FindBin::Bin/worker_purge.pl";
-my $redis_port = 16379;
-my $redis_db = 5;
 my $stats_url = "http://127.0.0.1:$options{port}/bench_stats";
 my $ua = LWP::UserAgent->new(agent => 'ngx-cache-pilot-bench/1.0', keep_alive => 5, timeout => 5);
 my $runtime_root;
@@ -57,11 +55,6 @@ my $worker_scratch_dir;
 my $nginx_prefix;
 my $nginx_error_log;
 my $nginx_pid_file;
-my $redis_runtime_dir;
-my $redis_pid_file;
-my $redis_log_file;
-my $sqlite_runtime_dir;
-my $sqlite_db_path;
 
 die "nginx binary not found at $nginx; run make nginx-build first\n"
     unless -x $nginx;
@@ -79,7 +72,7 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/exact/',
         mode       => 'exact',
-        backend    => 'sqlite',
+        backend    => 'core',
         index_tracking_mode => 'disabled',
     },
     {
@@ -89,32 +82,19 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/wild/',
         mode       => 'wildcard',
-        backend    => 'sqlite',
+        backend    => 'core',
         index_tracking_mode => 'disabled',
     },
     {
-        key        => 'tag-sqlite',
-        name       => 'tag_sqlite_purge',
-        table_name => 'tag_sqlite_purge',
+        key        => 'tag-shm',
+        name       => 'tag_shm_purge',
+        table_name => 'tag_shm_purge',
         config_template => 'nginx',
         prefix     => '/tag/',
         mode       => 'tag',
         tag_base   => 'bench-tag',
-        backend    => 'sqlite',
-        index_target_zone => 'bench_tag_sqlite',
-        require_index_zone_ready => 0,
-        index_tracking_mode => 'readiness_only',
-    },
-    {
-        key        => 'tag-redis',
-        name       => 'tag_redis_purge',
-        table_name => 'tag_redis_purge',
-        config_template => 'nginx_redis',
-        prefix     => '/rtag/',
-        mode       => 'tag',
-        tag_base   => 'bench-rtag',
-        backend    => 'redis',
-        index_target_zone => 'bench_tag_redis',
+        backend    => 'shm',
+        index_target_zone => 'bench_tag_shm',
         require_index_zone_ready => 0,
         index_tracking_mode => 'readiness_only',
     },
@@ -125,7 +105,7 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/exact-scan/',
         mode       => 'exact',
-        backend    => 'sqlite',
+        backend    => 'core',
         index_tracking_mode => 'disabled',
     },
     {
@@ -135,7 +115,7 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/exact-index/',
         mode       => 'exact',
-        backend    => 'sqlite',
+        backend    => 'shm',
         index_target_zone => 'bench_exact_index',
         require_index_zone_ready => 1,
         index_tracking_mode => 'exact_fanout',
@@ -151,7 +131,7 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/wild-scan/',
         mode       => 'wildcard',
-        backend    => 'sqlite',
+        backend    => 'core',
         index_tracking_mode => 'disabled',
     },
     {
@@ -161,7 +141,7 @@ my @all_scenarios = (
         config_template => 'nginx',
         prefix     => '/wild-index/',
         mode       => 'wildcard',
-        backend    => 'sqlite',
+        backend    => 'shm',
         index_target_zone => 'bench_wild_index',
         require_index_zone_ready => 1,
         index_tracking_mode => 'wildcard_prefix',
@@ -203,7 +183,6 @@ for my $key (@selected_keys) {
 }
 
 my $current_conf;
-my $redis_started = 0;
 my @active_child_pids;
 my $shutdown_signal;
 my $shutting_down = 0;
@@ -216,7 +195,6 @@ $SIG{TERM} = sub { handle_signal('TERM'); };
 END {
     cleanup_active_children();
     eval { stop_nginx($current_conf) if defined $current_conf; };
-    eval { stop_redis() if $redis_started; };
     eval { cleanup_runtime_root(); };
 }
 
@@ -253,19 +231,7 @@ eval {
             stop_nginx($current_conf) if defined $current_conf;
             $current_conf = undef;
 
-            if ($redis_started) {
-                log_info('Stopping Redis sidecar');
-                stop_redis();
-                $redis_started = 0;
-            }
-
             cleanup_runtime_state();
-
-            if ($scenario->{backend} eq 'redis') {
-                log_info('Starting Redis sidecar');
-                start_redis();
-                $redis_started = 1;
-            }
 
             $current_conf = render_runtime_config($scenario);
 
@@ -311,12 +277,6 @@ eval {
 
 stop_nginx($current_conf) if defined $current_conf;
 $current_conf = undef;
-
-if ($redis_started) {
-    log_info('Stopping Redis sidecar');
-    stop_redis();
-    $redis_started = 0;
-}
 
 my $summary = {
     generated_at => $timestamp,
@@ -494,14 +454,9 @@ sub initialize_runtime_paths {
     $runtime_root = tempdir('ngx-cache-pilot-bench-XXXXXX', TMPDIR => 1, CLEANUP => 0);
     $runtime_conf_dir = "$runtime_root/conf";
     $worker_scratch_dir = "$runtime_root/workers";
-    $sqlite_runtime_dir = "$runtime_root/sqlite";
-    $sqlite_db_path = "$sqlite_runtime_dir/bench_tags.db";
     $nginx_prefix = "$runtime_root/nginx";
     $nginx_error_log = "$nginx_prefix/logs/error.log";
     $nginx_pid_file = "$nginx_prefix/nginx.pid";
-    $redis_runtime_dir = "$runtime_root/redis";
-    $redis_pid_file = "$redis_runtime_dir/redis.pid";
-    $redis_log_file = "$redis_runtime_dir/redis.log";
 }
 
 sub cleanup_runtime_state {
@@ -521,7 +476,6 @@ sub cleanup_runtime_state {
     make_path(
         $runtime_conf_dir,
         $worker_scratch_dir,
-        $sqlite_runtime_dir,
         "$runtime_root/proxy_temp",
         "$runtime_root/client_body_temp",
         "$runtime_root/cache_exact",
@@ -531,26 +485,12 @@ sub cleanup_runtime_state {
         "$runtime_root/cache_wild_scan",
         "$runtime_root/cache_wild_index",
         "$runtime_root/cache_fanout",
-        "$runtime_root/cache_tag_sqlite",
-        "$runtime_root/cache_tag_redis",
+        "$runtime_root/cache_tag_shm",
         $nginx_prefix,
         "$nginx_prefix/logs",
-        $redis_runtime_dir,
     );
 
-    prepare_sqlite_runtime();
     ensure_nginx_prefix();
-}
-
-sub prepare_sqlite_runtime {
-    chmod 0777, $sqlite_runtime_dir
-        or die "chmod($sqlite_runtime_dir): $!\n";
-
-    open my $fh, '>', $sqlite_db_path or die "open($sqlite_db_path): $!";
-    close $fh or die "close($sqlite_db_path): $!";
-
-    chmod 0666, $sqlite_db_path
-        or die "chmod($sqlite_db_path): $!\n";
 }
 
 sub render_runtime_config {
@@ -587,9 +527,7 @@ sub render_config {
         '/tmp/bench_cache_wild_scan' => "$runtime_root/cache_wild_scan",
         '/tmp/bench_cache_wild_index' => "$runtime_root/cache_wild_index",
         '/tmp/bench_cache_fanout' => "$runtime_root/cache_fanout",
-        '/tmp/bench_cache_tag_sqlite' => "$runtime_root/cache_tag_sqlite",
-        '/tmp/bench_cache_tag_redis' => "$runtime_root/cache_tag_redis",
-        '/tmp/bench_tags.db' => $sqlite_db_path,
+        '/tmp/bench_cache_tag_shm' => "$runtime_root/cache_tag_shm",
     );
 
     for my $from (sort { length($b) <=> length($a) } keys %path_map) {
@@ -669,11 +607,8 @@ sub detect_nginx_startup_failure {
 
     for my $line (@lines) {
         if ($line =~ /\[emerg\]/
-                || $line =~ /cannot be respawned/
-                || $line =~ /exited with fatal code/
-                || $line =~ /sqlite (?:prepare|exec) failed/
-                || $line =~ /attempt to write a readonly database/
-                || $line =~ /no such table/) {
+            || $line =~ /cannot be respawned/
+            || $line =~ /exited with fatal code/) {
             return "nginx startup failed: $line";
         }
     }
@@ -923,29 +858,13 @@ sub build_index_report {
     if ($mode eq 'wildcard_prefix') {
         $report->{wildcard_prefix_hits_delta} = $wildcard_hits;
         add_probe_diagnostic_summary($report, $probe_report);
-        add_sqlite_diagnostic_summary($report, $nginx_log);
     }
 
     if ($mode eq 'exact_fanout') {
         $report->{exact_fanout_delta} = $exact_fanout;
-        add_sqlite_diagnostic_summary($report, $nginx_log);
     }
 
     return $report;
-}
-
-sub add_sqlite_diagnostic_summary {
-    my ($report, $nginx_log) = @_;
-
-    $report->{sqlite_prepare_failed} = 0;
-    $report->{sqlite_locked} = 0;
-    $report->{sqlite_no_table} = 0;
-
-    return unless defined $nginx_log && ref($nginx_log->{error_summary}) eq 'HASH';
-
-    $report->{sqlite_prepare_failed} = $nginx_log->{error_summary}->{sqlite_prepare_failed} || 0;
-    $report->{sqlite_locked} = $nginx_log->{error_summary}->{sqlite_locked} || 0;
-    $report->{sqlite_no_table} = $nginx_log->{error_summary}->{sqlite_no_table} || 0;
 }
 
 sub add_probe_diagnostic_summary {
@@ -1133,27 +1052,7 @@ sub record_nginx_error_log {
 sub summarize_nginx_error_chunk {
     my ($chunk) = @_;
 
-    my $summary = {
-        sqlite_prepare_failed => 0,
-        sqlite_locked => 0,
-        sqlite_no_table => 0,
-    };
-
-    for my $line (split /\n/, $chunk) {
-        if ($line =~ /sqlite prepare failed/) {
-            $summary->{sqlite_prepare_failed}++;
-        }
-
-        if ($line =~ /database is locked/) {
-            $summary->{sqlite_locked}++;
-        }
-
-        if ($line =~ /no such table/) {
-            $summary->{sqlite_no_table}++;
-        }
-    }
-
-    return $summary;
+    return {};
 }
 
 sub consume_nginx_error_log {
@@ -1270,41 +1169,6 @@ sub print_assertion_result {
     for my $violation (@{ $assertions->{violations} }) {
         print "- $violation\n";
     }
-}
-
-sub start_redis {
-    stop_redis() if -e $redis_pid_file;
-
-    make_path($redis_runtime_dir);
-
-    run_system(
-        'redis-server',
-        '--port', $redis_port,
-        '--daemonize', 'yes',
-        '--save', '',
-        '--loglevel', 'warning',
-        '--pidfile', $redis_pid_file,
-        '--logfile', $redis_log_file,
-    );
-
-    for (1 .. 50) {
-        my $status = system('redis-cli', '-p', $redis_port, 'PING');
-        if ($status == 0) {
-            run_system('redis-cli', '-p', $redis_port, '-n', $redis_db, 'FLUSHDB');
-            return;
-        }
-        sleep(0.2);
-    }
-
-    die "redis-server did not become ready on port $redis_port\n";
-}
-
-sub stop_redis {
-    return unless -e $redis_pid_file;
-
-    system('redis-cli', '-p', $redis_port, 'shutdown', 'nosave');
-    sleep(0.2);
-    unlink $redis_pid_file if -e $redis_pid_file;
 }
 
 sub run_system {

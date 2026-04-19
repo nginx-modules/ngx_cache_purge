@@ -56,12 +56,7 @@
         "max": 50000
       }
     },
-    "tag-sqlite": {
-      "get.latency_us.p95": {
-        "max": 40000
-      }
-    },
-    "tag-redis": {
+    "tag-shm": {
       "get.latency_us.p95": {
         "max": 40000
       }
