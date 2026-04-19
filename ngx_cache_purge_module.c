@@ -656,8 +656,9 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
     if ((ngx_uint_t) queue->size >= queue->max_size) {
         ngx_shmtx_unlock(&queue->mutex);
         ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
-                      "cache purge: queue full (%ui items), "
-                      "falling back to synchronous purge", queue->size);
+                      "ngx_cache_purge: queue full (%ui/%ui items), "
+                      "falling back to synchronous purge",
+                      queue->size, queue->max_size);
         return NGX_ERROR;
     }
 
@@ -771,8 +772,11 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
         item->next = NULL;
 
         if ((now - item->enqueued_at) > NGX_CACHE_PURGE_QUEUE_TIMEOUT) {
-            ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
-                          "cache purge: item timed out in queue, discarding");
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "ngx_cache_purge: purge of \"%V\" key \"%V\" "
+                          "timed out after %Mms, discarding",
+                          &item->cache_path, &item->key_partial,
+                          now - item->enqueued_at);
             ngx_slab_free(queue->shpool, item->cache_path.data);
             if (item->key_partial.data) {
                 ngx_slab_free(queue->shpool, item->key_partial.data);
@@ -966,8 +970,8 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
     } else {
         if (wctx->key_len >= NGX_CACHE_PURGE_KEY_MAX_LEN) {
             ngx_log_error(NGX_LOG_WARN, ctx->log, 0,
-                          "cache purge: key too long (%uz bytes), "
-                          "skipping \"%s\"", wctx->key_len, path->data);
+                          "ngx_cache_purge: key too long (%uz bytes), "
+                          "skipping \"%V\"", wctx->key_len, path);
             return NGX_OK;
         }
 
@@ -998,7 +1002,7 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
     if (remove_file) {
         if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
             ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
-                          ngx_delete_file_n " \"%s\" failed", path->data);
+                          "ngx_cache_purge: could not delete \"%V\"", path);
         } else {
             wctx->files_deleted++;
         }
@@ -1073,7 +1077,7 @@ ngx_http_purge_file_cache_delete_exact_file(ngx_tree_ctx_t *ctx,
         /* Silently ignore ENOENT: primary file was already deleted */
         if (ngx_errno != NGX_ENOENT) {
             ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
-                          ngx_delete_file_n " \"%s\" failed", path->data);
+                          "ngx_cache_purge: could not delete \"%V\"", path);
         }
     } else {
         wctx->files_deleted++;
@@ -1118,7 +1122,7 @@ ngx_http_cache_purge_delete_variants(ngx_http_request_t *r,
 
     if (ctx.files_deleted > 0) {
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
-                       "cache purge: vary-aware walk deleted %ui variant(s) "
+                       "ngx_cache_purge: vary-aware walk deleted %ui variant(s) "
                        "for key \"%V\"", ctx.files_deleted, &key[0]);
     }
 }
@@ -1142,7 +1146,7 @@ ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path)
 
     if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
-                      ngx_delete_file_n " \"%s\" failed", path->data);
+                      "ngx_cache_purge: could not delete \"%V\"", path);
     }
 
     return NGX_OK;
@@ -1697,7 +1701,8 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r)
 
             if (cache == NULL) {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "cache \"%V\" not found", &cv_val);
+                              "ngx_cache_purge: cache zone \"%V\" not found",
+                              &cv_val);
                 return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
 #  else
@@ -2555,7 +2560,7 @@ ngx_http_cache_purge_cache_get(ngx_http_request_t *r, ngx_http_upstream_t *u,
     }
 
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "cache \"%V\" not found", &val);
+                  "ngx_cache_purge: cache zone \"%V\" not found", &val);
 
     return NGX_ERROR;
 }
@@ -2725,7 +2730,7 @@ ngx_http_file_cache_purge(ngx_http_request_t *r)
 
     if (ngx_delete_file(c->file.name.data) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
-                      ngx_delete_file_n " \"%s\" failed", c->file.name.data);
+                      "ngx_cache_purge: could not delete \"%V\"", &c->file.name);
     }
 
     return NGX_OK;
