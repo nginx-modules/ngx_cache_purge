@@ -523,6 +523,9 @@ ngx_http_cache_purge_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     queue = ngx_slab_calloc(shpool, sizeof(ngx_http_cache_purge_queue_t));
     if (queue == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, 0,
+                      "ngx_cache_purge: could not allocate queue "
+                      "in shared memory zone \"%V\"", &shm_zone->shm.name);
         return NGX_ERROR;
     }
 
@@ -666,6 +669,9 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
                                             &cache->path->name, key) != NULL)
     {
         ngx_shmtx_unlock(&queue->mutex);
+        ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "ngx_cache_purge: duplicate enqueue for \"%V\" "
+                       "key \"%V\", skipping", &cache->path->name, key);
         return NGX_OK;
     }
 
@@ -673,6 +679,9 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
                            sizeof(ngx_http_cache_purge_queue_item_t));
     if (item == NULL) {
         ngx_shmtx_unlock(&queue->mutex);
+        ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
+                      "ngx_cache_purge: shared memory exhausted, "
+                      "could not allocate queue item");
         return NGX_ERROR;
     }
 
@@ -681,6 +690,9 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
     if (p == NULL) {
         ngx_slab_free(queue->shpool, item);
         ngx_shmtx_unlock(&queue->mutex);
+        ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
+                      "ngx_cache_purge: shared memory exhausted, "
+                      "could not allocate cache path buffer");
         return NGX_ERROR;
     }
     ngx_memcpy(p, cache->path->name.data, cache->path->name.len);
@@ -695,6 +707,9 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
             ngx_slab_free(queue->shpool, item->cache_path.data);
             ngx_slab_free(queue->shpool, item);
             ngx_shmtx_unlock(&queue->mutex);
+            ngx_log_error(NGX_LOG_CRIT, r->connection->log, 0,
+                          "ngx_cache_purge: shared memory exhausted, "
+                          "could not allocate key buffer");
             return NGX_ERROR;
         }
         ngx_memcpy(p, key->data, key->len);
@@ -717,6 +732,11 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
     queue->size++;
 
     ngx_shmtx_unlock(&queue->mutex);
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "ngx_cache_purge: enqueued purge of \"%V\" key \"%V\" "
+                   "(%ui item(s) in queue)",
+                   &cache->path->name, key, queue->size);
 
     return NGX_OK;
 }
@@ -819,6 +839,11 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
         tree.file_handler = ngx_http_purge_file_cache_delete_partial_file;
         ngx_walk_tree(&tree, &item->cache_path);
     }
+
+    ngx_log_debug3(NGX_LOG_DEBUG_HTTP, cycle->log, 0,
+                   "ngx_cache_purge: background walk of \"%V\" key \"%V\" "
+                   "deleted %ui file(s)",
+                   &item->cache_path, &item->key_partial, ctx.files_deleted);
 
     ngx_slab_free(queue->shpool, item->cache_path.data);
     if (item->key_partial.data) {
@@ -2348,6 +2373,9 @@ ngx_http_cache_purge_access_handler(ngx_http_request_t *r)
                                        cplcf->conf->access6,
                                        r->connection->sockaddr) != NGX_OK)
     {
+        ngx_log_error(NGX_LOG_WARN, r->connection->log, 0,
+                      "ngx_cache_purge: access denied for %V",
+                      &r->connection->addr_text);
         return NGX_HTTP_FORBIDDEN;
     }
 
@@ -2658,6 +2686,9 @@ ngx_http_cache_purge_handler(ngx_http_request_t *r)
         return;
 
     case NGX_DECLINED:
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "ngx_cache_purge: key \"%V\" not found in cache",
+                       (ngx_str_t *) r->cache->keys.elts);
         ngx_http_finalize_request(r, not_found_code);
         return;
 
@@ -2731,6 +2762,9 @@ ngx_http_file_cache_purge(ngx_http_request_t *r)
     if (ngx_delete_file(c->file.name.data) == NGX_FILE_ERROR) {
         ngx_log_error(NGX_LOG_CRIT, r->connection->log, ngx_errno,
                       "ngx_cache_purge: could not delete \"%V\"", &c->file.name);
+    } else {
+        ngx_log_debug1(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                       "ngx_cache_purge: deleted \"%V\"", &c->file.name);
     }
 
     return NGX_OK;
@@ -2756,6 +2790,10 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     tree.log               = ngx_cycle->log;
 
     ngx_walk_tree(&tree, &cache->path->name);
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "ngx_cache_purge: purge_all deleted %ui file(s) "
+                   "from zone \"%V\"", ctx.files_deleted, &cache->path->name);
 }
 
 ngx_uint_t
@@ -2788,6 +2826,10 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     tree.log               = ngx_cycle->log;
 
     ngx_walk_tree(&tree, &cache->path->name);
+
+    ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
+                   "ngx_cache_purge: partial walk deleted %ui file(s) "
+                   "for key prefix \"%V\"", ctx.files_deleted, &key[0]);
 
     return ctx.files_deleted;
 }
