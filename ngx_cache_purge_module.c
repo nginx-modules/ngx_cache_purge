@@ -83,8 +83,8 @@ static size_t ngx_http_cache_purge_content_type_text_size =
 static const char ngx_http_cache_purge_body_templ_json[] =
     "{\"Key\": \"%s\", \"Status\": \"%s\"}";
 static const char ngx_http_cache_purge_body_templ_html[] =
-    "<html><head><title>Cache Purge</title></head>"
-    "<body bgcolor=\"white\"><center><h1>Cache Purge</h1>"
+    "<html><head><title>Successful purge</title></head>"
+    "<body bgcolor=\"white\"><center><h1>Successful purge</h1>"
     "<p>Key: %s</p><p>Status: %s</p></center></body></html>";
 static const char ngx_http_cache_purge_body_templ_xml[] =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
@@ -2088,6 +2088,19 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r) {
         }
 
         plcf = ngx_http_get_module_loc_conf(r, ngx_http_proxy_module);
+
+        /*
+         * Runtime refresh on a purge entry still needs a real proxy_cache
+         * definition in the current location so cache_zone/cache_key can be
+         * evaluated safely.  A plain /purge endpoint with only proxy_pass and
+         * proxy_cache_purge cannot be auto-upgraded into refresh.
+         */
+        if (refresh && !plcf->upstream.cache) {
+            ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                          "runtime refresh rejected: current location has no proxy_cache configuration");
+            return NGX_HTTP_BAD_REQUEST;
+        }
+
         r->upstream->conf = &plcf->upstream;
 
 #  if (nginx_version >= 1007009)
@@ -2120,7 +2133,7 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r) {
         return ngx_http_cache_purge_send_capability_error(r, refresh);
     }
 
-    if (cplcf->conf->refresh) {
+    if (refresh) {
         return ngx_http_cache_purge_refresh(r, cache);
     }
 
