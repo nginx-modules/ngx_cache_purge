@@ -4223,8 +4223,6 @@ ngx_http_cache_refresh_conf(ngx_conf_t *cf, ngx_http_cache_purge_conf_t *cpcf) {
     return NGX_CONF_OK;
 }
 
-void
-
 /* -- location configuration --------------------------------------------- */
 
 static void
@@ -4292,6 +4290,9 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_loc_conf_t *prev = parent;
     ngx_http_cache_purge_loc_conf_t *conf = child;
     ngx_http_core_loc_conf_t        *clcf;
+# if (NGX_HTTP_PROXY)
+    ngx_http_proxy_loc_conf_t       *plcf;
+# endif
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
@@ -4342,7 +4343,6 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->original_handler = clcf->handler;  /* may be NULL */
         clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
-    }
     }
 # endif
 
