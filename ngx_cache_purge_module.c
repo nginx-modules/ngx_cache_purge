@@ -216,6 +216,11 @@ static ngx_uint_t ngx_http_cache_purge_hash_key(ngx_str_t *cache_path,
 static ngx_http_cache_purge_queue_item_t *ngx_http_cache_purge_find_duplicate(
     ngx_http_cache_purge_queue_t *queue, ngx_uint_t hash,
     ngx_str_t *cache_path, ngx_str_t *key);
+static ngx_int_t ngx_http_cache_purge_add_variables(ngx_conf_t *cf);
+static ngx_int_t ngx_http_cache_purge_queue_size_variable(
+    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
+static ngx_int_t ngx_http_cache_purge_queue_max_size_variable(
+    ngx_http_request_t *r, ngx_http_variable_value_t *v, uintptr_t data);
 
 # if (NGX_HTTP_FASTCGI)
 char      *ngx_http_fastcgi_cache_purge_conf(ngx_conf_t *cf,
@@ -301,6 +306,21 @@ char      *ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf,
                void *parent, void *child);
 
 
+/* -- variable table ----------------------------------------------------- */
+
+static ngx_http_variable_t  ngx_http_cache_purge_vars[] = {
+
+    { ngx_string("cache_purge_queue_size"), NULL,
+      ngx_http_cache_purge_queue_size_variable, 0,
+      NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
+    { ngx_string("cache_purge_queue_max_size"), NULL,
+      ngx_http_cache_purge_queue_max_size_variable, 0,
+      NGX_HTTP_VAR_NOCACHEABLE, 0 },
+
+    { ngx_null_string, NULL, NULL, 0, 0, 0 }
+};
+
 /* -- module commands ---------------------------------------------------- */
 
 static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
@@ -382,7 +402,7 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
 
 static ngx_http_module_t  ngx_http_cache_purge_module_ctx = {
     NULL,                                   /* preconfiguration  */
-    NULL,                                   /* postconfiguration */
+    ngx_http_cache_purge_add_variables,     /* postconfiguration */
     ngx_http_cache_purge_create_main_conf,  /* create main conf  */
     ngx_http_cache_purge_init_main_conf,    /* init main conf    */
     NULL,                                   /* create srv conf   */
@@ -409,6 +429,97 @@ ngx_module_t  ngx_http_cache_purge_module = {
 /* Per-worker globals — safe because nginx forks one process per worker */
 static ngx_event_t                        ngx_cache_purge_event;
 static ngx_http_cache_purge_main_conf_t  *ngx_cache_purge_main_conf;
+
+
+/* -- variables ---------------------------------------------------------- */
+
+static ngx_int_t
+ngx_http_cache_purge_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t *var, *v;
+
+    for (v = ngx_http_cache_purge_vars; v->name.len; v++) {
+        var = ngx_http_add_variable(cf, &v->name, v->flags);
+        if (var == NULL) {
+            return NGX_ERROR;
+        }
+        var->get_handler = v->get_handler;
+        var->data        = v->data;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_queue_size_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_cache_purge_main_conf_t *cmcf;
+    ngx_uint_t                        size;
+    u_char                           *p;
+    u_char                            buf[NGX_ATOMIC_T_LEN];
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+
+    if (!cmcf->background_purge || cmcf->queue == NULL) {
+        v->data = (u_char *) "-";
+        v->len = 1;
+        v->valid = 1;
+        v->not_found = 0;
+        return NGX_OK;
+    }
+
+    size = (ngx_uint_t) ngx_atomic_fetch_add(&cmcf->queue->size, 0);
+
+    p = ngx_sprintf(buf, "%ui", size);
+
+    v->data = ngx_pnalloc(r->pool, p - buf);
+    if (v->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(v->data, buf, p - buf);
+    v->len = p - buf;
+    v->valid = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_queue_max_size_variable(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_http_cache_purge_main_conf_t *cmcf;
+    u_char                           *p;
+    u_char                            buf[NGX_INT_T_LEN];
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+
+    if (!cmcf->background_purge || cmcf->queue == NULL) {
+        v->data = (u_char *) "-";
+        v->len = 1;
+        v->valid = 1;
+        v->not_found = 0;
+        return NGX_OK;
+    }
+
+    p = ngx_sprintf(buf, "%ui", cmcf->queue->max_size);
+
+    v->data = ngx_pnalloc(r->pool, p - buf);
+    if (v->data == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(v->data, buf, p - buf);
+    v->len = p - buf;
+    v->valid = 1;
+    v->not_found = 0;
+
+    return NGX_OK;
+}
 
 
 /* -- main configuration ------------------------------------------------- */
