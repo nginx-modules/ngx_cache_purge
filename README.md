@@ -12,6 +12,7 @@ matches the purge request.
 - [Compatibility](#compatibility)
 - [Installation](#installation)
 - [Directives](#directives)
+- [Variables](#variables)
 - [Partial key purge](#partial-key-purge)
 - [Sample configurations](#sample-configurations)
 - [Performance tuning](#performance-tuning)
@@ -247,6 +248,39 @@ variant regardless.
 
 ---
 
+## Variables
+
+These read-only variables are always available when the module is loaded.
+They return `"-"` when `cache_purge_background_queue` is `off`.
+
+### `$cache_purge_queue_size`
+
+Current number of entries waiting in the background purge queue. Updated
+atomically — safe to read from any worker process. Useful for capacity
+monitoring and alerting.
+
+### `$cache_purge_queue_max_size`
+
+The configured maximum queue depth (`cache_purge_queue_size`). Constant for
+the lifetime of the nginx process. Useful alongside `$cache_purge_queue_size`
+to compute queue utilisation.
+
+**Example — log queue depth on every request:**
+
+```nginx
+log_format purge_mon '$remote_addr [$time_local] '
+                     'queue=$cache_purge_queue_size/$cache_purge_queue_max_size';
+access_log /var/log/nginx/purge.log purge_mon;
+```
+
+**Example — expose as a response header:**
+
+```nginx
+add_header X-Purge-Queue-Depth $cache_purge_queue_size;
+```
+
+---
+
 ## Partial key purge
 
 When the exact cache key is not known — for example because it includes cookie
@@ -420,6 +454,9 @@ keep `batch_size` low and `throttle_ms` high to avoid iowait spikes.
 
 Successful background purges return `202 Accepted`. The response body uses the
 format set by `cache_purge_response_type`.
+
+Use `$cache_purge_queue_size` and `$cache_purge_queue_max_size` to track queue
+depth in logs or response headers — see [Variables](#variables).
 
 Relevant log messages:
 
