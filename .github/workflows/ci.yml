@@ -88,7 +88,7 @@ jobs:
         || true
 
     - name: Upload test results
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7
       if: always()
       with:
         name: test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
