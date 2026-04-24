@@ -16,7 +16,7 @@ our $HttpConfig = qq{
     cache_purge_background_queue on;
     cache_purge_queue_size       100;
     cache_purge_batch_size       5;
-    cache_purge_throttle_ms      10;
+    cache_purge_throttle_ms      10ms;
     upstream backend {
         server 127.0.0.1:$port;
     }
@@ -67,7 +67,7 @@ qr/invalid number/
     cache_purge_background_queue on;
     cache_purge_queue_size  1;
     cache_purge_batch_size  1;
-    cache_purge_throttle_ms 1000;
+    cache_purge_throttle_ms 1000ms;
     proxy_cache_path $TEST_NGINX_SERVROOT/cache levels=1:2
                      keys_zone=qs_zone:1m;
 --- config

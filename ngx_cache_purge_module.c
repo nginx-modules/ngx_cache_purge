@@ -43,7 +43,16 @@
 
 #define NGX_CACHE_PURGE_QUEUE_SIZE_DEFAULT   1024
 #define NGX_CACHE_PURGE_BATCH_SIZE_DEFAULT   10
-#define NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT  10
+/*
+ * This constant is assigned directly to an ngx_msec_t field via
+ * ngx_conf_init_msec_value() — it bypasses ngx_parse_time() and is
+ * therefore in raw milliseconds.  The corresponding directive,
+ * cache_purge_throttle_ms, is parsed by ngx_conf_set_msec_slot which
+ * calls ngx_parse_time(value, 0): bare integers are treated as seconds
+ * per the nginx time-value contract, so operators must write an explicit
+ * suffix ("10ms", "1s", …) to get the intended unit.
+ */
+#define NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT  10  /* milliseconds */
 #define NGX_CACHE_PURGE_KEY_MAX_LEN          512
 #define NGX_CACHE_PURGE_QUEUE_TIMEOUT        60000   /* ms */
 
@@ -356,6 +365,9 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_http_cache_purge_main_conf_t, batch_size), NULL },
 
+    /* Accepts standard nginx time values: 10ms, 100ms, 1s, 500ms, etc.
+     * Bare integers are treated as SECONDS by ngx_parse_time() — always
+     * include an explicit suffix.  Default (unset): 10ms. */
     { ngx_string("cache_purge_throttle_ms"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_msec_slot,
@@ -616,6 +628,8 @@ ngx_http_cache_purge_background_handler(ngx_event_t *ev)
     ngx_msec_t                        next_delay;
 
     if (cmcf == NULL || cmcf->queue == NULL) {
+        /* cmcf not yet initialised; use the raw-ms constant directly
+         * (not through ngx_parse_time, so no ×1000 conversion). */
         ngx_add_timer(ev, NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT);
         return;
     }

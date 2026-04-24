@@ -48,7 +48,7 @@ PURGE /purge/perf*
     cache_purge_background_queue on;
     cache_purge_queue_size  100;
     cache_purge_batch_size  50;
-    cache_purge_throttle_ms 1;
+    cache_purge_throttle_ms 1ms;
 --- config
     location /purge {
         proxy_cache_purge bg_test "$uri";
@@ -96,7 +96,7 @@ PURGE /purge/perf*
 --- http_config
     proxy_cache_path $TEST_NGINX_CACHE_ROOT/throttle keys_zone=throttle_test:10m;
     cache_purge_background_queue on;
-    cache_purge_throttle_ms 100;
+    cache_purge_throttle_ms 100ms;
     cache_purge_batch_size  2;
 --- config
     location /purge {

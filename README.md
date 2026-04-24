@@ -192,8 +192,8 @@ storage. Only meaningful when `cache_purge_background_queue on`.
 ### `cache_purge_throttle_ms`
 
 ```
-Syntax:  cache_purge_throttle_ms <milliseconds>
-Default: 10
+Syntax:  cache_purge_throttle_ms <time>
+Default: 10ms
 Context: http
 ```
 
@@ -201,6 +201,12 @@ Interval between background processing ticks. Also introduces a brief yield
 every 100 files within a single directory walk to limit I/O pressure. Increase
 on constrained or spinning-disk storage; decrease on NVMe. Only meaningful
 when `cache_purge_background_queue on`.
+
+Accepts standard nginx time values with an explicit suffix — `ms` for
+milliseconds, `s` for seconds (e.g. `10ms`, `500ms`, `1s`). A bare integer
+without a suffix is treated as **seconds** by the nginx configuration parser,
+which is almost certainly not what you want for this directive. Always include
+the `ms` suffix when specifying millisecond values.
 
 
 ### `cache_purge_legacy_status`
@@ -321,7 +327,7 @@ http {
     cache_purge_background_queue on;
     cache_purge_queue_size        2048;
     cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10;
+    cache_purge_throttle_ms       10ms;
 
     server {
         location / {
@@ -403,14 +409,15 @@ request rate. The table below gives reasonable starting points.
 
 | Environment | `queue_size` | `batch_size` | `throttle_ms` |
 |---|---|---|---|
-| Small VPS — 1–2 cores, ≤ 2 GB RAM | 512 | 5 | 25 |
-| Mid-range VDS — 4–8 cores, SSD | 2048 | 20 | 10 |
-| Dedicated server — 16+ cores, NVMe | 8192 | 50 | 5 |
-| High purge rate, any hardware | 8192 | 5 | 50 |
+| Small VPS — 1–2 cores, ≤ 2 GB RAM | 512 | 5 | 25ms |
+| Mid-range VDS — 4–8 cores, SSD | 2048 | 20 | 10ms |
+| Dedicated server — 16+ cores, NVMe | 8192 | 50 | 5ms |
+| High purge rate, any hardware | 8192 | 5 | 50ms |
 
 **Queue memory:** `queue_size × ~1.5 KB`. 2048 slots ≈ 3 MB of shared memory.
 
-**Throughput ceiling:** `batch_size ÷ throttle_ms × 1000` purges/sec. At
+**Throughput ceiling:** `batch_size ÷ throttle_ms_value × 1000` purges/sec, where
+`throttle_ms_value` is the numeric millisecond count (e.g. `10` for `10ms`). At
 defaults: `10 ÷ 10 × 1000 = 1 000/s`. On spinning disk or network storage,
 keep `batch_size` low and `throttle_ms` high to avoid iowait spikes.
 
