@@ -254,6 +254,14 @@ location / {
 - 检查 refresh 子请求实际会经过哪些 proxy location，确保这些 location 都正确配置了 `proxy_cache_bypass` 与 `proxy_no_cache`。
 - 把 `X-Cache-Action` 纳入日志或审计字段，这样能快速确认一次请求最终执行的是 purge 还是 refresh。
 
+## 兼容与测试
+
+- 当前兼容矩阵遵循这条规则：覆盖 latest stable、latest mainline，以及从 `1.20.x` 到当前 stable 之间的所有 legacy stable lines。
+- 当前具体回归版本为：`1.20.2`、`1.22.1`、`1.24.0`、`1.26.3`、`1.28.3`、latest stable、latest mainline。
+- 每次跑矩阵前，都要先检查 nginx 官方下载页；如果 latest stable、latest mainline 或任一 legacy stable line 已更新，就先刷新具体版本号再测试。
+- 在 `t/` 目录下优先使用 Docker 化入口：`make test`、`make test-all`、`make test-version VERSION=<x.y.z>`、`make test-compat`。
+- repo 级集成回归回退命令仍然是仓库根目录下的 `./scripts/run_regression.sh`。
+
 ## 响应与排错提示
 
 - refresh 成功时返回 `200 OK`；refresh 目前只支持 JSON 或 text 两种正文格式：当 `cache_purge_response_type=json` 时返回 JSON，例如 `{"status":"refresh",...,"total_bytes":12345,"kept_bytes":6789,"purged_bytes":5556,"status_counts":{"200":190,"301":1,"304":15375},"status_bytes":{"200":1048576,"301":512,"304":2097152}}`；其余取值都会回退到 text。默认 text 模式下，正文类似 `Refresh: total=<N> kept=<K> purged=<P> errors=<E> total_bytes=<B> kept_bytes=<KB> purged_bytes=<PB> statuses={200:<N>,304:<N>,...} status_bytes={200:<BYTES>,304:<BYTES>,...}`。

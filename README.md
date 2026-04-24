@@ -45,9 +45,12 @@ matches the purge request.
 | nginx  | status     |
 |--------|------------|
 | 1.20.x | ✓ tested   |
+| 1.22.x | ✓ tested   |
+| 1.24.x | ✓ tested   |
 | 1.26.x | ✓ tested   |
 | 1.28.x | ✓ tested   |
-| 1.29.x | ✓ tested   |
+| latest stable | ✓ tested |
+| latest mainline | ✓ tested |
 
 Older releases back to 1.7.9 compile but are not covered by CI.
 
@@ -388,57 +391,68 @@ The module automatically sets `$cache_purge_refresh_bypass` for refresh
 subrequests so validation reaches upstream instead of being satisfied by the
 local cache.
 
-The cache key must end with the URI portion, for example
-`$uri$is_args$args`, so refresh can reconstruct the upstream request target
-from cached keys.
+Refresh only works when the evaluated cache key keeps the request-target tail
+unambiguous. Safe shapes include keys that are already the request path (for
+example `$uri$is_args$args` or `$request_uri`), keys whose tail still clearly
+preserves the URI / request-URI portion (for example `$host$request_uri`,
+`$scheme$host$request_uri`, or `$host$uri$is_args$args`), and exact literal-path
+keys such as `proxy_cache_key /dir01/file1.txt;`.
 
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$scheme$host$request_uri";
-                proxy_cache_bypass $cache_purge_refresh_bypass;
-                proxy_no_cache     $cache_purge_refresh_bypass;
-            }
+Recommended separate-endpoint layout:
 
-            location ~ /purge(/.*) {
-                allow              127.0.0.1;
-                deny               all;
-                proxy_cache_purge  tmpcache $scheme$host$1$is_args$args;
-            }
+```nginx
+http {
+    proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
 
-            location ~ /refresh(/.*) {
-                allow              127.0.0.1;
-                deny               all;
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache_bypass $cache_purge_refresh_bypass;
-                proxy_no_cache     $cache_purge_refresh_bypass;
-                proxy_cache_refresh            tmpcache $scheme$host$1$is_args$args;
-                cache_purge_refresh_timeout     60s;
-                cache_purge_refresh_concurrency 32;
-            }
+    server {
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$scheme$host$request_uri";
+            proxy_cache_bypass $cache_purge_refresh_bypass;
+            proxy_no_cache     $cache_purge_refresh_bypass;
+        }
+
+        location ~ /purge(/.*) {
+            allow              127.0.0.1;
+            deny               all;
+            proxy_cache_purge  tmpcache $scheme$host$1$is_args$args;
+        }
+
+        location ~ /refresh(/.*) {
+            allow                             127.0.0.1;
+            deny                              all;
+            proxy_pass                        http://127.0.0.1:8000;
+            proxy_cache_bypass                $cache_purge_refresh_bypass;
+            proxy_no_cache                    $cache_purge_refresh_bypass;
+            proxy_cache_refresh               tmpcache $scheme$host$1$is_args$args;
+            cache_purge_refresh_timeout       600s;
+            cache_purge_refresh_concurrency   32;
         }
     }
 }
 ```
 
-Gradual migration layout: keep one entry directive and migrate clients by switching
-HTTP method first. Exact and partial requests already route by method.
+Gradual migration layout: keep one entry directive and migrate clients by
+switching HTTP method first. Exact and partial requests already route by
+method.
 
-    http {
-        proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
+```nginx
+http {
+    proxy_cache_path  /tmp/cache  keys_zone=tmpcache:10m;
 
-        server {
-            location / {
-                proxy_pass         http://127.0.0.1:8000;
-                proxy_cache        tmpcache;
-                proxy_cache_key    "$host$request_uri";
-                proxy_cache_bypass $cache_purge_refresh_bypass;
-                proxy_no_cache     $cache_purge_refresh_bypass;
-                proxy_cache_purge  PURGE from 127.0.0.1;
-            }
+    server {
+        location / {
+            proxy_pass         http://127.0.0.1:8000;
+            proxy_cache        tmpcache;
+            proxy_cache_key    "$host$request_uri";
+            proxy_cache_bypass $cache_purge_refresh_bypass;
+            proxy_no_cache     $cache_purge_refresh_bypass;
+            proxy_cache_purge  PURGE from 127.0.0.1;
         }
     }
+}
+```
 
 In that layout:
 
@@ -446,10 +460,10 @@ In that layout:
 - `REFRESH /path/file` performs refresh.
 - Full-zone `REFRESH` still needs a dedicated `proxy_cache_refresh ... refresh_all ...` location.
 
-This migration trick does not remove refresh prerequisites. If a request is routed
-to refresh, the proxy path participating in that refresh flow still needs the
-refresh bypass rules, and the cache key still needs to end with the URI or
-request URI portion.
+This migration trick does not remove refresh prerequisites. If a request is
+routed to refresh, the proxy path participating in that refresh flow still
+needs the refresh bypass rules, and the evaluated cache key still needs to keep
+the request-target tail safely identifiable.
 
 ### Common Misconfigurations
 
@@ -528,6 +542,7 @@ entries in a single request without hitting nginx's 64535 subrequest limit.
 ```bash
 # Refresh a single file
 curl -X REFRESH http://localhost/refresh/path/to/file.txt
+```
 
 Current upstream status policy during refresh is intentionally conservative:
 
@@ -753,7 +768,41 @@ Enable `cache_purge_vary_aware on`.
 
 ## Testing
 
-The test suite uses [Test::Nginx](https://github.com/openresty/test-nginx).
+The project keeps two complementary testing entry points:
+
+- `t/Makefile` for Docker-based Test::Nginx runs
+- `scripts/run_regression.sh` from the repo root for the broader regression backstop
+
+Current compatibility matrix policy is:
+
+- latest stable
+- latest mainline
+- every legacy stable line from `1.20.x` up to the current stable line
+
+Current concrete regression versions are:
+
+- `1.20.2`
+- `1.22.1`
+- `1.24.0`
+- `1.26.3`
+- `1.28.3`
+- latest stable
+- latest mainline
+
+Before running the matrix, re-check the nginx download page and refresh the
+concrete latest stable / latest mainline / legacy stable versions if upstream
+has moved.
+
+Docker-based test targets from `t/`:
+
+```bash
+make test
+make test-all
+make test-version VERSION=1.28.3
+make test-compat
+```
+
+Legacy direct `prove` usage is still available when dependencies are installed:
 
 ```bash
 prove -r t/
