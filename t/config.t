@@ -14,7 +14,7 @@ __DATA__
     cache_purge_background_queue on;
     cache_purge_queue_size  2048;
     cache_purge_batch_size  20;
-    cache_purge_throttle_ms 25;
+    cache_purge_throttle_ms 25ms;
 --- config
     location /health {
         return 200 "ok";
