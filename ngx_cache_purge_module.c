@@ -83,8 +83,8 @@ static size_t ngx_http_cache_purge_content_type_text_size =
 static const char ngx_http_cache_purge_body_templ_json[] =
     "{\"Key\": \"%s\", \"Status\": \"%s\"}";
 static const char ngx_http_cache_purge_body_templ_html[] =
-    "<html><head><title>Successful purge</title></head>"
-    "<body bgcolor=\"white\"><center><h1>Successful purge</h1>"
+    "<html><head><title>Cache purge</title></head>"
+    "<body bgcolor=\"white\"><center><h1>Cache purge</h1>"
     "<p>Key: %s</p><p>Status: %s</p></center></body></html>";
 static const char ngx_http_cache_purge_body_templ_xml[] =
     "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"

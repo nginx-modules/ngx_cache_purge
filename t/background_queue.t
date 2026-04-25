@@ -98,6 +98,25 @@ PURGE /cache/anything
 --- error_code: 202
 --- response_body_like: queued
 
+=== TEST 4a: queued HTML response uses neutral heading
+--- http_config eval: $::HttpConfig
+--- config
+    cache_purge_response_type html;
+    location /cache {
+        proxy_pass http://backend/origin;
+        proxy_cache cache_zone;
+        proxy_cache_key "$uri$is_args$args";
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request
+PURGE /cache/queued-html*
+--- error_code: 202
+--- response_body_like eval
+qr{<title>Cache purge</title>.*<h1>Cache purge</h1>.*Status: queued}si
+
 === TEST 5: background queue off — sync purge returns 412 on miss
 --- http_config
     proxy_cache_path $TEST_NGINX_SERVROOT/cache levels=1:2
