@@ -141,7 +141,7 @@ Equivalent to `proxy_cache_purge` but for uWSGI cache zones configured with
 ```
 Syntax:  cache_purge_response_type html | json | xml | text
 Default: html
-Context: server, location
+Context: http, server, location
 ```
 
 Sets the `Content-Type` and body format of purge responses. Has no effect on
@@ -200,16 +200,16 @@ Default: 10ms
 Context: http
 ```
 
-Interval between background processing ticks. Also introduces a brief yield
-every 100 files within a single directory walk to limit I/O pressure. Increase
-on constrained or spinning-disk storage; decrease on NVMe. Only meaningful
-when `cache_purge_background_queue on`.
+Interval between background processing ticks. Accepts any nginx time value:
+`10ms`, `500ms`, `1s`, `2s 500ms`. Only meaningful when
+`cache_purge_background_queue on`.
 
-Accepts standard nginx time values with an explicit suffix — `ms` for
-milliseconds, `s` for seconds (e.g. `10ms`, `500ms`, `1s`). A bare integer
-without a suffix is treated as **seconds** by the nginx configuration parser,
-which is almost certainly not what you want for this directive. Always include
-the `ms` suffix when specifying millisecond values.
+Increase on constrained or spinning-disk storage; decrease on NVMe.
+
+**Time-unit note:** a bare integer with no suffix (e.g. `10`) is interpreted
+as milliseconds — matching the `_ms` directive name — and a startup warning is
+logged. Use an explicit `ms` suffix (`10ms`) to silence the warning. This
+differs from most nginx time directives, where a bare integer means seconds.
 
 
 ### `cache_purge_legacy_status`

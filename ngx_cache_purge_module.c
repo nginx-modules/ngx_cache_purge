@@ -36,10 +36,10 @@
 # error This module cannot be built against an unknown nginx version.
 #endif
 
-#define NGX_REPONSE_TYPE_HTML  1
-#define NGX_REPONSE_TYPE_XML   2
-#define NGX_REPONSE_TYPE_JSON  3
-#define NGX_REPONSE_TYPE_TEXT  4
+#define NGX_CACHE_PURGE_RESPONSE_TYPE_HTML  1
+#define NGX_CACHE_PURGE_RESPONSE_TYPE_XML   2
+#define NGX_CACHE_PURGE_RESPONSE_TYPE_JSON  3
+#define NGX_CACHE_PURGE_RESPONSE_TYPE_TEXT  4
 
 #define NGX_CACHE_PURGE_QUEUE_SIZE_DEFAULT   1024
 #define NGX_CACHE_PURGE_BATCH_SIZE_DEFAULT   10
@@ -187,7 +187,7 @@ typedef struct {
     ngx_http_cache_purge_conf_t *conf;
     ngx_http_handler_pt          handler;
     ngx_http_handler_pt          original_handler;
-    ngx_uint_t                   resptype;
+    ngx_uint_t                   response_type;
 
 # if (NGX_HTTP_PROXY)
     /*
@@ -267,7 +267,6 @@ char *ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 char *ngx_http_cache_refresh_conf(ngx_conf_t *cf,
     ngx_http_cache_purge_conf_t *cpcf);
-
 static ngx_int_t ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
 static ngx_int_t ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx,
@@ -589,9 +588,12 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_http_cache_purge_main_conf_t, batch_size), NULL },
 
-    /* Accepts standard nginx time values: 10ms, 100ms, 1s, 500ms, etc.
-     * Bare integers are treated as SECONDS by ngx_parse_time() — always
-     * include an explicit suffix.  Default (unset): 10ms. */
+    /* Accepts standard nginx time values.  A bare integer means seconds per
+     * the nginx time-value contract; use an explicit suffix for milliseconds:
+     *   cache_purge_throttle_ms 10ms;   -- 10 ms  (correct)
+     *   cache_purge_throttle_ms 10;     -- 10 s   (almost certainly wrong)
+     * Default when directive is absent: 10 ms (set via ngx_conf_init_msec_value,
+     * which bypasses the parser and assigns the raw integer directly). */
     { ngx_string("cache_purge_throttle_ms"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
       ngx_conf_set_msec_slot,
@@ -2708,9 +2710,7 @@ ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     ngx_http_cache_purge_loc_conf_t *cplcf = conf;
     ngx_str_t                       *value;
 
-    if (cplcf->resptype != NGX_CONF_UNSET_UINT
-        && cf->cmd_type == NGX_HTTP_LOC_CONF)
-    {
+    if (cplcf->response_type != NGX_CONF_UNSET_UINT) {
         return "is duplicate";
     }
 
@@ -2718,20 +2718,16 @@ ngx_http_cache_purge_response_type_conf(ngx_conf_t *cf, ngx_command_t *cmd,
         return "requires exactly one argument: html|json|xml|text";
     }
 
-    if (cf->cmd_type == NGX_HTTP_MODULE) {
-        return "(separate server or location syntax) is not allowed here";
-    }
-
     value = cf->args->elts;
 
     if (ngx_strcmp(value[1].data, "html") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_HTML;
+        cplcf->response_type = NGX_CACHE_PURGE_RESPONSE_TYPE_HTML;
     } else if (ngx_strcmp(value[1].data, "json") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_JSON;
+        cplcf->response_type = NGX_CACHE_PURGE_RESPONSE_TYPE_JSON;
     } else if (ngx_strcmp(value[1].data, "xml") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_XML;
+        cplcf->response_type = NGX_CACHE_PURGE_RESPONSE_TYPE_XML;
     } else if (ngx_strcmp(value[1].data, "text") == 0) {
-        cplcf->resptype = NGX_REPONSE_TYPE_TEXT;
+        cplcf->response_type = NGX_CACHE_PURGE_RESPONSE_TYPE_TEXT;
     } else {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
             "invalid parameter \"%V\", expected html|json|xml|text",
@@ -3610,27 +3606,27 @@ ngx_http_cache_purge_send_response(ngx_http_request_t *r, ngx_str_t *status)
     ngx_memcpy(buf_keydata, key[0].data, key[0].len);
     /* buf_keydata[key[0].len] is already '\0' from ngx_pcalloc */
 
-    switch (cplcf->resptype) {
-    case NGX_REPONSE_TYPE_JSON:
+    switch (cplcf->response_type) {
+    case NGX_CACHE_PURGE_RESPONSE_TYPE_JSON:
         resp_ct        = ngx_http_cache_purge_content_type_json;
         resp_ct_size   = ngx_http_cache_purge_content_type_json_size;
         resp_body      = ngx_http_cache_purge_body_templ_json;
         resp_body_size = ngx_http_cache_purge_body_templ_json_size;
         break;
-    case NGX_REPONSE_TYPE_XML:
+    case NGX_CACHE_PURGE_RESPONSE_TYPE_XML:
         resp_ct        = ngx_http_cache_purge_content_type_xml;
         resp_ct_size   = ngx_http_cache_purge_content_type_xml_size;
         resp_body      = ngx_http_cache_purge_body_templ_xml;
         resp_body_size = ngx_http_cache_purge_body_templ_xml_size;
         break;
-    case NGX_REPONSE_TYPE_TEXT:
+    case NGX_CACHE_PURGE_RESPONSE_TYPE_TEXT:
         resp_ct        = ngx_http_cache_purge_content_type_text;
         resp_ct_size   = ngx_http_cache_purge_content_type_text_size;
         resp_body      = ngx_http_cache_purge_body_templ_text;
         resp_body_size = ngx_http_cache_purge_body_templ_text_size;
         break;
     default:
-    case NGX_REPONSE_TYPE_HTML:
+    case NGX_CACHE_PURGE_RESPONSE_TYPE_HTML:
         resp_ct        = ngx_http_cache_purge_content_type_html;
         resp_ct_size   = ngx_http_cache_purge_content_type_html_size;
         resp_body      = ngx_http_cache_purge_body_templ_html;
@@ -4302,11 +4298,10 @@ ngx_http_cache_purge_create_loc_conf(ngx_conf_t *cf)
     conf->uwsgi.enable   = NGX_CONF_UNSET;
 # endif
 
-    conf->resptype = NGX_CONF_UNSET_UINT;
+    conf->response_type = NGX_CONF_UNSET_UINT;
     conf->refresh_concurrency = NGX_CONF_UNSET_UINT;
     conf->refresh_timeout = NGX_CONF_UNSET_MSEC;
-
-    conf->conf = NGX_CONF_UNSET_PTR;
+    conf->conf     = NGX_CONF_UNSET_PTR;
 
     return conf;
 }
@@ -4323,8 +4318,8 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
-    ngx_conf_merge_uint_value(conf->resptype, prev->resptype,
-                              NGX_REPONSE_TYPE_HTML);
+    ngx_conf_merge_uint_value(conf->response_type, prev->response_type,
+                              NGX_CACHE_PURGE_RESPONSE_TYPE_HTML);
 
     ngx_conf_merge_uint_value(conf->refresh_concurrency,
                               prev->refresh_concurrency, 32);
@@ -5442,7 +5437,7 @@ ngx_http_cache_purge_refresh_send_response(ngx_http_request_t *r)
     cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
 
     /* Calculate response body size */
-    if (cplcf->resptype == NGX_REPONSE_TYPE_JSON) {
+    if (cplcf->response_type == NGX_CACHE_PURGE_RESPONSE_TYPE_JSON) {
         /* JSON: {"status":"refresh",...,"status_counts":{...},"status_bytes":{...}} */
         len = sizeof("{\"status\":\"refresh\",\"total\":,\"kept\":,\"purged\":,\"errors\":,\"total_bytes\":,\"kept_bytes\":,\"purged_bytes\":}")
               + 4 * NGX_INT_T_LEN + 3 * NGX_OFF_T_LEN
@@ -5467,7 +5462,7 @@ ngx_http_cache_purge_refresh_send_response(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (cplcf->resptype == NGX_REPONSE_TYPE_JSON) {
+    if (cplcf->response_type == NGX_CACHE_PURGE_RESPONSE_TYPE_JSON) {
         p = ngx_sprintf(b->pos,
             "{\"status\":\"refresh\",\"total\":%ui,\"kept\":%ui,"
             "\"purged\":%ui,\"errors\":%ui,"
