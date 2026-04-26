@@ -2,7 +2,7 @@
 # Build context for Docker is always the repo root (one level up).
 .PHONY: help build test test-all test-compat test-version clean shell
 
-NGINX_VERSION ?= 1.28.2
+NGINX_VERSION ?= 1.29.8
 COMPOSE       := docker-compose -f docker-compose.test.yml
 IMAGE         := ngx-cache-purge-test:$(NGINX_VERSION)
 
@@ -25,12 +25,13 @@ help:
 	@echo ""
 	@echo "$(YELLOW)Variables:$(NC)"
 	@echo "  NGINX_VERSION  nginx version to build/test  (default: $(NGINX_VERSION))"
+	@echo "                 Re-check nginx.org before matrix runs to refresh latest stable/mainline/legacy versions"
 	@echo ""
 	@echo "$(YELLOW)Examples:$(NC)"
 	@echo "  make build"
 	@echo "  make test"
 	@echo "  make test-all"
-	@echo "  NGINX_VERSION=1.29.6 make build test-all"
+	@echo "  NGINX_VERSION=1.29.8 make build test-all"
 	@echo "  make test-compat"
 	@echo "  make test-version VERSION=1.26.3"
 
@@ -58,7 +59,8 @@ test-all: build
 
 test-compat:
 	@echo "$(GREEN)Compatibility test across supported nginx versions...$(NC)"
-	@for v in 1.20.2 1.26.3 1.28.2 1.29.6; do \
+	@echo "$(YELLOW)Check https://nginx.org/en/download.html before running to confirm latest stable/mainline/legacy versions.$(NC)"
+	@for v in 1.20.2 1.22.1 1.24.0 1.26.3 1.28.3 1.30.0 1.29.8; do \
 	    echo "$(YELLOW)--- nginx $$v ---$(NC)"; \
 	    $(MAKE) --no-print-directory NGINX_VERSION=$$v build test-all || exit 1; \
 	done
