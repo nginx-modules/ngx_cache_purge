@@ -69,13 +69,6 @@
  * this constant and its comment need updating.
  */
 #define NGX_CACHE_PURGE_KEY_HDR_OFFSET       6
-/*
- * Hard ceiling on cache_purge_queue_size.  Prevents integer overflow in the
- * shm_size arithmetic on 32-bit nginx builds.  At this limit the payload is
- * approximately 65535 * (sizeof(queue_item_t) + 2 * KEY_MAX_LEN) which is
- * roughly 71 MB — generous but bounded.
- */
-#define NGX_CACHE_PURGE_QUEUE_SIZE_MAX       65535
 
 /*
  * Minimum shared-memory size for the background queue, expressed in pages.
