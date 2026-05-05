@@ -303,3 +303,30 @@ PURGE /cache/anything
 ["ok", qr/purged/i]
 --- error_code eval
 [200, 200]
+
+=== TEST 15: vary_aware purge succeeds after real cache warm
+# cache_purge_vary_aware is a main-context directive (NGX_HTTP_MAIN_CONF).
+# It makes the module walk the cache shard directory after deleting the
+# primary entry, removing any variant files sharing the same KEY: line.
+#
+# Sequence: GET warms the cache (rbtree node created), first PURGE finds
+# the node, deletes the primary file, and walks for variants (200), second
+# PURGE confirms the entry is gone (412).
+--- http_config eval: $::HttpConfig . "    cache_purge_vary_aware on;\n"
+--- config
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request eval
+["GET /cache/vary-doc", "PURGE /cache/vary-doc", "PURGE /cache/vary-doc"]
+--- error_code eval
+[200, 200, 412]
+--- no_error_log
+[error]
