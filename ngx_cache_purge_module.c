@@ -3353,10 +3353,14 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
 
     if (conf->fastcgi.enable) {
-        conf->conf             = &conf->fastcgi;
-        conf->handler          = ngx_http_fastcgi_cache_purge_handler;
-        conf->original_handler = clcf->handler;  /* may be NULL */
-        clcf->handler          = ngx_http_cache_purge_access_handler;
+        conf->conf    = &conf->fastcgi;
+        conf->handler = ngx_http_fastcgi_cache_purge_handler;
+        if (clcf->handler != ngx_http_cache_purge_access_handler) {
+            conf->original_handler = clcf->handler;
+            clcf->handler          = ngx_http_cache_purge_access_handler;
+        } else {
+            conf->original_handler = prev->original_handler;
+        }
         return NGX_CONF_OK;
     }
 # endif
@@ -3365,16 +3369,14 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
 
     if (conf->proxy.enable) {
-        /*
-         * Install the purge access-handler even when clcf->handler is
-         * NULL (i.e. when proxy_cache is configured without proxy_pass).
-         * original_handler may legitimately be NULL here; the access
-         * handler guards against dereferencing it below.
-         */
-        conf->conf             = &conf->proxy;
-        conf->handler          = ngx_http_proxy_cache_purge_handler;
-        conf->original_handler = clcf->handler;  /* may be NULL */
-        clcf->handler          = ngx_http_cache_purge_access_handler;
+        conf->conf    = &conf->proxy;
+        conf->handler = ngx_http_proxy_cache_purge_handler;
+        if (clcf->handler != ngx_http_cache_purge_access_handler) {
+            conf->original_handler = clcf->handler;
+            clcf->handler          = ngx_http_cache_purge_access_handler;
+        } else {
+            conf->original_handler = prev->original_handler;
+        }
         return NGX_CONF_OK;
     }
 # endif
@@ -3383,10 +3385,14 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->scgi, &prev->scgi);
 
     if (conf->scgi.enable) {
-        conf->conf             = &conf->scgi;
-        conf->handler          = ngx_http_scgi_cache_purge_handler;
-        conf->original_handler = clcf->handler;  /* may be NULL */
-        clcf->handler          = ngx_http_cache_purge_access_handler;
+        conf->conf    = &conf->scgi;
+        conf->handler = ngx_http_scgi_cache_purge_handler;
+        if (clcf->handler != ngx_http_cache_purge_access_handler) {
+            conf->original_handler = clcf->handler;
+            clcf->handler          = ngx_http_cache_purge_access_handler;
+        } else {
+            conf->original_handler = prev->original_handler;
+        }
         return NGX_CONF_OK;
     }
 # endif
@@ -3395,10 +3401,14 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->uwsgi, &prev->uwsgi);
 
     if (conf->uwsgi.enable) {
-        conf->conf             = &conf->uwsgi;
-        conf->handler          = ngx_http_uwsgi_cache_purge_handler;
-        conf->original_handler = clcf->handler;  /* may be NULL */
-        clcf->handler          = ngx_http_cache_purge_access_handler;
+        conf->conf    = &conf->uwsgi;
+        conf->handler = ngx_http_uwsgi_cache_purge_handler;
+        if (clcf->handler != ngx_http_cache_purge_access_handler) {
+            conf->original_handler = clcf->handler;
+            clcf->handler          = ngx_http_cache_purge_access_handler;
+        } else {
+            conf->original_handler = prev->original_handler;
+        }
         return NGX_CONF_OK;
     }
 # endif
