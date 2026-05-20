@@ -646,6 +646,18 @@ make nginx-build
 make nginx-version
 ```
 
+### GitHub Codespaces
+
+The repository also includes a `.devcontainer/devcontainer.json` that builds a GitHub Codespaces devcontainer from the repository `Dockerfile`.
+
+After the Codespace is created, open a terminal in the repository root and run the usual targets directly. The docker-compose workflow described elsewhere in this README is for local development only; Codespaces uses the devcontainer directly, so docker-compose is not applicable there.
+
+```bash
+make nginx-build
+make test
+make bench-quick
+```
+
 ### Common development commands
 
 ```bash
@@ -681,7 +693,7 @@ make shell
 make nginx-build
 make bench-quick
 make bench
-cat /workspace/bench/results/latest/summary.txt
+cat ./bench/results/latest/summary.txt
 ```
 
 Results are written under `bench/results/<timestamp>/` with one JSON file per scenario plus `summary.json`, `summary.txt`, and nginx log artifacts. The `bench/results/latest` symlink points at the most recent run. The runner always creates an aggregated `nginx_error.log` plus per-startup and per-scenario `*_nginx_error.log` files so CI artifact paths stay stable; when nginx emits log output, `bench/bench.pl` also prints that chunk inline and appends it to those files.
@@ -718,7 +730,7 @@ Start it inside the container after building nginx:
 make shell
 make nginx-build
 rm -rf /tmp/ngx_cache_*
-/opt/nginx/sbin/nginx -p /tmp -c /workspace/examples/kitchen-sink.conf
+/opt/nginx/sbin/nginx -p /tmp -c ./examples/kitchen-sink.conf
 ```
 
 Exact-key soft purge flow:

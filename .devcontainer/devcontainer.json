@@ -1,12 +1,17 @@
 {
   "name": "ngx_cache_pilot",
-  "dockerComposeFile": "../docker-compose.yml",
-  "service": "dev",
-  "workspaceFolder": "/workspace",
+  "build": {
+    "context": "..",
+    "dockerfile": "../Dockerfile"
+  },
+  "forwardPorts": [
+    8080
+  ],
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-vscode.cpptools"
+        "ms-vscode.cpptools",
+        "ms-vscode.makefile-tools"
       ]
     }
   }
