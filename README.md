@@ -1,7 +1,6 @@
 # ngx_cache_pilot
 
-[![CI](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml)
-[![Bench](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml)
+[![CI](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/ci.yml) [![Bench](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml/badge.svg)](https://github.com/wpelevator/ngx_cache_pilot/actions/workflows/bench.yml)
 
 `ngx_cache_pilot` is an `nginx` module that adds cache purge support for [`fastcgi_cache`](https://nginx.org/en/docs/http/ngx_http_fastcgi_module.html), [`proxy_cache`](https://nginx.org/en/docs/http/ngx_http_proxy_module.html), [`scgi_cache`](https://nginx.org/en/docs/http/ngx_http_scgi_module.html), and [`uwsgi_cache`](https://nginx.org/en/docs/http/ngx_http_uwsgi_module.html) caches. A purge operation removes or expires cached content that matches the cache key, wildcard key, or configured cache tags for the request.
 
@@ -20,10 +19,13 @@ This is a fork of the [`ngx_cache_purge` module](https://github.com/nginx-module
 - the current index lifecycle does not use an inotify watcher; index freshness is maintained by startup bootstrap plus nginx-native header-filter and log-phase hooks as cache files are written
 - indexed tag purges require the cache zone to be registered with `cache_pilot_index on` and the shared-memory index for that zone to be ready; if deferred bootstrap has not yet been finalized after loader warmup, purge/key-index request paths may trigger that bootstrap check/finalization work
 - `--with-threads` is strongly recommended so wildcard purge scans do not block the nginx event loop
+- nginx must be built with HTTP cache support enabled; configuring nginx with `--without-http-cache` is unsupported for this module
 
 ## Installation Instructions
 
 You need to build NGINX with this repository as an extra module via `--add-module` or `--add-dynamic-module`; it is not bundled with upstream NGINX.
+
+This module requires nginx HTTP cache support. A configure run that uses `--without-http-cache` will fail immediately when this module is added.
 
 For most users, the recommended installation path is to build a dynamic module against the exact NGINX version already installed on the target system.
 
@@ -86,8 +88,7 @@ If you want the included containerized build environment, tests, or the manual v
 - wildcard URI purge using a trailing `*`
 - cache-tag and surrogate-key purge
 
-When `cache_pilot_index_zone_size` and `cache_pilot_index` are enabled for a zone,
-the module also maintains a cache-key index. That key index is used to:
+When `cache_pilot_index_zone_size` and `cache_pilot_index` are enabled for a zone, the module also maintains a cache-key index. That key index is used to:
 
 - fan out exact-key hard purges across files that share the same key (for example, `Vary` variants)
 - serve wildcard key purges from in-memory key metadata before falling back to filesystem walking
@@ -233,10 +234,7 @@ The minimal cache-tag setup is already shown in Quick Start. Use that pattern wh
 
 ## Configuration Reference
 
-Directive names documented in this section are part of the module's public
-configuration API and are intended to stay stable. New configuration knobs
-should extend one of the existing directive families rather than introduce
-parallel synonyms or replacement spellings:
+Directive names documented in this section are part of the module's public configuration API and are intended to stay stable. New configuration knobs should extend one of the existing directive families rather than introduce parallel synonyms or replacement spellings:
 
 - `fastcgi_cache_purge`, `proxy_cache_purge`, `scgi_cache_purge`, and `uwsgi_cache_purge` for upstream-cache purge integration
 - `cache_pilot_*` for module-owned features such as indexing, tag handling, purge response behavior, metrics, and tuning
@@ -368,9 +366,9 @@ Expose a read-only metrics endpoint for the configured cache zones. With no argu
 
 The endpoint returns `Cache-Control: no-store` and supports two output formats:
 
-| Trigger | Format | Content-Type |
-| --- | --- | --- |
-| Default, `?format=json`, or `Accept: application/json` | JSON | `application/json` |
+| Trigger                                                                               | Format          | Content-Type                |
+| ------------------------------------------------------------------------------------- | --------------- | --------------------------- |
+| Default, `?format=json`, or `Accept: application/json`                                | JSON            | `application/json`          |
 | `?format=prometheus`, `Accept: text/plain`, or `Accept: application/openmetrics-text` | Prometheus text | `text/plain; version=0.0.4` |
 
 Example configuration:
@@ -393,67 +391,67 @@ location /_cache_stats {
 
 ```json
 {
-    "version": 1,
-    "timestamp": 1776605478,
-    "purges": {
-        "exact": {
-            "hard": 0,
-            "soft": 0
-        },
-        "wildcard": {
-            "hard": 0,
-            "soft": 0
-        },
-        "tag": {
-            "hard": 0,
-            "soft": 6
-        },
-        "all": {
-            "hard": 0,
-            "soft": 0
-        }
+  "version": 1,
+  "timestamp": 1776605478,
+  "purges": {
+    "exact": {
+      "hard": 0,
+      "soft": 0
     },
-    "purged": {
-        "exact": {
-            "hard": 0,
-            "soft": 0
-        },
-        "wildcard": {
-            "hard": 0,
-            "soft": 0
-        },
-        "tag": {
-            "hard": 0,
-            "soft": 6
-        },
-        "all": {
-            "hard": 0,
-            "soft": 0
-        }
+    "wildcard": {
+      "hard": 0,
+      "soft": 0
     },
-    "key_index": {
-        "exact_fanout": 0,
-        "wildcard_hits": 0
+    "tag": {
+      "hard": 0,
+      "soft": 6
     },
-    "zones": {
-        "zone-one": {
-            "size": 35184,
-            "max_size": 2251799813685247,
-            "cold": false,
-            "entries": {
-                "total": 4815,
-                "valid": 0,
-                "expired": 4815,
-                "updating": 0
-            },
-            "index": {
-                "state": "ready",
-                "state_code": 2,
-                "last_updated_at": 1776605478,
-                "backend": "shm"
-            }
-        }
+    "all": {
+      "hard": 0,
+      "soft": 0
     }
+  },
+  "purged": {
+    "exact": {
+      "hard": 0,
+      "soft": 0
+    },
+    "wildcard": {
+      "hard": 0,
+      "soft": 0
+    },
+    "tag": {
+      "hard": 0,
+      "soft": 6
+    },
+    "all": {
+      "hard": 0,
+      "soft": 0
+    }
+  },
+  "key_index": {
+    "exact_fanout": 0,
+    "wildcard_hits": 0
+  },
+  "zones": {
+    "zone-one": {
+      "size": 35184,
+      "max_size": 2251799813685247,
+      "cold": false,
+      "entries": {
+        "total": 4815,
+        "valid": 0,
+        "expired": 4815,
+        "updating": 0
+      },
+      "index": {
+        "state": "ready",
+        "state_code": 2,
+        "last_updated_at": 1776605478,
+        "backend": "shm"
+      }
+    }
+  }
 }
 ```
 
@@ -485,17 +483,11 @@ curl -X PURGE /page*
 
 The asterisk must be the last character of the key, so you must put the `$uri` variable at the end of the configured cache key.
 
-When key-index metadata is available and ready for the zone, wildcard purges use
-in-memory key metadata first. That avoids a filesystem walk, but it is still a
-linear scan over indexed file metadata for the zone rather than a dedicated
-prefix index. If key-index data is unavailable for the zone, wildcard purges
-fall back to the existing full cache tree walk.
+When key-index metadata is available and ready for the zone, wildcard purges use in-memory key metadata first. That avoids a filesystem walk, but it is still a linear scan over indexed file metadata for the zone rather than a dedicated prefix index. If key-index data is unavailable for the zone, wildcard purges fall back to the existing full cache tree walk.
 
 ## Exact-Key Purge Fanout
 
-With `cache_pilot_index_zone_size` and `cache_pilot_index` enabled for a zone,
-exact-key purge can fan out to all files that share the same cache key,
-including `Vary` variants.
+With `cache_pilot_index_zone_size` and `cache_pilot_index` enabled for a zone, exact-key purge can fan out to all files that share the same cache key, including `Vary` variants.
 
 Behavior summary:
 
@@ -587,8 +579,7 @@ The cache index stores both:
 - exact-key associations used for fanout across sibling files sharing one cache key
 - per-file cache-key metadata reused by wildcard key-prefix matching
 
-Without index data, tag purge would have no efficient path lookup, and wildcard
-key purge relies on filesystem walking.
+Without index data, tag purge would have no efficient path lookup, and wildcard key purge relies on filesystem walking.
 
 ### Index population
 
@@ -622,8 +613,8 @@ When a tag `PURGE` request is received:
 2. If the zone is not registered for indexing or its shared-memory index is not yet ready, the purge declines instead of running a synchronous cache-tree bootstrap inside the request.
 3. Otherwise, the index is queried for all file paths associated with the supplied tags (OR semantics — any matching tag is sufficient).
 4. For each path the module applies the configured purge mode:
-    - **Soft purge** — the cache file is marked expired in the shared-memory cache node so the next request is served as `EXPIRED`.
-    - **Hard purge** — the cache file is deleted from disk immediately and the corresponding in-memory index entry is removed in the same purge path.
+   - **Soft purge** — the cache file is marked expired in the shared-memory cache node so the next request is served as `EXPIRED`.
+   - **Hard purge** — the cache file is deleted from disk immediately and the corresponding in-memory index entry is removed in the same purge path.
 
 ## Development
 

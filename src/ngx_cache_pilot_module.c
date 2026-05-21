@@ -52,8 +52,6 @@ static const char ngx_http_cache_pilot_body_templ_text[] = "Key:%s\n";
 
 static size_t ngx_http_cache_pilot_body_templ_text_size = sizeof(ngx_http_cache_pilot_body_templ_text);
 
-#if (NGX_HTTP_CACHE)
-
 typedef struct ngx_http_cache_pilot_partial_ctx_s
     ngx_http_cache_pilot_partial_ctx_t;
 typedef struct ngx_http_cache_pilot_protocol_s
@@ -3541,36 +3539,3 @@ ngx_http_cache_pilot_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     return NGX_CONF_OK;
 }
-
-#else /* !NGX_HTTP_CACHE */
-
-static ngx_http_module_t  ngx_http_cache_pilot_module_ctx = {
-    NULL,  /* preconfiguration */
-    NULL,  /* postconfiguration */
-
-    NULL,  /* create main configuration */
-    NULL,  /* init main configuration */
-
-    NULL,  /* create server configuration */
-    NULL,  /* merge server configuration */
-
-    NULL,  /* create location configuration */
-    NULL,  /* merge location configuration */
-};
-
-ngx_module_t  ngx_http_cache_pilot_module = {
-    NGX_MODULE_V1,
-    &ngx_http_cache_pilot_module_ctx,  /* module context */
-    NULL,                              /* module directives */
-    NGX_HTTP_MODULE,                   /* module type */
-    NULL,                              /* init master */
-    NULL,                              /* init module */
-    NULL,                              /* init process */
-    NULL,                              /* init thread */
-    NULL,                              /* exit thread */
-    NULL,                              /* exit process */
-    NULL,                              /* exit master */
-    NGX_MODULE_V1_PADDING
-};
-
-#endif /* NGX_HTTP_CACHE */

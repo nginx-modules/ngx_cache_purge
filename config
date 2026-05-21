@@ -1,3 +1,8 @@
+if [ "$HTTP_CACHE" != "YES" ]; then
+    echo "$0: error: ngx_http_cache_pilot_module requires HTTP cache support; do not configure nginx with --without-http-cache" >&2
+    exit 1
+fi
+
 if [ "$HTTP_PROXY" = "YES" ]; then
     have=NGX_HTTP_PROXY . auto/have
 fi

@@ -5,8 +5,6 @@
 #include "ngx_cache_pilot_index.h"
 #include "ngx_cache_pilot_metrics.h"
 
-#if (NGX_HTTP_CACHE)
-
 #define NGX_CACHE_PILOT_INDEX_STATE_DISABLED   0
 #define NGX_CACHE_PILOT_INDEX_STATE_CONFIGURED 1
 #define NGX_CACHE_PILOT_INDEX_STATE_READY      2
@@ -686,5 +684,3 @@ ngx_http_cache_pilot_metrics_handler(ngx_http_request_t *r) {
 
     return ngx_http_output_filter(r, &out);
 }
-
-#endif /* NGX_HTTP_CACHE */
