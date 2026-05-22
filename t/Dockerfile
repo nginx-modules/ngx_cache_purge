@@ -129,6 +129,12 @@ WORKDIR /src
 RUN echo '#!/bin/bash\n\
 set -e\n\
 \n\
+# purge_servroot: remove the Test::Nginx work directory between test\n\
+# files so that a failed test cannot leave stale nginx workers or open\n\
+# file descriptors that cause the next prove(1) invocation to bail out\n\
+# with "Directory not empty" when setting up a fresh servroot.\n\
+purge_servroot() { rm -rf /src/t/servroot; }\n\
+\n\
 echo "Starting nginx cache purge module tests..."\n\
 \n\
 rm -rf cache/ logs/ t/servroot/\n\
@@ -136,16 +142,16 @@ rm -rf cache/ logs/ t/servroot/\n\
 mkdir -p cache logs\n\
 \n\
 echo "Running basic tests..."\n\
-prove -v t/basic.t\n\
+prove -v t/basic.t; purge_servroot\n\
 \n\
 echo "Running background queue tests..."\n\
-prove -v t/background_queue.t\n\
+prove -v t/background_queue.t; purge_servroot\n\
 \n\
 echo "Running configuration tests..."\n\
-prove -v t/config.t\n\
+prove -v t/config.t; purge_servroot\n\
 \n\
 echo "Running memory tests..."\n\
-prove -v t/memory.t\n\
+prove -v t/memory.t; purge_servroot\n\
 \n\
 echo "Running performance tests..."\n\
 prove -v t/performance.t\n\

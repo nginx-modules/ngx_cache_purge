@@ -30,7 +30,12 @@ struct ngx_http_cache_purge_queue_item_s {
 struct ngx_http_cache_purge_queue_s {
     ngx_http_cache_purge_queue_item_t *head;
     ngx_http_cache_purge_queue_item_t *tail;
-    ngx_atomic_t                       size;
+    /*
+     * size is always read and written while queue->mutex is held.
+     * ngx_atomic_t was used historically but implies lock-free semantics that
+     * do not exist here.  ngx_uint_t is the correct plain unsigned type.
+     */
+    ngx_uint_t                         size;
     ngx_shmtx_sh_t                     sh;
     ngx_shmtx_t                        mutex;
     ngx_slab_pool_t                   *shpool;
@@ -93,6 +98,13 @@ typedef struct {
     u_char      key_buffer[512];
     ngx_uint_t  files_deleted;
     ngx_uint_t  files_checked;
+    /*
+     * cache is set by ngx_http_cache_purge_delete_variants() so that
+     * delete_exact_file can update shm metadata (sh->size, node->exists,
+     * node->fs_size) for each variant it deletes.  NULL in all other walk
+     * contexts where metadata updates are not needed.
+     */
+    ngx_http_file_cache_t  *cache;
 } ngx_http_cache_purge_walk_ctx_t;
 
 typedef enum {
