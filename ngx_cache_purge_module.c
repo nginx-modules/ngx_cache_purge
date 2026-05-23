@@ -45,12 +45,12 @@
 #define NGX_CACHE_PURGE_BATCH_SIZE_DEFAULT   10
 /*
  * This constant is assigned directly to an ngx_msec_t field via
- * ngx_conf_init_msec_value() — it bypasses ngx_parse_time() and is
+ * ngx_conf_init_msec_value() -- it bypasses ngx_parse_time() and is
  * therefore in raw milliseconds.  The corresponding directive,
  * cache_purge_throttle_ms, is parsed by ngx_conf_set_msec_slot which
  * calls ngx_parse_time(value, 0): bare integers are treated as seconds
  * per the nginx time-value contract, so operators must write an explicit
- * suffix ("10ms", "1s", …) to get the intended unit.
+ * suffix ("10ms", "1s", ...) to get the intended unit.
  */
 #define NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT  10  /* milliseconds */
 #define NGX_CACHE_PURGE_KEY_MAX_LEN          512
@@ -75,10 +75,10 @@
  * The slab allocator consumes an amount of metadata (pool header, slot
  * descriptors, stat entries, page descriptors, and an alignment gap) that
  * varies with nginx version, build flags, and architecture.  Rather than
- * attempting to compute that overhead from internal slab structs — which
+ * attempting to compute that overhead from internal slab structs -- which
  * differ between nginx 1.8/1.9+, are affected by NGX_HAVE_POSIX_SEM /
  * --with-threads, and scale with the OS page size (4 KB on x86 Linux,
- * 8–64 KB on some *BSD / ARM / POWER platforms) — we simply enforce a
+ * 8-64 KB on some *BSD / ARM / POWER platforms) -- we simply enforce a
  * floor of 8 pages.  ngx_pagesize is the runtime value, so the minimum
  * scales automatically on big-page architectures.  8 pages is generous
  * enough to accommodate all slab metadata overhead while leaving several
@@ -448,7 +448,7 @@ ngx_module_t  ngx_http_cache_purge_module = {
     NGX_MODULE_V1_PADDING
 };
 
-/* Per-worker globals — safe because nginx forks one process per worker */
+/* Per-worker globals -- safe because nginx forks one process per worker */
 static ngx_event_t                        ngx_cache_purge_event;
 static ngx_http_cache_purge_main_conf_t  *ngx_cache_purge_main_conf;
 
@@ -546,19 +546,19 @@ ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf)
      * The slab allocator imposes metadata overhead that is NOT reflected in
      * the payload calculation above:
      *
-     *   ngx_slab_pool_t header  — size varies by nginx version, build flags
+     *   ngx_slab_pool_t header  -- size varies by nginx version, build flags
      *                             (e.g. NGX_HAVE_POSIX_SEM, --with-threads),
      *                             and platform ABI.
-     *   Slot descriptors        — (pagesize_shift - min_shift) page structs.
-     *   Stat entries            — same count, added in nginx ~1.9.x.
-     *   Page descriptors        — one per allocatable page.
-     *   Alignment gap           — up to one full page between descriptors
+     *   Slot descriptors        -- (pagesize_shift - min_shift) page structs.
+     *   Stat entries            -- same count, added in nginx ~1.9.x.
+     *   Page descriptors        -- one per allocatable page.
+     *   Alignment gap           -- up to one full page between descriptors
      *                             and the first usable byte (pool->start is
      *                             rounded up to the next page boundary).
      *
      * Attempting to compute this precisely requires knowledge of internal
      * nginx structs that differ across versions (1.8 vs 1.9+), build
-     * configurations, and architectures (Linux, *BSD, Solaris, macOS —
+     * configurations, and architectures (Linux, *BSD, Solaris, macOS --
      * each may have different page sizes: 4 KB, 8 KB, 16 KB, 64 KB).
      *
      * The portable, version-agnostic approach: round up the payload to a
@@ -587,7 +587,7 @@ ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf)
 }
 
 /*
- * Shared-memory zone initialiser — called by the master process once per
+ * Shared-memory zone initialiser -- called by the master process once per
  * nginx start or live reload.
  *
  * First boot (data == NULL):
@@ -696,8 +696,8 @@ ngx_http_cache_purge_init_worker(ngx_cycle_t *cycle)
      * this handler re-arms itself on every invocation the worker would
      * never exit cleanly, causing Test::Nginx (and real deployments) to
      * time out and fall back to SIGKILL.  "cancelable" tells the event
-     * loop: "discard this timer when the worker is exiting — do not wait
-     * for it."  All nginx versions we support (≥ 1.20) have this field.
+     * loop: "discard this timer when the worker is exiting -- do not wait
+     * for it."  All nginx versions we support (>= 1.20) have this field.
      */
     ngx_cache_purge_event.cancelable  = 1;
 
@@ -715,25 +715,25 @@ ngx_http_cache_purge_exit_worker(ngx_cycle_t *cycle)
 }
 
 /*
- * Background timer callback — fires every throttle_ms milliseconds.
+ * Background timer callback -- fires every throttle_ms milliseconds.
  *
  * Each invocation calls process_queue(), which dequeues and walks exactly
  * one item before returning.  This one-item-per-tick design ensures the
  * event loop is never blocked for more than the duration of a single
  * directory walk, regardless of queue depth.
  *
- *   NGX_AGAIN  — one item was processed; re-arm with throttle_ms so the
+ *   NGX_AGAIN  -- one item was processed; re-arm with throttle_ms so the
  *                next item is handled promptly.
  *
- *   NGX_OK     — queue is empty; re-arm with throttle_ms * 10 to avoid
+ *   NGX_OK     -- queue is empty; re-arm with throttle_ms * 10 to avoid
  *                busy-polling on an idle queue.
  *
- *   NGX_ERROR  — module not yet initialised; use the raw constant and
+ *   NGX_ERROR  -- module not yet initialised; use the raw constant and
  *                retry next tick.
  *
  * Historical note: the previous implementation called ngx_msleep() inside
  * the callback to throttle I/O.  ngx_msleep() is a literal usleep() that
- * blocks the OS thread — stalling every connection on that worker for the
+ * blocks the OS thread -- stalling every connection on that worker for the
  * full sleep duration.  Timer-based yielding is the correct nginx idiom.
  */
 static void
@@ -746,7 +746,7 @@ ngx_http_cache_purge_background_handler(ngx_event_t *ev)
 
     if (cmcf == NULL || cmcf->queue == NULL) {
         /* cmcf not yet initialised; use the raw-ms constant directly
-         * (not through ngx_parse_time, so no ×1000 conversion). */
+         * (not through ngx_parse_time, so no *1000 conversion). */
         ngx_add_timer(ev, NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT);
         return;
     }
@@ -754,9 +754,9 @@ ngx_http_cache_purge_background_handler(ngx_event_t *ev)
     rc = ngx_http_cache_purge_process_queue(cycle);
 
     /*
-     * NGX_AGAIN  → an item was processed and more remain; come back soon.
-     * NGX_OK     → queue is now empty; back off to avoid busy-polling.
-     * NGX_ERROR  → configuration problem; back off.
+     * NGX_AGAIN  -> an item was processed and more remain; come back soon.
+     * NGX_OK     -> queue is now empty; back off to avoid busy-polling.
+     * NGX_ERROR  -> configuration problem; back off.
      */
     next_delay = (rc == NGX_AGAIN) ? cmcf->throttle_ms
                                    : cmcf->throttle_ms * 10;
@@ -868,7 +868,7 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
      * variable: another worker could modify it between the unlock and the
      * log call.  The captured value is only used for a debug log, so a
      * value that is one behind by the time the message is written is
-     * acceptable — correctness is not affected.
+     * acceptable -- correctness is not affected.
      */
     hash = queue->size;   /* reuse 'hash' (ngx_uint_t) as a size snapshot */
 
@@ -883,7 +883,7 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
 }
 
 /*
- * process_queue — dequeue and walk exactly one item per invocation.
+ * process_queue -- dequeue and walk exactly one item per invocation.
  *
  * Design: one item per timer tick.  The caller (background_handler) re-arms
  * the timer with throttle_ms after each call, giving the nginx event loop a
@@ -891,20 +891,20 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
  * purge I/O from monopolising the worker for an unbounded duration.
  *
  * Two-phase execution:
- *   Phase 1 — dequeue under the mutex.
+ *   Phase 1 -- dequeue under the mutex.
  *     The item is unlinked from the queue head and queue->size is decremented
  *     while the lock is held.  Items older than NGX_CACHE_PURGE_QUEUE_TIMEOUT
  *     are freed in place (slab_free is called while the lock is held for
  *     timed-out items only, because no subsequent walk is needed).
- *   Phase 2 — walk outside the lock.
+ *   Phase 2 -- walk outside the lock.
  *     ngx_walk_tree() and ngx_slab_free() run after ngx_shmtx_unlock().
  *     This keeps the critical section short and preserves the required
- *     lock ordering: queue_mutex → shpool_mutex (slab_free acquires shpool).
+ *     lock ordering: queue_mutex -> shpool_mutex (slab_free acquires shpool).
  *
  * Return values:
- *   NGX_AGAIN  — one item was processed; caller should re-arm promptly.
- *   NGX_OK     — queue is empty; caller should apply the backoff delay.
- *   NGX_ERROR  — module not initialised; caller should apply backoff.
+ *   NGX_AGAIN  -- one item was processed; caller should re-arm promptly.
+ *   NGX_OK     -- queue is empty; caller should apply the backoff delay.
+ *   NGX_ERROR  -- module not initialised; caller should apply backoff.
  */
 static ngx_int_t
 ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
@@ -1135,7 +1135,7 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
     wctx->files_checked++;
 
     if (wctx->key_len == 0) {
-        /* stripped wildcard — match everything */
+        /* stripped wildcard -- match everything */
         remove_file = 1;
 
     } else {
@@ -1183,7 +1183,7 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
 }
 
 /*
- * ngx_http_cache_purge_invalidate_node — clear a cache node's shared-memory
+ * ngx_http_cache_purge_invalidate_node -- clear a cache node's shared-memory
  * metadata without requiring an ngx_http_cache_t context.
  *
  * The nginx file cache rbtree uses the FULL 16-byte MD5 key for lookup:
@@ -1199,13 +1199,13 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
  * The node's 16-byte key is encoded in the file path: nginx constructs the
  * cache file path as "<cache_root>/<levels>/<32-hex-char-key>" where the last
  * 32 characters are the hex-encoded 16-byte MD5 key.  Decoding those characters
- * gives us the exact key to search for — correct for both primary entries and
+ * gives us the exact key to search for -- correct for both primary entries and
  * Vary variant entries (which have different keys XOR'd with the secondary hash).
  *
  * Locking: shpool->mutex is held for the shortest possible window (lookup +
  * field updates only).  ngx_delete_file() is called by the caller AFTER this
  * function returns and the lock is released, preserving the module-wide lock
- * ordering: queue_mutex → shpool_mutex.
+ * ordering: queue_mutex -> shpool_mutex.
  */
 static void
 ngx_http_cache_purge_invalidate_node(ngx_http_file_cache_t *cache,
@@ -1297,7 +1297,7 @@ ngx_http_cache_purge_invalidate_node(ngx_http_file_cache_t *cache,
             continue;
         }
 
-        /* Exact 16-byte match — clear the node's accounting fields */
+        /* Exact 16-byte match -- clear the node's accounting fields */
         if (fcn->exists) {
 #if (nginx_version >= 1000001)
             cache->sh->size -= fcn->fs_size;
@@ -1394,7 +1394,7 @@ ngx_http_purge_file_cache_delete_exact_file(ngx_tree_ctx_t *ctx,
     }
 
     if (ngx_delete_file(path->data) == NGX_FILE_ERROR) {
-        /* ENOENT: primary file was already deleted — not an error */
+        /* ENOENT: primary file was already deleted -- not an error */
         if (ngx_errno != NGX_ENOENT) {
             ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
                           "ngx_cache_purge: could not delete \"%V\"", path);
@@ -1697,7 +1697,7 @@ ngx_http_fastcgi_cache_purge_handler(ngx_http_request_t *r)
 
     if (cplcf->conf->purge_all) {
         ngx_http_cache_purge_all(r, cache);
-        /* purge_all empties the zone — always report 200 regardless of
+        /* purge_all empties the zone -- always report 200 regardless of
          * how many files existed.  Skip ngx_http_cache_purge_handler()
          * so we never attempt an exact-key lookup on a bulk operation. */
         r->main->count++;
@@ -1780,7 +1780,7 @@ typedef struct {
 #  endif
 
     ngx_array_t               *headers_source;
-    /* FIX (#52): nginx 1.29.4 inserted host_set here — without this guard
+    /* FIX (#52): nginx 1.29.4 inserted host_set here -- without this guard
      * every subsequent field is at the wrong offset, causing a segfault. */
 #  if (nginx_version >= 1029004)
     ngx_uint_t                 host_set;
@@ -1922,7 +1922,7 @@ ngx_http_proxy_cache_purge_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     }
 
     if (cv.lengths != NULL) {
-        /* dynamic zone expression — allocate a persistent copy */
+        /* dynamic zone expression -- allocate a persistent copy */
         cplcf->proxy_separate_value = ngx_palloc(cf->pool,
                                           sizeof(ngx_http_complex_value_t));
         if (cplcf->proxy_separate_value == NULL) {
@@ -1930,7 +1930,7 @@ ngx_http_proxy_cache_purge_conf(ngx_conf_t *cf, ngx_command_t *cmd,
         }
         *cplcf->proxy_separate_value = cv;
     } else {
-        /* static zone name — look it up in shared memory table */
+        /* static zone name -- look it up in shared memory table */
         cplcf->proxy_separate_zone = ngx_shared_memory_add(cf, &value[1], 0,
                                          &ngx_http_proxy_module);
         if (cplcf->proxy_separate_zone == NULL) {
@@ -1999,7 +1999,7 @@ ngx_http_proxy_cache_purge_handler(ngx_http_request_t *r)
         if (cplcf->proxy_separate_zone) {
             cache = cplcf->proxy_separate_zone->data;
         } else {
-            /* dynamic zone name — evaluate and walk the proxy caches list */
+            /* dynamic zone name -- evaluate and walk the proxy caches list */
             if (ngx_http_complex_value(r, cplcf->proxy_separate_value,
                                        &cv_val) != NGX_OK)
             {
@@ -3343,6 +3343,56 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_loc_conf_t *prev = parent;
     ngx_http_cache_purge_loc_conf_t *conf = child;
     ngx_http_core_loc_conf_t        *clcf;
+    /*
+     * C89: all variables at top of function.
+     *
+     * was_set_* captures whether each protocol's purge directive was
+     * explicitly present in THIS location block BEFORE merging from the
+     * parent.  This is the only reliable way to distinguish two cases:
+     *
+     *   Case A -- explicit (enable == 1 before merge):
+     *     proxy_cache_purge is in this location.  clcf->handler is the
+     *     real upstream handler (e.g. ngx_http_proxy_handler set by
+     *     proxy_pass).  Save it as original_handler and install ours.
+     *
+     *   Case B -- inherited (enable == NGX_CONF_UNSET before merge):
+     *     This is an anonymous if-child location synthesised by nginx when
+     *     it encounters an "if" block.  The if-block has no handler
+     *     directive, so clcf->handler is NULL.  Saving NULL as
+     *     original_handler causes every non-PURGE request that enters the
+     *     if-branch to return 404 instead of reaching the upstream.
+     *     Inherit original_handler from prev (which holds the real handler
+     *     saved during the parent location's merge) instead.
+     *
+     * In both cases clcf->handler must be set to access_handler so that
+     * PURGE requests are intercepted regardless of whether the if condition
+     * fires.
+     */
+# if (NGX_HTTP_FASTCGI)
+    ngx_flag_t  was_set_fastcgi;
+# endif
+# if (NGX_HTTP_PROXY)
+    ngx_flag_t  was_set_proxy;
+# endif
+# if (NGX_HTTP_SCGI)
+    ngx_flag_t  was_set_scgi;
+# endif
+# if (NGX_HTTP_UWSGI)
+    ngx_flag_t  was_set_uwsgi;
+# endif
+
+# if (NGX_HTTP_FASTCGI)
+    was_set_fastcgi = (conf->fastcgi.enable == 1);
+# endif
+# if (NGX_HTTP_PROXY)
+    was_set_proxy   = (conf->proxy.enable   == 1);
+# endif
+# if (NGX_HTTP_SCGI)
+    was_set_scgi    = (conf->scgi.enable    == 1);
+# endif
+# if (NGX_HTTP_UWSGI)
+    was_set_uwsgi   = (conf->uwsgi.enable   == 1);
+# endif
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
 
@@ -3353,14 +3403,12 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
 
     if (conf->fastcgi.enable) {
-        conf->conf    = &conf->fastcgi;
-        conf->handler = ngx_http_fastcgi_cache_purge_handler;
-        if (clcf->handler != ngx_http_cache_purge_access_handler) {
-            conf->original_handler = clcf->handler;
-            clcf->handler          = ngx_http_cache_purge_access_handler;
-        } else {
-            conf->original_handler = prev->original_handler;
-        }
+        conf->conf             = &conf->fastcgi;
+        conf->handler          = ngx_http_fastcgi_cache_purge_handler;
+        conf->original_handler = was_set_fastcgi
+                                 ? clcf->handler
+                                 : prev->original_handler;
+        clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
     }
 # endif
@@ -3369,14 +3417,12 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
 
     if (conf->proxy.enable) {
-        conf->conf    = &conf->proxy;
-        conf->handler = ngx_http_proxy_cache_purge_handler;
-        if (clcf->handler != ngx_http_cache_purge_access_handler) {
-            conf->original_handler = clcf->handler;
-            clcf->handler          = ngx_http_cache_purge_access_handler;
-        } else {
-            conf->original_handler = prev->original_handler;
-        }
+        conf->conf             = &conf->proxy;
+        conf->handler          = ngx_http_proxy_cache_purge_handler;
+        conf->original_handler = was_set_proxy
+                                 ? clcf->handler
+                                 : prev->original_handler;
+        clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
     }
 # endif
@@ -3385,14 +3431,12 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->scgi, &prev->scgi);
 
     if (conf->scgi.enable) {
-        conf->conf    = &conf->scgi;
-        conf->handler = ngx_http_scgi_cache_purge_handler;
-        if (clcf->handler != ngx_http_cache_purge_access_handler) {
-            conf->original_handler = clcf->handler;
-            clcf->handler          = ngx_http_cache_purge_access_handler;
-        } else {
-            conf->original_handler = prev->original_handler;
-        }
+        conf->conf             = &conf->scgi;
+        conf->handler          = ngx_http_scgi_cache_purge_handler;
+        conf->original_handler = was_set_scgi
+                                 ? clcf->handler
+                                 : prev->original_handler;
+        clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
     }
 # endif
@@ -3401,14 +3445,12 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_merge_conf(&conf->uwsgi, &prev->uwsgi);
 
     if (conf->uwsgi.enable) {
-        conf->conf    = &conf->uwsgi;
-        conf->handler = ngx_http_uwsgi_cache_purge_handler;
-        if (clcf->handler != ngx_http_cache_purge_access_handler) {
-            conf->original_handler = clcf->handler;
-            clcf->handler          = ngx_http_cache_purge_access_handler;
-        } else {
-            conf->original_handler = prev->original_handler;
-        }
+        conf->conf             = &conf->uwsgi;
+        conf->handler          = ngx_http_uwsgi_cache_purge_handler;
+        conf->original_handler = was_set_uwsgi
+                                 ? clcf->handler
+                                 : prev->original_handler;
+        clcf->handler          = ngx_http_cache_purge_access_handler;
         return NGX_CONF_OK;
     }
 # endif

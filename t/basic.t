@@ -330,3 +330,165 @@ PURGE /cache/anything
 [200, 200, 412]
 --- no_error_log
 [error]
+
+=== TEST 16: if-block empty body -- GET proxies correctly (was 404 in v3+)
+# Regression test for the merge_loc_conf if-child handler bug.
+# When nginx processes "if (cond) {}" inside a location, it creates an
+# anonymous child location.  Before this fix, merge_loc_conf saved NULL
+# as original_handler for the child (clcf->handler is NULL in an if-block
+# with no handler directive).  Non-PURGE requests entering the if-branch
+# then returned 404 instead of reaching proxy_pass.
+#
+# With the fix, was_set_proxy is false for the child (proxy_cache_purge
+# was not configured inside the if block), so original_handler is
+# inherited from prev -- which holds the real ngx_http_proxy_handler.
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        if ($arg_x_trigger_if) {
+        }
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "if-empty";
+    }
+--- request eval
+["GET /cache/if16a", "GET /cache/if16b?x_trigger_if=1"]
+--- error_code eval
+[200, 200]
+--- response_body eval
+["if-empty", "if-empty"]
+--- no_error_log
+[error]
+
+=== TEST 17: if-block with set directive -- GET proxies correctly
+# "set $var value" inside an if block is the documented safe use of if.
+# This is the exact pattern from the bug report: the if block only sets
+# a variable and does nothing else, yet triggered 404 in v3+.
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        set $flag "0";
+        if ($arg_x_trigger_if) {
+            set $flag "1";
+        }
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "if-set";
+    }
+--- request eval
+["GET /cache/if17a", "GET /cache/if17b?x_trigger_if=1"]
+--- error_code eval
+[200, 200]
+--- response_body eval
+["if-set", "if-set"]
+--- no_error_log
+[error]
+
+=== TEST 18: PURGE still works when if condition is true
+# The fix must not break purge requests that arrive while an if condition
+# is active.  When method == PURGE and the if-branch is taken, the
+# access_handler must still dispatch to the purge handler, not forward
+# to the original upstream handler.
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        set $flag "0";
+        if ($arg_x_trigger_if) {
+            set $flag "1";
+        }
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "if-purge";
+    }
+--- request eval
+["GET /cache/if18", "PURGE /cache/if18?x_trigger_if=1", "PURGE /cache/if18"]
+--- error_code eval
+[200, 200, 412]
+--- response_body eval
+["if-purge", qr/purged/i, qr/404|412/]
+--- no_error_log
+[error]
+
+=== TEST 19: two sequential if blocks in the same location
+# Each "if" block creates a separate anonymous child location.  Both
+# must correctly inherit original_handler from the parent so that
+# requests entering either branch are proxied, not 404'd.
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        set $a "0";
+        set $b "0";
+        if ($arg_x_a) {
+            set $a "1";
+        }
+        if ($arg_x_b) {
+            set $b "1";
+        }
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "two-ifs";
+    }
+--- request eval
+[
+    "GET /cache/if19a",
+    "GET /cache/if19b?x_a=1",
+    "GET /cache/if19c?x_b=1",
+    "GET /cache/if19d?x_a=1&x_b=1"
+]
+--- error_code eval
+[200, 200, 200, 200]
+--- response_body eval
+["two-ifs", "two-ifs", "two-ifs", "two-ifs"]
+--- no_error_log
+[error]
+
+=== TEST 20: cached response served from cache when if condition is true
+# Confirms that a cached response is returned (HIT) and not forwarded to
+# the upstream when the if condition fires.  Verifies that the cache
+# lookup itself is not bypassed by the if-child handler switch.
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        if ($arg_x_trigger_if) {
+            set $unused "1";
+        }
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+        add_header X-Cache-Status $upstream_cache_status always;
+    }
+    location /origin {
+        return 200 "cached-body";
+    }
+--- request eval
+["GET /cache/if20", "GET /cache/if20?x_trigger_if=1"]
+--- error_code eval
+[200, 200]
+--- response_body eval
+["cached-body", "cached-body"]
+--- response_headers_like eval
+["X-Cache-Status: MISS", "X-Cache-Status: HIT"]
+--- no_error_log
+[error]
