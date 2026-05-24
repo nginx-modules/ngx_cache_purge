@@ -181,7 +181,7 @@ jobs:
     - name: Run static analysis with Cppcheck
       run: |
         sudo apt-get update && sudo apt-get install -y cppcheck
-        cppcheck --enable=all --inconclusive --std=c99 \
+        cppcheck --enable=all --inconclusive --std=c89 \
           --suppress=missingIncludeSystem \
           --suppress=toomanyconfigs \
           --suppress=checkersReport \
