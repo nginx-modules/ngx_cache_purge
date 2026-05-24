@@ -399,24 +399,31 @@ PURGE /cache/anything
 # is active.  When method == PURGE and the if-branch is taken, the
 # access_handler must still dispatch to the purge handler, not forward
 # to the original upstream handler.
+#
+# The if condition is triggered by a request header (X-Trigger-If) so
+# that the condition has no effect on the cache key.  The PURGE request
+# carries the same header to enter the if-branch, while the cache key
+# remains "$uri" in both GET and PURGE requests.
 --- http_config eval: $::HttpConfig
 --- config
     location /cache {
         set $flag "0";
-        if ($arg_x_trigger_if) {
+        if ($http_x_trigger_if) {
             set $flag "1";
         }
         proxy_pass        http://backend/origin;
         proxy_cache       cache_zone;
-        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_key   "$uri";
         proxy_cache_valid 200 1m;
         proxy_cache_purge PURGE from 127.0.0.1;
     }
     location /origin {
         return 200 "if-purge";
     }
+--- more_headers
+X-Trigger-If: 1
 --- request eval
-["GET /cache/if18", "PURGE /cache/if18?x_trigger_if=1", "PURGE /cache/if18"]
+["GET /cache/if18", "PURGE /cache/if18", "PURGE /cache/if18"]
 --- error_code eval
 [200, 200, 412]
 --- response_body eval
