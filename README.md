@@ -741,6 +741,8 @@ PPA uploads append an Ubuntu-series suffix to the Debian package version in a te
 
 When `DEBIAN_DISTRIBUTION` is not set, source package builds preserve the distribution from `debian/changelog`. Set `DEBIAN_DISTRIBUTION` only when building for a specific target series such as a Launchpad PPA upload.
 
+The `debian-orig-tarball` target generates the upstream `.orig.tar.gz` once. The PPA workflow uploads that tarball as an artifact and restores it before each Ubuntu series upload, so all series share the same upstream tarball and Launchpad does not reject a second series because the same tarball filename has different contents.
+
 The `Publish Launchpad PPA` GitHub Actions workflow publishes `jammy` and `noble` source uploads to `ppa:wpelevator/packages`. It requires these repository secrets:
 
 - `LAUNCHPAD_GPG_KEY_ID`

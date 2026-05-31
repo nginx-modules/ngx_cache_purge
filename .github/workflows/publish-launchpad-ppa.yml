@@ -17,8 +17,28 @@ permissions:
   contents: read
 
 jobs:
+  source-tarball:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build packaging image
+        run: docker compose build packaging
+
+      - name: Build shared source tarball
+        run: docker compose run --rm packaging make debian-orig-tarball
+
+      - name: Upload shared source tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: launchpad-orig-tarball
+          path: .pkg-build/libnginx-mod-http-cache-pilot_*.orig.tar.gz
+          if-no-files-found: error
+
   publish:
     runs-on: ubuntu-24.04
+    needs: source-tarball
     strategy:
       fail-fast: false
       matrix:
@@ -34,11 +54,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Show Docker versions
-        run: docker compose version
-
       - name: Build packaging image
         run: docker compose build packaging
+
+      - name: Download shared source tarball
+        uses: actions/download-artifact@v8
+        with:
+          name: launchpad-orig-tarball
+          path: .pkg-build
 
       - name: Build, sign, and upload source package
         env:

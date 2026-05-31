@@ -10,7 +10,12 @@ DEBIAN_DISTRIBUTION ?=
 DEBIAN_VERSION_SUFFIX ?=
 LAUNCHPAD_PPA ?= ppa:wpelevator/packages
 
-.PHONY: help image shell packaging-shell nginx-build nginx-build-dynamic nginx-version format test bench bench-quick debian-package debian-package-smoke debian-package-clean debian-source-package debian-source-package-signed launchpad-ppa-upload
+DEBIAN_PACKAGE_VERSION = $(shell dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -SVersion)
+DEBIAN_UPSTREAM_VERSION = $(shell printf '%s\n' "$(DEBIAN_PACKAGE_VERSION)" | sed 's/-[^-]*$$//')
+DEBIAN_SOURCE_DIR = $(DEBIAN_BUILD_ROOT)/$(DEBIAN_SOURCE_PACKAGE)-$(DEBIAN_UPSTREAM_VERSION)
+DEBIAN_ORIG_TARBALL = $(DEBIAN_BUILD_ROOT)/$(DEBIAN_SOURCE_PACKAGE)_$(DEBIAN_UPSTREAM_VERSION).orig.tar.gz
+
+.PHONY: help image shell packaging-shell nginx-build nginx-build-dynamic nginx-version format test bench bench-quick debian-package debian-package-smoke debian-package-clean debian-source-tree debian-orig-tarball debian-source-package debian-source-package-signed launchpad-ppa-upload
 
 help:
 	@printf '%s\n' \
@@ -23,6 +28,7 @@ help:
 		'make test                Run the Test::Nginx suite' \
 		'make debian-package      Build Debian source and binary packages under .pkg-build/' \
 		'make debian-package-smoke Build Debian packages and run debian/tests/smoke' \
+		'make debian-orig-tarball Build Debian upstream orig tarball under .pkg-build/' \
 		'make debian-source-package Build unsigned Debian source package under .pkg-build/' \
 		'make debian-source-package-signed Build signed Debian source package under .pkg-build/' \
 		'make launchpad-ppa-upload Build, sign, and upload source package to Launchpad PPA' \
@@ -82,16 +88,9 @@ bench-quick: nginx-build
 debian-package-clean:
 	rm -rf "$(DEBIAN_BUILD_ROOT)"
 
-debian-source-package:
-	package_version="$$(dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -SVersion)"; \
-	source_version="$${package_version}$(DEBIAN_VERSION_SUFFIX)"; \
-	upstream_version="$$(printf '%s\n' "$$package_version" | sed 's/-[^-]*$$//')"; \
-	source_package="$(DEBIAN_SOURCE_PACKAGE)"; \
-	build_root="$(DEBIAN_BUILD_ROOT)"; \
-	source_dir="$$build_root/$${source_package}-$${upstream_version}"; \
-	orig_tarball="$$build_root/$${source_package}_$${upstream_version}.orig.tar.gz"; \
-	rm -rf "$$build_root"; \
-	mkdir -p "$$source_dir"; \
+debian-source-tree:
+	rm -rf "$(DEBIAN_SOURCE_DIR)"
+	mkdir -p "$(DEBIAN_SOURCE_DIR)"
 	tar \
 		--exclude-vcs \
 		--exclude=".pkg-build" \
@@ -107,12 +106,26 @@ debian-source-package:
 		--exclude="*.debian.tar.*" \
 		--exclude="*.dsc" \
 		--exclude="*.orig.tar.gz" \
-		-cf - . | tar -xf - -C "$$source_dir"; \
-	tar -C "$$build_root" -czf "$$orig_tarball" "$${source_package}-$${upstream_version}"; \
+		-cf - . | tar -xf - -C "$(DEBIAN_SOURCE_DIR)"
+
+debian-orig-tarball: debian-source-tree
+	source_date_epoch="$${SOURCE_DATE_EPOCH:-$$(dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -STimestamp)}"; \
+	tar -C "$(DEBIAN_BUILD_ROOT)" \
+		--sort=name \
+		--mtime="@$$source_date_epoch" \
+		--owner=0 \
+		--group=0 \
+		--numeric-owner \
+		-cf - "$(DEBIAN_SOURCE_PACKAGE)-$(DEBIAN_UPSTREAM_VERSION)" | gzip -n > "$(DEBIAN_ORIG_TARBALL)"
+
+debian-source-package: debian-source-tree
+	@test -f "$(DEBIAN_ORIG_TARBALL)" || $(MAKE) debian-orig-tarball
+	package_version="$$(dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -SVersion)"; \
+	source_version="$${package_version}$(DEBIAN_VERSION_SUFFIX)"; \
 	changelog_distribution="$$(dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -SDistribution)"; \
 	source_distribution="$${DEBIAN_DISTRIBUTION:-$$changelog_distribution}"; \
 	if [ "$$source_version" != "$$package_version" ] || [ "$$source_distribution" != "$$changelog_distribution" ]; then \
-		cd "$$source_dir" && \
+		cd "$(DEBIAN_SOURCE_DIR)" && \
 			DEBFULLNAME="$${DEBFULLNAME:-WPElevator Packaging Team}" \
 			DEBEMAIL="$${DEBEMAIL:-hi@wpelevator.com}" \
 			dch --newversion "$$source_version" \
@@ -120,14 +133,10 @@ debian-source-package:
 				--force-distribution \
 				"Build for $$source_distribution."; \
 	fi; \
-	cd "$$source_dir" && dpkg-buildpackage -S -sa -us -uc
+	cd "$(DEBIAN_SOURCE_DIR)" && dpkg-buildpackage -S -sa -us -uc
 
 debian-package: debian-source-package
-	package_version="$$(dpkg-parsechangelog -l "$(CURDIR)/debian/changelog" -SVersion)"; \
-	upstream_version="$$(printf '%s\n' "$$package_version" | sed 's/-[^-]*$$//')"; \
-	source_package="$(DEBIAN_SOURCE_PACKAGE)"; \
-	source_dir="$(DEBIAN_BUILD_ROOT)/$${source_package}-$${upstream_version}"; \
-	cd "$$source_dir" && dpkg-buildpackage -b -us -uc
+	cd "$(DEBIAN_SOURCE_DIR)" && dpkg-buildpackage -b -us -uc
 
 debian-package-smoke: debian-package
 	apt-get update
