@@ -92,7 +92,8 @@ ngx_http_cache_pilot_protocol_attach(ngx_conf_t *cf,
                                      ngx_http_cache_pilot_loc_conf_t *conf,
                                      ngx_http_core_loc_conf_t *clcf,
                                      void *protocol_loc_conf,
-                                     ngx_http_cache_pilot_protocol_t *protocol);
+                                     ngx_http_cache_pilot_protocol_t *protocol,
+                                     ngx_http_handler_pt prev_original_handler);
 
 # if (NGX_HTTP_FASTCGI)
 char       *ngx_http_fastcgi_cache_purge_conf(ngx_conf_t *cf,
@@ -1290,7 +1291,8 @@ ngx_http_cache_pilot_protocol_attach(ngx_conf_t *cf,
                                      ngx_http_cache_pilot_loc_conf_t *conf,
                                      ngx_http_core_loc_conf_t *clcf,
                                      void *protocol_loc_conf,
-                                     ngx_http_cache_pilot_protocol_t *protocol) {
+                                     ngx_http_cache_pilot_protocol_t *protocol,
+                                     ngx_http_handler_pt prev_original_handler) {
     ngx_http_cache_pilot_conf_t  *protocol_conf;
     ngx_flag_t                    has_cache_key;
     ngx_flag_t                    has_cache;
@@ -1314,7 +1316,16 @@ ngx_http_cache_pilot_protocol_attach(ngx_conf_t *cf,
 
     conf->conf = protocol_conf;
     conf->protocol = protocol->id;
-    conf->original_handler = clcf->handler;
+
+    if (!protocol_conf->configured && prev_original_handler != NULL) {
+        conf->original_handler = prev_original_handler;
+    } else if (clcf->handler == ngx_http_cache_pilot_access_handler
+               && prev_original_handler != NULL) {
+        conf->original_handler = prev_original_handler;
+    } else {
+        conf->original_handler = clcf->handler;
+    }
+
     clcf->handler = ngx_http_cache_pilot_access_handler;
 
     if (has_pass) {
@@ -3527,7 +3538,8 @@ ngx_http_cache_pilot_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
         if (protocol_conf->enable) {
             return ngx_http_cache_pilot_protocol_attach(
-                       cf, conf, clcf, protocol->config_loc_conf(cf), protocol);
+                       cf, conf, clcf, protocol->config_loc_conf(cf), protocol,
+                       prev->original_handler);
         }
     }
 
