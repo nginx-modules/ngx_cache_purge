@@ -1,5 +1,8 @@
 FROM debian:bookworm-slim
 
+LABEL org.opencontainers.image.source="https://github.com/wpelevator/ngx_cache_pilot"
+LABEL org.opencontainers.image.description="Debian development environment for ngx_cache_pilot"
+
 ARG NGINX_VERSION=1.25.5
 ARG TEST_NGINX_REPO=https://github.com/openresty/test-nginx.git
 
