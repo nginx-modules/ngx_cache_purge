@@ -1,0 +1,5 @@
+libnginx-mod-http-cache-pilot (1.1.0-1) unstable; urgency=medium
+
+  * Initial release.
+
+ -- WPElevator Packaging Team <hi@wpelevator.com>  Sat, 31 May 2026 05:30:14 +0000

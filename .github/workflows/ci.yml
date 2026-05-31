@@ -5,12 +5,17 @@ on:
     branches:
       - main
       - master
+    tags:
+      - '*'
   pull_request:
   workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -35,7 +40,7 @@ jobs:
           docker compose version
 
       - name: Build docker image
-        run: docker compose build
+        run: docker compose build dev
 
       - name: Lint code
         run: |
@@ -44,3 +49,28 @@ jobs:
 
       - name: Run tests
         run: docker compose run --rm dev make test
+
+  debian-package:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build packaging image
+        run: docker compose build packaging
+
+      - name: Build Debian package and run smoke test
+        run: docker compose run --rm packaging make debian-package-smoke
+
+      - name: Upload Debian package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: debian-package-artifacts
+          include-hidden-files: true
+          path: |
+            .pkg-build/libnginx-mod-http-cache-pilot_*.buildinfo
+            .pkg-build/libnginx-mod-http-cache-pilot_*.changes
+            .pkg-build/libnginx-mod-http-cache-pilot_*.deb
+            .pkg-build/libnginx-mod-http-cache-pilot_*.dsc
+            .pkg-build/libnginx-mod-http-cache-pilot_*.tar.*
+          if-no-files-found: error

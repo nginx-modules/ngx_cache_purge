@@ -1,0 +1,26 @@
+Source: libnginx-mod-http-cache-pilot
+Section: httpd
+Priority: optional
+Maintainer: WPElevator Packaging Team <hi@wpelevator.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ nginx-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://github.com/wpelevator/ngx_cache_pilot
+Vcs-Browser: https://github.com/wpelevator/ngx_cache_pilot
+Vcs-Git: https://github.com/wpelevator/ngx_cache_pilot.git
+
+Package: libnginx-mod-http-cache-pilot
+Architecture: any
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends}
+Recommends: nginx
+Description: cache purge and cache-tag module for Nginx
+ ngx_cache_pilot adds purge support for the FastCGI, proxy, SCGI, and uWSGI
+ caches in Nginx. It also adds Linux-backed cache-key and cache-tag indexing
+ for faster invalidation flows.
+ .
+ This package ships ngx_cache_pilot as a dynamic Nginx module and depends on
+ the matching nginx ABI provided by the target distribution.

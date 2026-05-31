@@ -1,0 +1,30 @@
+#!/usr/bin/make -f
+
+SHELL := /bin/bash
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+NGINX_BUILD_DIR := $(CURDIR)/debian/build/nginx
+
+%:
+	dh $@ --with nginx
+
+override_dh_auto_configure:
+	rm -rf $(NGINX_BUILD_DIR)
+	mkdir -p $(NGINX_BUILD_DIR)
+	cp -a /usr/share/nginx/src/. $(NGINX_BUILD_DIR)/
+	cd $(NGINX_BUILD_DIR) && \
+		source ./conf_flags && \
+		./configure "$${NGX_CONF_FLAGS[@]}" --add-dynamic-module=$(CURDIR)
+
+override_dh_auto_build:
+	$(MAKE) -C $(NGINX_BUILD_DIR) -f objs/Makefile modules
+
+override_dh_auto_install:
+	:
+
+override_dh_auto_test:
+	:
+
+override_dh_auto_clean:
+	rm -rf $(CURDIR)/debian/build

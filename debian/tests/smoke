@@ -1,0 +1,90 @@
+#!/bin/sh
+
+set -eu
+
+workdir="$(mktemp -d)"
+backend_pid=
+nginx_started=
+
+cleanup() {
+    if [ -n "${nginx_started}" ]; then
+        nginx -p "${workdir}/" -c "${workdir}/nginx.conf" -s stop >/dev/null 2>&1 || true
+    fi
+
+    if [ -n "${backend_pid}" ]; then
+        kill "${backend_pid}" >/dev/null 2>&1 || true
+        wait "${backend_pid}" 2>/dev/null || true
+    fi
+
+    rm -rf "${workdir}"
+}
+
+trap cleanup EXIT INT TERM
+
+header_value() {
+    awk -F': ' -v wanted="$1" 'tolower($1) == tolower(wanted) { gsub("\r", "", $2); print $2; exit }' "$2"
+}
+
+mkdir -p "${workdir}/backend" "${workdir}/cache" "${workdir}/logs" "${workdir}/client_temp"
+printf 'cache-pilot backend\n' > "${workdir}/backend/index.html"
+
+nginx_user="$(id -un)"
+
+python3 -m http.server 18081 --bind 127.0.0.1 --directory "${workdir}/backend" >/dev/null 2>&1 &
+backend_pid=$!
+sleep 1
+
+test -f /usr/lib/nginx/modules/ngx_http_cache_pilot_module.so
+test -f /usr/share/nginx/modules-available/mod-http-cache-pilot.conf
+test -L /etc/nginx/modules-enabled/50-mod-http-cache-pilot.conf
+
+cat > "${workdir}/nginx.conf" <<EOF
+pid logs/nginx.pid;
+load_module /usr/lib/nginx/modules/ngx_http_cache_pilot_module.so;
+user ${nginx_user};
+
+events {}
+
+http {
+    access_log ${workdir}/logs/access.log;
+    error_log stderr notice;
+    client_body_temp_path ${workdir}/client_temp;
+    proxy_cache_path ${workdir}/cache levels=1:2 keys_zone=cache:10m inactive=1m use_temp_path=off;
+
+    map \$request_method \$cache_pilot_purge {
+        default 0;
+        PURGE   1;
+    }
+
+    server {
+        listen 127.0.0.1:18080;
+
+        location / {
+            proxy_pass http://127.0.0.1:18081;
+            proxy_cache cache;
+            proxy_cache_key \$uri;
+            proxy_cache_valid 200 1m;
+            proxy_cache_purge \$cache_pilot_purge;
+            add_header X-Cache-Status \$upstream_cache_status always;
+        }
+    }
+}
+EOF
+
+nginx -t -p "${workdir}/" -c "${workdir}/nginx.conf"
+nginx -p "${workdir}/" -c "${workdir}/nginx.conf"
+nginx_started=1
+sleep 1
+
+curl -fsS -D "${workdir}/miss.headers" -o /dev/null http://127.0.0.1:18080/index.html
+[ "$(header_value X-Cache-Status "${workdir}/miss.headers")" = "MISS" ]
+
+curl -fsS -D "${workdir}/hit.headers" -o /dev/null http://127.0.0.1:18080/index.html
+[ "$(header_value X-Cache-Status "${workdir}/hit.headers")" = "HIT" ]
+
+purge_code="$(curl -sS -o "${workdir}/purge.body" -w '%{http_code}' -X PURGE http://127.0.0.1:18080/index.html)"
+[ "${purge_code}" = "200" ]
+grep -q '"key"' "${workdir}/purge.body"
+
+curl -fsS -D "${workdir}/after.headers" -o /dev/null http://127.0.0.1:18080/index.html
+[ "$(header_value X-Cache-Status "${workdir}/after.headers")" = "MISS" ]

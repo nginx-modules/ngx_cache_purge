@@ -1,0 +1,7 @@
+Tests: smoke
+Depends:
+ @,
+ curl,
+ nginx-core,
+ python3
+Restrictions: allow-stderr

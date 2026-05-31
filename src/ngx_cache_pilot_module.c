@@ -39,6 +39,12 @@
     #error This module cannot be build against an unknown nginx version.
 #endif
 
+#if (nginx_version >= 1025004)
+    #define ngx_http_cache_pilot_request_terminated(r) ((r)->main->terminated)
+#else
+    #define ngx_http_cache_pilot_request_terminated(r) 0
+#endif
+
 #define NGX_RESPONSE_TYPE_JSON 1
 #define NGX_RESPONSE_TYPE_TEXT 2
 
@@ -1723,7 +1729,7 @@ ngx_http_cache_pilot_partial_completion(ngx_event_t *ev) {
     r->main->blocked--;
     r->aio = 0;
 
-    if (r->done || r->main->terminated) {
+    if (r->done || ngx_http_cache_pilot_request_terminated(r)) {
         c->write->handler(c->write);
         return;
     }

@@ -1,1 +1,15 @@
+.pkg-build/
 bench/results/*/
+debian/build/
+debian/files
+debian/.debhelper/
+debian/debhelper-build-stamp
+debian/libnginx-mod-http-cache-pilot/
+debian/libnginx-mod-http-cache-pilot.substvars
+*.buildinfo
+*.changes
+*.deb
+*.ddeb
+*.debian.tar.*
+*.dsc
+*.orig.tar.gz
