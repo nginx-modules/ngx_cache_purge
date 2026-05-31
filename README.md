@@ -680,9 +680,11 @@ make nginx-version
 Use the packaging container when you want to build and smoke-test the Debian package locally without installing packaging dependencies on the host:
 
 ```bash
-docker compose build packaging
+docker compose pull packaging
 docker compose run --rm packaging make debian-package-smoke
 ```
+
+The packaging container is published as the public GitHub Container Registry image `ghcr.io/wpelevator/ngx-cache-pilot--packaging:1.0.0`. Versioned development containers are published as `ghcr.io/wpelevator/ngx-cache-pilot--dev:<nginx-version>` for the NGINX versions validated in CI. Local `docker compose build dev` and `docker compose build packaging` still rebuild the images when you need to test container changes.
 
 The same packaging container can also prepare Launchpad PPA source uploads. Launchpad accepts signed source packages and builds the published `.deb` packages in the PPA; local binary `.deb` builds remain available through `make debian-package` and `make debian-package-smoke`.
 
@@ -751,9 +753,10 @@ The `Publish Launchpad PPA` GitHub Actions workflow publishes `jammy` and `noble
 Before tagging a release, run the usual validation flow from this repository:
 
 ```bash
-docker compose build
+docker compose build dev
 docker compose run --rm dev make format
 docker compose run --rm dev make test
+docker compose pull packaging
 docker compose run --rm packaging make debian-package-smoke
 docker compose run --rm packaging make debian-source-package DEBIAN_DISTRIBUTION=jammy DEBIAN_VERSION_SUFFIX=+ppa1~jammy1
 docker compose run --rm packaging make debian-source-package DEBIAN_DISTRIBUTION=noble DEBIAN_VERSION_SUFFIX=+ppa1~noble1
