@@ -1,4 +1,4 @@
-name: CI
+name: Test
 
 on:
   push:
@@ -27,20 +27,13 @@ jobs:
           - "1.26.3"
           - "1.28.3"
           - "1.29.8"
-
     env:
       NGINX_VERSION: ${{ matrix.nginx_version }}
-
     steps:
       - uses: actions/checkout@v6
 
-      - name: Show Docker versions
-        run: |
-          docker --version
-          docker compose version
-
-      - name: Build docker image
-        run: docker compose build dev
+      - name: Pull docker images
+        run: docker compose pull dev
 
       - name: Lint code
         run: |
@@ -52,12 +45,11 @@ jobs:
 
   debian-package:
     runs-on: ubuntu-24.04
-
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build packaging image
-        run: docker compose build packaging
+      - name: Pull docker images
+        run: docker compose pull packaging
 
       - name: Build Debian package and run smoke test
         run: docker compose run --rm packaging make debian-package-smoke
