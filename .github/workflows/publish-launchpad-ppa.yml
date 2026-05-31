@@ -23,8 +23,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build packaging image
-        run: docker compose build packaging
+      - name: Pull packaging image
+        run: docker compose pull packaging
 
       - name: Build shared source tarball
         run: docker compose run --rm packaging make debian-orig-tarball
@@ -54,8 +54,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Build packaging image
-        run: docker compose build packaging
+      - name: Pull packaging image
+        run: docker compose pull packaging
 
       - name: Download shared source tarball
         uses: actions/download-artifact@v8
