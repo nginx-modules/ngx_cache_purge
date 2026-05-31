@@ -684,6 +684,33 @@ docker compose build packaging
 docker compose run --rm packaging make debian-package-smoke
 ```
 
+The same packaging container can also prepare Launchpad PPA source uploads. Launchpad accepts signed source packages and builds the published `.deb` packages in the PPA; local binary `.deb` builds remain available through `make debian-package` and `make debian-package-smoke`.
+
+To validate source-package generation for the Ubuntu series without uploading:
+
+```bash
+docker compose run --rm packaging make debian-source-package \
+  DEBIAN_DISTRIBUTION=jammy \
+  DEBIAN_VERSION_SUFFIX=+ppa1~jammy1
+
+docker compose run --rm packaging make debian-source-package \
+  DEBIAN_DISTRIBUTION=noble \
+  DEBIAN_VERSION_SUFFIX=+ppa1~noble1
+```
+
+To sign and upload to `ppa:wpelevator/packages`, provide a Launchpad-registered GPG key id. If `DEBIAN_GPG_PRIVATE_KEY` is set, the signed source-package target imports it before signing; otherwise it uses the container's existing GPG keyring.
+
+```bash
+docker compose run --rm \
+  -e DEBIAN_GPG_KEY_ID \
+  -e DEBIAN_GPG_PRIVATE_KEY \
+  packaging make launchpad-ppa-upload \
+    DEBIAN_DISTRIBUTION=noble \
+    DEBIAN_VERSION_SUFFIX=+ppa1~noble1
+```
+
+In CI, the workflow passes `LAUNCHPAD_GPG_PRIVATE_KEY` as armored private key text and `LAUNCHPAD_GPG_KEY_ID` as the signing key id; the Make targets accept those names as fallbacks for the generic `DEBIAN_GPG_*` variables.
+
 ### GitHub Codespaces
 
 The repository also includes a `.devcontainer/devcontainer.json` that builds a GitHub Codespaces devcontainer from the repository `Dockerfile`.
@@ -710,6 +737,15 @@ Treat the Git tag as the upstream module version. Use plain semantic versions su
 
 Use `debian/changelog` for the Debian package version. For an upstream `1.2.0` release, the first package upload should be `1.2.0-1`. If you need to rebuild or republish the same upstream release without changing the upstream version, bump only the Debian revision (`1.2.0-2`, `1.2.0-3`, and so on). Keep the release notes aligned across `CHANGELOG.md` and `debian/changelog`, but do not collapse them into one file: Debian tooling reads `debian/changelog` directly, so it needs to remain in Debian's package changelog format even when it is summarizing the same release.
 
+PPA uploads append an Ubuntu-series suffix to the Debian package version in a temporary build tree under `.pkg-build/`; the working-tree `debian/changelog` is not modified. Use suffixes like `+ppa1~jammy1` and `+ppa1~noble1`, incrementing the `ppa` revision when rebuilding the same Debian package version for Launchpad.
+
+When `DEBIAN_DISTRIBUTION` is not set, source package builds preserve the distribution from `debian/changelog`. Set `DEBIAN_DISTRIBUTION` only when building for a specific target series such as a Launchpad PPA upload.
+
+The `Publish Launchpad PPA` GitHub Actions workflow publishes `jammy` and `noble` source uploads to `ppa:wpelevator/packages`. It requires these repository secrets:
+
+- `LAUNCHPAD_GPG_KEY_ID`
+- `LAUNCHPAD_GPG_PRIVATE_KEY` containing the armored private key text
+
 Before tagging a release, run the usual validation flow from this repository:
 
 ```bash
@@ -717,6 +753,8 @@ docker compose build
 docker compose run --rm dev make format
 docker compose run --rm dev make test
 docker compose run --rm packaging make debian-package-smoke
+docker compose run --rm packaging make debian-source-package DEBIAN_DISTRIBUTION=jammy DEBIAN_VERSION_SUFFIX=+ppa1~jammy1
+docker compose run --rm packaging make debian-source-package DEBIAN_DISTRIBUTION=noble DEBIAN_VERSION_SUFFIX=+ppa1~noble1
 ```
 
 Release checklist:

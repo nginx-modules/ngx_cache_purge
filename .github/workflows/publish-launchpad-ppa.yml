@@ -1,0 +1,68 @@
+name: Publish Launchpad PPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ppa_revision:
+        description: PPA revision number used in +ppaN~series1
+        required: true
+        default: '1'
+        type: string
+
+concurrency:
+  group: launchpad-ppa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - series: jammy
+            series_suffix: jammy1
+          - series: noble
+            series_suffix: noble1
+
+    env:
+      PPA_REVISION: ${{ github.event.inputs.ppa_revision || '1' }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: docker compose version
+
+      - name: Build packaging image
+        run: docker compose build packaging
+
+      - name: Build, sign, and upload source package
+        env:
+          LAUNCHPAD_GPG_KEY_ID: ${{ secrets.LAUNCHPAD_GPG_KEY_ID }}
+          LAUNCHPAD_GPG_PRIVATE_KEY: ${{ secrets.LAUNCHPAD_GPG_PRIVATE_KEY }}
+          LAUNCHPAD_PPA: ppa:kasparsd/testing
+        run: |
+          docker compose run --rm \
+            -e LAUNCHPAD_GPG_KEY_ID \
+            -e LAUNCHPAD_GPG_PRIVATE_KEY \
+            -e LAUNCHPAD_PPA \
+            packaging make launchpad-ppa-upload \
+              DEBIAN_DISTRIBUTION=${{ matrix.series }} \
+              DEBIAN_VERSION_SUFFIX=+ppa${PPA_REVISION}~${{ matrix.series_suffix }}
+
+      - name: Upload source package artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launchpad-source-${{ matrix.series }}
+          include-hidden-files: true
+          path: |
+            .pkg-build/libnginx-mod-http-cache-pilot_*.buildinfo
+            .pkg-build/libnginx-mod-http-cache-pilot_*.changes
+            .pkg-build/libnginx-mod-http-cache-pilot_*.dsc
+            .pkg-build/libnginx-mod-http-cache-pilot_*.tar.*
+          if-no-files-found: error

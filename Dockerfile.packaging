@@ -9,9 +9,13 @@ RUN apt-get update \
         curl \
         debhelper \
         devscripts \
+        dput-ng \
         fakeroot \
+        gnupg \
+        libdistro-info-perl \
         nginx-core \
         nginx-dev \
+        python3-distro-info \
         python3 \
     && rm -rf /var/lib/apt/lists/*
 
