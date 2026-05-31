@@ -1,0 +1,93 @@
+name: Publish Docker Images
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+concurrency:
+  group: container-images-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  packaging:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push packaging image
+        uses: docker/bake-action@v7
+        with:
+          files: docker-compose.yml
+          targets: packaging
+          push: true
+          set: |
+            packaging.platform=linux/amd64,linux/arm64
+            packaging.cache-from=type=gha,scope=packaging
+            packaging.cache-to=type=gha,mode=max,scope=packaging
+
+  dev:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx_version:
+          - "1.26.3"
+          - "1.28.3"
+          - "1.29.8"
+    env:
+      NGINX_VERSION: ${{ matrix.nginx_version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push dev image
+        uses: docker/bake-action@v7
+        with:
+          files: docker-compose.yml
+          targets: dev
+          push: true
+          set: |
+            dev.platform=linux/amd64,linux/arm64
+            dev.cache-from=type=gha,scope=dev-${{ env.NGINX_VERSION }}
+            dev.cache-to=type=gha,mode=max,scope=dev-${{ env.NGINX_VERSION }}
