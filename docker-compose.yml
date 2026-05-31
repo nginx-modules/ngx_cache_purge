@@ -1,5 +1,6 @@
 services:
   dev:
+    image: ghcr.io/wpelevator/ngx-cache-pilot--dev:${NGINX_VERSION:-1.25.5}
     build:
       context: .
       args:
@@ -8,6 +9,7 @@ services:
     volumes:
       - .:/workspace
   packaging:
+    image: ghcr.io/wpelevator/ngx-cache-pilot--packaging:1.0.0
     build:
       context: .
       dockerfile: Dockerfile.packaging
