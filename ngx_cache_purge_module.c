@@ -225,6 +225,13 @@ typedef struct {
     ngx_uint_t              files_deleted;
     ngx_uint_t              files_checked;
     /*
+     * Count of files the walk encountered but refused to delete because
+     * they live under a protected nginx temp directory (client_temp,
+     * client_body_temp, fastcgi_temp, proxy_temp, scgi_temp, uwsgi_temp).
+     * See ngx_http_cache_purge_is_protected_path() below.
+     */
+    ngx_uint_t              protected_skipped;
+    /*
      * cache is set by ngx_http_cache_purge_delete_variants() so that
      * delete_exact_file can update shm metadata (sh->size, node->exists,
      * node->fs_size) for each variant it deletes.  NULL in all other walk
@@ -285,6 +292,10 @@ char *ngx_http_cache_purge_legacy_status_conf(ngx_conf_t *cf,
 char *ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx,
+    ngx_str_t *path);
+static ngx_uint_t ngx_http_cache_purge_is_protected_path(u_char *path,
+    size_t len);
+static ngx_int_t ngx_http_cache_purge_skip_protected_dir(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
 static ngx_int_t ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
@@ -965,7 +976,7 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
     ngx_memzero(&ctx,  sizeof(ngx_http_cache_purge_walk_ctx_t));
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
 
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_cache_purge_skip_protected_dir;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -989,6 +1000,13 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
                    "ngx_cache_purge: background walk of \"%V\" key \"%V\" "
                    "deleted %ui file(s)",
                    &item->cache_path, &item->key_partial, ctx.files_deleted);
+
+    if (ctx.protected_skipped > 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "ngx_cache_purge: background walk of \"%V\" "
+                      "skipped %ui file(s) inside a protected nginx temp "
+                      "directory", &item->cache_path, ctx.protected_skipped);
+    }
 
     ngx_slab_free(queue->shpool, item->cache_path.data);
     if (item->key_partial.data) {
@@ -1116,6 +1134,143 @@ ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf, ngx_command_t *cmd,
 /* -- file-walk helpers -------------------------------------------------- */
 
 /*
+ * Hard-coded basenames of nginx's own temp directories.  No purge walk
+ * below -- purge_all (sync or background), the wildcard "key*" walk, or
+ * the vary-aware exact-match walk -- is ever allowed to delete a file
+ * whose path contains one of these components, no matter how deeply it
+ * is nested under the configured cache zone path.
+ *
+ * Why this guard exists: client_body_temp_path / fastcgi_temp_path /
+ * proxy_temp_path / scgi_temp_path / uwsgi_temp_path hold partially
+ * written request/response bodies that are still being assembled on
+ * disk by in-flight requests. nginx's documented best practice is to put
+ * each *_temp_path on the same filesystem as its matching *_cache_path
+ * so the final rename() into the cache is atomic -- but "same
+ * filesystem" is frequently (mis)implemented as "same parent directory"
+ * or even "sub-directory of the cache path", e.g.:
+ *
+ *   proxy_cache_path /var/cache/nginx          levels=1:2 keys_zone=z:10m;
+ *   proxy_temp_path  /var/cache/nginx/proxy_temp;
+ *
+ * Under that (common, copy-pasted-from-a-tutorial) layout, cache->path->
+ * name is "/var/cache/nginx" and ngx_walk_tree() in the unguarded
+ * purge_all walk would descend straight into proxy_temp too, deleting
+ * in-flight temp files out from under requests that are still being
+ * proxied -- corrupting responses and producing sporadic, hard-to-
+ * reproduce errors under load. This list, and the two functions that use
+ * it, close that hole.
+ *
+ * The list includes both "client_temp" (the name several popular
+ * tutorials use for brevity) and "client_body_temp" (nginx's own
+ * configure-time default for client_body_temp_path), since installs use
+ * either name interchangeably and a name-based guard is only as good as
+ * the names it knows.
+ *
+ * The list is intentionally static and name-based rather than read from
+ * the live *_temp_path directives: the purge walk runs long after
+ * configuration parsing, inside whichever worker handles the PURGE
+ * request or services the background queue, with no cheap path back to
+ * every protocol's temp_path conf from this code. These names are
+ * nginx's compiled-in defaults and, in practice, what the overwhelming
+ * majority of real installs use. A guard that protects the default case
+ * is far safer than no guard at all, and it is a pure safety net: it
+ * only ever causes files to be SKIPPED, never causes a file that would
+ * otherwise have been left alone to be deleted.
+ */
+static const ngx_str_t ngx_http_cache_purge_protected_dirs[] = {
+    ngx_string("client_temp"),
+    ngx_string("client_body_temp"),
+    ngx_string("fastcgi_temp"),
+    ngx_string("proxy_temp"),
+    ngx_string("scgi_temp"),
+    ngx_string("uwsgi_temp"),
+    ngx_null_string  /* sentinel */
+};
+
+/*
+ * Returns 1 if path[0, len) contains, as a complete '/'-delimited path
+ * component, the exact (case-sensitive) name of one of the directories
+ * above; 0 otherwise.
+ *
+ * Whole-component match only: "proxy_temp2" or "my_proxy_temp_backup"
+ * must NOT match "proxy_temp". path is the absolute, NUL-terminated
+ * buffer ngx_walk_tree() builds for every callback it invokes (the same
+ * buffer the existing handlers already pass straight to ngx_open_file() /
+ * ngx_delete_file()), so this is a single O(len) scan with no extra
+ * allocation -- negligible next to the open()/read()/unlink() syscalls
+ * the delete handlers already perform per file.
+ */
+static ngx_uint_t
+ngx_http_cache_purge_is_protected_path(u_char *path, size_t len)
+{
+    u_char      *p, *start;
+    size_t       seg_len;
+    ngx_uint_t   i;
+
+    start = path;
+
+    for (p = path; p <= path + len; p++) {
+        if (p != path + len && *p != '/') {
+            continue;
+        }
+
+        seg_len = (size_t) (p - start);
+
+        if (seg_len > 0) {
+            for (i = 0;
+                 ngx_http_cache_purge_protected_dirs[i].data != NULL;
+                 i++)
+            {
+                if (seg_len == ngx_http_cache_purge_protected_dirs[i].len
+                    && ngx_strncmp(start,
+                           ngx_http_cache_purge_protected_dirs[i].data,
+                           seg_len) == 0)
+                {
+                    return 1;
+                }
+            }
+        }
+
+        start = p + 1;
+    }
+
+    return 0;
+}
+
+/*
+ * pre_tree_handler shared by all four purge walks (foreground purge_all,
+ * background-queue purge_all, the wildcard walk, and the vary-aware
+ * exact-match walk).
+ *
+ * Returning NGX_DECLINED here tells ngx_walk_tree() -- on nginx >= 1.7.10,
+ * which added "supported directory skipping in ngx_walk_tree()" -- to
+ * skip this directory and everything under it, without recursing into it
+ * and without aborting the rest of the walk. On older nginx, where that
+ * core behaviour does not exist, a non-NGX_ABORT return is treated like
+ * NGX_OK and the walk proceeds to recurse as it always did; the per-file
+ * checks added to the delete handlers below are what provide the actual
+ * delete-time guarantee on every nginx version, so there is no
+ * functional gap on old nginx -- only a (harmless) loss of the walk-
+ * skipping optimisation that avoids needless stat()/open() calls on
+ * modern nginx.
+ */
+static ngx_int_t
+ngx_http_cache_purge_skip_protected_dir(ngx_tree_ctx_t *ctx, ngx_str_t *path)
+{
+    if (ngx_http_cache_purge_is_protected_path(path->data, path->len)) {
+        ngx_log_error(NGX_LOG_ALERT, ctx->log, 0,
+                      "ngx_cache_purge: skipping protected nginx temp "
+                      "directory \"%V\" -- a *_temp_path appears to be "
+                      "nested under a *_cache_path; this directory and "
+                      "everything in it will never be touched by purge",
+                      path);
+        return NGX_DECLINED;
+    }
+
+    return NGX_OK;
+}
+
+/*
  * Prefix-match walk handler.
  *
  * Uses walk_ctx->key_buffer (stack-allocated, fixed size) instead of
@@ -1133,6 +1288,11 @@ ngx_http_purge_file_cache_delete_partial_file(ngx_tree_ctx_t *ctx,
     ngx_int_t                        n;
 
     wctx->files_checked++;
+
+    if (ngx_http_cache_purge_is_protected_path(path->data, path->len)) {
+        wctx->protected_skipped++;
+        return NGX_OK;
+    }
 
     if (wctx->key_len == 0) {
         /* stripped wildcard -- match everything */
@@ -1349,6 +1509,11 @@ ngx_http_purge_file_cache_delete_exact_file(ngx_tree_ctx_t *ctx,
     wctx = ctx->data;
     wctx->files_checked++;
 
+    if (ngx_http_cache_purge_is_protected_path(path->data, path->len)) {
+        wctx->protected_skipped++;
+        return NGX_OK;
+    }
+
     /* key_len == 0 or buffer too small to hold key + '\n' terminator: skip */
     if (wctx->key_len == 0
         || wctx->key_len + 1 >= NGX_CACHE_PURGE_KEY_MAX_LEN)
@@ -1433,7 +1598,7 @@ ngx_http_cache_purge_delete_variants(ngx_http_request_t *r,
     ctx.cache       = cache;   /* enables shm metadata updates in the walk */
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_exact_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_cache_purge_skip_protected_dir;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -1445,6 +1610,13 @@ ngx_http_cache_purge_delete_variants(ngx_http_request_t *r,
         ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                        "ngx_cache_purge: vary-aware walk deleted %ui variant(s) "
                        "for key \"%V\"", ctx.files_deleted, &key[0]);
+    }
+
+    if (ctx.protected_skipped > 0) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "ngx_cache_purge: vary-aware walk skipped %ui "
+                      "file(s) inside a protected nginx temp directory "
+                      "for key \"%V\"", ctx.protected_skipped, &key[0]);
     }
 }
 
@@ -1461,6 +1633,13 @@ ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx, ngx_str_t *path)
 {
     ngx_http_cache_purge_walk_ctx_t *wctx;
     wctx = ctx->data;
+
+    if (ngx_http_cache_purge_is_protected_path(path->data, path->len)) {
+        if (wctx != NULL) {
+            wctx->protected_skipped++;
+        }
+        return NGX_OK;
+    }
 
     if (wctx != NULL) {
         wctx->files_deleted++;
@@ -3105,7 +3284,7 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_cache_purge_skip_protected_dir;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -3116,6 +3295,15 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "ngx_cache_purge: purge_all deleted %ui file(s) "
                    "from zone \"%V\"", ctx.files_deleted, &cache->path->name);
+
+    if (ctx.protected_skipped > 0) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "ngx_cache_purge: purge_all skipped %ui file(s) "
+                      "inside a protected nginx temp directory under "
+                      "zone \"%V\" -- check that *_temp_path is not "
+                      "nested inside *_cache_path",
+                      ctx.protected_skipped, &cache->path->name);
+    }
 }
 
 ngx_uint_t
@@ -3141,7 +3329,7 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     ctx.key_len     = len;
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_partial_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_cache_purge_skip_protected_dir;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -3152,6 +3340,13 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, r->connection->log, 0,
                    "ngx_cache_purge: partial walk deleted %ui file(s) "
                    "for key prefix \"%V\"", ctx.files_deleted, &key[0]);
+
+    if (ctx.protected_skipped > 0) {
+        ngx_log_error(NGX_LOG_ALERT, r->connection->log, 0,
+                      "ngx_cache_purge: partial walk skipped %ui file(s) "
+                      "inside a protected nginx temp directory for key "
+                      "prefix \"%V\"", ctx.protected_skipped, &key[0]);
+    }
 
     return ctx.files_deleted;
 }
