@@ -86,6 +86,16 @@
  */
 #define NGX_CACHE_PURGE_SHM_MIN_PAGES        8
 
+/*
+ * Maximum number of concurrent Phase-2 walks tracked across the whole
+ * nginx instance.  Each worker process runs its own background timer and
+ * processes at most one queue item (one walk) per tick, so the true upper
+ * bound on simultaneous walks equals the worker process count.  128 is a
+ * generous ceiling for worker_processes auto on any real hardware; if it's
+ * ever exceeded, claim() logs and degrades gracefully instead of
+ * corrupting another slot.
+ */
+#define NGX_CACHE_PURGE_ACTIVE_SLOTS         128
 
 static const char ngx_http_cache_purge_content_type_json[] = "application/json";
 static const char ngx_http_cache_purge_content_type_html[] = "text/html";
@@ -127,9 +137,10 @@ static const size_t ngx_http_cache_purge_body_templ_text_size =
 
 /* -- forward declarations ----------------------------------------------- */
 
-typedef struct ngx_http_cache_purge_queue_item_s ngx_http_cache_purge_queue_item_t;
-typedef struct ngx_http_cache_purge_queue_s      ngx_http_cache_purge_queue_t;
-typedef struct ngx_http_cache_purge_main_conf_s  ngx_http_cache_purge_main_conf_t;
+typedef struct ngx_http_cache_purge_queue_item_s   ngx_http_cache_purge_queue_item_t;
+typedef struct ngx_http_cache_purge_queue_s        ngx_http_cache_purge_queue_t;
+typedef struct ngx_http_cache_purge_main_conf_s    ngx_http_cache_purge_main_conf_t;
+typedef struct ngx_http_cache_purge_active_slot_s  ngx_http_cache_purge_active_slot_t;
 
 
 /* -- data structures ---------------------------------------------------- */
@@ -142,6 +153,17 @@ struct ngx_http_cache_purge_queue_item_s {
     ngx_uint_t                         in_progress; /* reserved for ABI stability */
     ngx_msec_t                         enqueued_at;
     ngx_http_cache_purge_queue_item_t *next;
+};
+
+/*
+ * One slot per concurrently-active Phase-2 walk.  path.len == 0 means the
+ * slot is free.  refcount handles two different workers simultaneously
+ * walking the SAME cache path for two different queued items -- the slot
+ * is only released when the last walker finishes.
+ */
+struct ngx_http_cache_purge_active_slot_s {
+    ngx_str_t   path;
+    ngx_uint_t  refcount;
 };
 
 struct ngx_http_cache_purge_queue_s {
@@ -159,6 +181,15 @@ struct ngx_http_cache_purge_queue_s {
     ngx_uint_t                         max_size;
     ngx_uint_t                         batch_size;
     ngx_msec_t                         throttle_ms;
+    /*
+     * active_slots: tracks every Phase-2 walk currently in progress, across
+     * ALL worker processes.  With worker_processes auto/> 1, multiple
+     * workers can be walking different (or the same) cache paths
+     * simultaneously; a single scalar cannot represent that correctly.
+     * Read and written only while queue->mutex is held.  Zero-initialised
+     * correctly by ngx_slab_calloc() on first boot (all slots free).
+     */
+    ngx_http_cache_purge_active_slot_t active_slots[NGX_CACHE_PURGE_ACTIVE_SLOTS];
 };
 
 struct ngx_http_cache_purge_main_conf_s {
@@ -204,6 +235,7 @@ typedef struct {
     ngx_http_handler_pt          handler;
     ngx_http_handler_pt          original_handler;
     ngx_uint_t                   response_type;
+    ngx_str_t                    status_cache_path;     /* cache_purge_status path */
 
 # if (NGX_HTTP_PROXY)
     /*
@@ -246,6 +278,10 @@ static void ngx_http_cache_purge_background_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
     ngx_http_file_cache_t *cache, ngx_str_t *key, ngx_flag_t purge_all);
 static ngx_int_t ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle);
+static void ngx_http_cache_purge_active_claim(ngx_http_cache_purge_queue_t *queue,
+    ngx_str_t *path);
+static void ngx_http_cache_purge_active_release(ngx_http_cache_purge_queue_t *queue,
+    ngx_str_t *path);
 static ngx_uint_t ngx_http_cache_purge_hash_key(ngx_str_t *cache_path,
     ngx_str_t *key);
 static ngx_http_cache_purge_queue_item_t *ngx_http_cache_purge_find_duplicate(
@@ -284,6 +320,9 @@ char *ngx_http_cache_purge_legacy_status_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 char *ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
+char *ngx_http_cache_purge_status_conf(ngx_conf_t *cf,
+    ngx_command_t *cmd, void *conf);
+static ngx_int_t ngx_http_cache_purge_status_handler(ngx_http_request_t *r);
 static ngx_int_t ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
 static ngx_int_t ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx,
@@ -415,6 +454,11 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
       ngx_http_cache_purge_vary_aware_conf,
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_http_cache_purge_main_conf_t, vary_aware), NULL },
+
+    { ngx_string("cache_purge_status"),
+      NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_http_cache_purge_status_conf,
+      NGX_HTTP_LOC_CONF_OFFSET, 0, NULL },
 
     ngx_null_command
 };
@@ -883,6 +927,85 @@ ngx_http_cache_purge_enqueue(ngx_http_request_t *r,
 }
 
 /*
+ * ngx_http_cache_purge_active_claim -- register a Phase-2 walk as in
+ * progress for the given cache path.  Caller must hold queue->mutex.
+ *
+ * Finds an existing slot for the same path first (refcount++); otherwise
+ * claims the first free slot.  If every slot is occupied by a DIFFERENT
+ * path (only possible if concurrent walks exceed
+ * NGX_CACHE_PURGE_ACTIVE_SLOTS), the walk proceeds untracked rather than
+ * corrupting another slot -- status will under-report for that one walk
+ * instead of corrupting state.
+ */
+static void
+ngx_http_cache_purge_active_claim(ngx_http_cache_purge_queue_t *queue,
+    ngx_str_t *path)
+{
+    ngx_uint_t  i;
+    ngx_int_t   free_slot;
+
+    free_slot = -1;
+
+    for (i = 0; i < NGX_CACHE_PURGE_ACTIVE_SLOTS; i++) {
+        if (queue->active_slots[i].path.len == path->len
+            && queue->active_slots[i].path.len > 0
+            && ngx_memcmp(queue->active_slots[i].path.data, path->data,
+                          path->len) == 0)
+        {
+            queue->active_slots[i].refcount++;
+            return;
+        }
+
+        if (free_slot == -1 && queue->active_slots[i].path.len == 0) {
+            free_slot = (ngx_int_t) i;
+        }
+    }
+
+    if (free_slot == -1) {
+        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                      "ngx_cache_purge: active-walk slot table exhausted "
+                      "(%ui slots) -- cache_purge_status will not reflect "
+                      "this walk for \"%V\"",
+                      (ngx_uint_t) NGX_CACHE_PURGE_ACTIVE_SLOTS, path);
+        return;
+    }
+
+    queue->active_slots[free_slot].path     = *path;
+    queue->active_slots[free_slot].refcount = 1;
+}
+
+/*
+ * ngx_http_cache_purge_active_release -- mirror of claim().  Decrements
+ * the matching slot's refcount and frees the slot at zero.  MUST be
+ * called before item->cache_path.data is slab_free()'d, since the slot
+ * stores a pointer into that same allocation.
+ */
+static void
+ngx_http_cache_purge_active_release(ngx_http_cache_purge_queue_t *queue,
+    ngx_str_t *path)
+{
+    ngx_uint_t  i;
+
+    for (i = 0; i < NGX_CACHE_PURGE_ACTIVE_SLOTS; i++) {
+        if (queue->active_slots[i].path.len == path->len
+            && queue->active_slots[i].path.len > 0
+            && ngx_memcmp(queue->active_slots[i].path.data, path->data,
+                          path->len) == 0)
+        {
+            if (queue->active_slots[i].refcount > 0) {
+                queue->active_slots[i].refcount--;
+            }
+
+            if (queue->active_slots[i].refcount == 0) {
+                ngx_str_null(&queue->active_slots[i].path);
+            }
+
+            return;
+        }
+    }
+}
+
+/*
  * process_queue -- dequeue and walk exactly one item per invocation.
  *
  * Design: one item per timer tick.  The caller (background_handler) re-arms
@@ -952,6 +1075,14 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
             continue;   /* try the next head */
         }
 
+        /*
+         * Claim the active slot while still holding the mutex so that
+         * queue->size decrement and purge_in_flight become visible
+         * atomically to the status endpoint.  This eliminates the window
+         * where queue_size=0 AND purge_in_flight=false is observable
+         * before the walk has actually started.
+         */
+        ngx_http_cache_purge_active_claim(queue, &item->cache_path);
         break;  /* got a live item */
     }
 
@@ -989,6 +1120,16 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
                    "ngx_cache_purge: background walk of \"%V\" key \"%V\" "
                    "deleted %ui file(s)",
                    &item->cache_path, &item->key_partial, ctx.files_deleted);
+
+    /*
+     * Release the in-flight marker BEFORE freeing item->cache_path.data.
+     * Slot entries store a pointer into that same slab allocation, so
+     * releasing first guarantees the status handler never reads a
+     * pointer into memory the slab allocator has already reused.
+     */
+    ngx_shmtx_lock(&queue->mutex);
+    ngx_http_cache_purge_active_release(queue, &item->cache_path);
+    ngx_shmtx_unlock(&queue->mutex);
 
     ngx_slab_free(queue->shpool, item->cache_path.data);
     if (item->key_partial.data) {
@@ -1112,6 +1253,165 @@ ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf, ngx_command_t *cmd,
     return NGX_CONF_OK;
 }
 
+/* -- status endpoint ---------------------------------------------------- */
+
+/*
+ * cache_purge_status <path>;
+ *
+ * Turns the location into a read-only JSON status endpoint.
+ * Returns {"queue_size":<n>,"purge_all_pending":<bool>} for the given
+ * cache directory path, queried from the background purge queue.
+ * Returns zeros when cache_purge_background_queue is off (queue == NULL).
+ */
+char *
+ngx_http_cache_purge_status_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_cache_purge_loc_conf_t *cplcf = conf;
+    ngx_http_core_loc_conf_t        *clcf;
+    ngx_str_t                       *value;
+
+    if (cplcf->status_cache_path.data != NULL) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    cplcf->status_cache_path = value[1];   /* string lives in cf->pool */
+
+    /*
+     * Normalize trailing slash
+     */
+    if (cplcf->status_cache_path.len > 1
+        && cplcf->status_cache_path.data[cplcf->status_cache_path.len - 1] == '/')
+    {
+        cplcf->status_cache_path.len--;
+    }
+
+    clcf          = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
+    clcf->handler = ngx_http_cache_purge_status_handler;
+
+    return NGX_CONF_OK;
+}
+
+static ngx_int_t
+ngx_http_cache_purge_status_handler(ngx_http_request_t *r)
+{
+    ngx_http_cache_purge_loc_conf_t   *cplcf;
+    ngx_http_cache_purge_main_conf_t  *cmcf;
+    ngx_http_cache_purge_queue_t      *queue;
+    ngx_http_cache_purge_queue_item_t *item;
+    ngx_str_t                         *path;
+    ngx_uint_t                         qsize;
+    ngx_flag_t                         purge_all_pending;
+    ngx_flag_t                         queue_full;
+    ngx_flag_t                         purge_in_flight;
+    u_char                             buf[160];
+    u_char                            *p;
+    ngx_table_elt_t                   *cc;
+    ngx_buf_t                         *b;
+    ngx_chain_t                        out;
+    ngx_int_t                          rc;
+
+    if (r->method != NGX_HTTP_GET && r->method != NGX_HTTP_HEAD) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
+
+    rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    cplcf = ngx_http_get_module_loc_conf(r, ngx_http_cache_purge_module);
+    path  = &cplcf->status_cache_path;
+
+    qsize             = 0;
+    purge_all_pending = 0;
+    queue_full        = 0;
+    purge_in_flight   = 0;
+
+    cmcf = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);
+
+    if (cmcf != NULL && cmcf->queue != NULL) {
+        queue = cmcf->queue;
+
+        ngx_shmtx_lock(&queue->mutex);
+
+        for (item = queue->head; item != NULL; item = item->next) {
+            if (path->len > 0
+                && item->cache_path.len == path->len
+                && ngx_memcmp(item->cache_path.data, path->data,
+                              path->len) == 0)
+            {
+                qsize++;
+                if (item->purge_all) {
+                    purge_all_pending = 1;
+                }
+            }
+        }
+
+        queue_full = (queue->size >= queue->max_size);
+
+        {
+            ngx_uint_t  si;
+
+            for (si = 0; si < NGX_CACHE_PURGE_ACTIVE_SLOTS; si++) {
+                if (queue->active_slots[si].path.len == path->len
+                    && queue->active_slots[si].path.len > 0
+                    && ngx_memcmp(queue->active_slots[si].path.data,
+                                  path->data, path->len) == 0)
+                {
+                    purge_in_flight = 1;
+                    break;
+                }
+            }
+        }
+
+        ngx_shmtx_unlock(&queue->mutex);
+    }
+
+    p = ngx_snprintf(buf, sizeof(buf),
+                     "{\"queue_size\":%ui,\"purge_all_pending\":%s,"
+                     "\"queue_full\":%s,\"purge_in_flight\":%s}",
+                     qsize,
+                     purge_all_pending ? (u_char *) "true" : (u_char *) "false",
+                     queue_full        ? (u_char *) "true" : (u_char *) "false",
+                     purge_in_flight   ? (u_char *) "true" : (u_char *) "false");
+
+    r->headers_out.status            = NGX_HTTP_OK;
+    r->headers_out.content_type.len  = sizeof("application/json") - 1;
+    r->headers_out.content_type.data = (u_char *) "application/json";
+    r->headers_out.content_length_n  = p - buf;
+
+    /*
+     * Prevent any upstream cache, CDN, or browser from caching this snapshot.
+     * Queue depth is time-sensitive: a stale cached response with queue_size:0
+     */
+    cc = ngx_list_push(&r->headers_out.headers);
+    if (cc == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    cc->hash = 1;
+    cc->lowcase_key = NULL;
+    ngx_str_set(&cc->key,   "Cache-Control");
+    ngx_str_set(&cc->value, "no-store");
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+
+    b = ngx_create_temp_buf(r->pool, p - buf);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    b->last     = ngx_cpymem(b->last, buf, p - buf);
+    b->last_buf = 1;
+    out.buf     = b;
+    out.next    = NULL;
+
+    return ngx_http_output_filter(r, &out);
+}
 
 /* -- file-walk helpers -------------------------------------------------- */
 
