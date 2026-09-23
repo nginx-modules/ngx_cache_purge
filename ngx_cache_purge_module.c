@@ -3420,6 +3420,15 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 # endif
 
 # if (NGX_HTTP_PROXY)
+    if (conf->proxy.enable == NGX_CONF_UNSET
+        && conf->proxy_separate_zone == NULL
+        && conf->proxy_separate_value == NULL)
+    {
+        conf->proxy_separate_zone  = prev->proxy_separate_zone;
+        conf->proxy_separate_value = prev->proxy_separate_value;
+        conf->proxy_separate_key   = prev->proxy_separate_key;
+    }
+
     ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
 
     if (conf->proxy.enable) {

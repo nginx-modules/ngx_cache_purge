@@ -538,3 +538,39 @@ PURGE /nocache/t22
 no cache configured for this location
 --- no_error_log
 [alert]
+
+=== TEST 23: separate-location purge whose key is built inside an if block
+# The if block creates an anonymous child location.  The zone and key of
+# the 3-arg form must be inherited by it, otherwise a request that takes
+# the if-branch falls through to the inline code path with no cache
+# configured (segfault before the NULL check, 404 after it).
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+    }
+    location ~ ^/purge(?<purge_uri>/.*)$ {
+        set $purge_args "";
+        if ($args != "") {
+            set $purge_args "?$args";
+        }
+        proxy_cache_purge cache_zone "$purge_uri$purge_args";
+    }
+    location /origin {
+        return 200 "if-separate";
+    }
+--- request eval
+[
+    "GET /cache/if23",
+    "GET /cache/if23?cno=1",
+    "GET /purge/cache/if23",
+    "GET /purge/cache/if23?cno=1",
+    "GET /purge/cache/if23?cno=1"
+]
+--- error_code eval
+[200, 200, 200, 200, 412]
+--- no_error_log
+[alert]
