@@ -183,6 +183,8 @@ jobs:
         sudo apt-get update && sudo apt-get install -y cppcheck
         cppcheck --enable=all --inconclusive --std=c89 \
           --suppress=missingIncludeSystem \
+          --suppress=toomanyconfigs \
+          --suppress=checkersReport \
           --error-exitcode=1 \
           ngx_cache_purge_module.c
 
