@@ -2,7 +2,12 @@
 
 An nginx module that adds cache purge support for `FastCGI`, `proxy`, `SCGI`,
 and `uWSGI` caches. A purge operation removes the cached entry whose key
-matches the purge request.
+matches the purge request. This repository maintains a fork of
+[FRiCKLE/ngx_cache_purge](https://github.com/FRiCKLE/ngx_cache_purge), with
+compatibility updates, bug fixes, and additional purge features.
+
+See the [release notes](https://github.com/nginx-modules/ngx_cache_purge/releases)
+for changes and [distribution packages](#distribution-packages) for packaged builds.
 
 ---
 
@@ -10,7 +15,8 @@ matches the purge request.
 
 - [Features](#features)
 - [Compatibility](#compatibility)
-- [Installation](#installation)
+- [Distribution packages](#distribution-packages)
+- [Build from source](#build-from-source)
 - [Directives](#directives)
 - [Partial key purge](#partial-key-purge)
 - [Sample configurations](#sample-configurations)
@@ -21,6 +27,7 @@ matches the purge request.
 - [Migration](#migration)
 - [Security](#security)
 - [License](#license)
+- [Technical and historical notes](#technical-and-historical-notes)
 
 ---
 
@@ -53,7 +60,33 @@ Older releases back to 1.7.9 compile but are not covered by CI.
 
 ---
 
-## Installation
+### Distribution packages
+
+The package and ports definitions below reference this fork. They are maintained
+by their respective downstream projects; versions and available features vary
+by release and repository branch.
+
+| System | Package or port | Packaging source / details |
+| --- | --- | --- |
+| Debian | [`libnginx-mod-http-cache-purge`](https://packages.debian.org/trixie/libnginx-mod-http-cache-purge) | [Package tracker](https://tracker.debian.org/pkg/libnginx-mod-http-cache-purge); [unstable package](https://packages.debian.org/sid/libnginx-mod-http-cache-purge) |
+| Ubuntu 26.04 LTS | [`libnginx-mod-http-cache-purge`](https://packages.ubuntu.com/resolute/libnginx-mod-http-cache-purge) | Universe; check the package for your Ubuntu release |
+| Arch Linux | [`nginx-mod-cache_purge`](https://archlinux.org/packages/extra/x86_64/nginx-mod-cache_purge/) | Official Extra repository; [PKGBUILD](https://gitlab.archlinux.org/archlinux/packaging/packages/nginx-mod-cache_purge/-/blob/main/PKGBUILD) |
+| Arch Linux AUR | [`nginx-mainline-mod-cache_purge`](https://aur.archlinux.org/packages/nginx-mainline-mod-cache_purge) | User-maintained build recipe for `nginx-mainline`; [PKGBUILD](https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h=nginx-mainline-mod-cache_purge) |
+| Alpine Linux | [`nginx-mod-http-cache-purge`](https://pkgs.alpinelinux.org/package/edge/main/x86/nginx-mod-http-cache-purge) | [APKBUILD](https://gitlab.alpinelinux.org/alpine/aports/-/blob/master/main/nginx/APKBUILD); select your branch and architecture on the package site |
+| FreeBSD / NGINX | [`www/nginx-module-cache-purge`](https://cgit.freebsd.org/ports/tree/www/nginx-module-cache-purge) | Module sources for the NGINX ports; [Makefile](https://cgit.freebsd.org/ports/tree/www/nginx-module-cache-purge/Makefile) |
+| FreeBSD / Angie | [`www/angie-module-cache-purge`](https://cgit.freebsd.org/ports/tree/www/angie-module-cache-purge) | Dynamic module for Angie; [Makefile](https://cgit.freebsd.org/ports/tree/www/angie-module-cache-purge/Makefile) |
+
+Older packages with the same name may use a different upstream. Debian switched
+to this fork in version `1:2.5.3-1`; Ubuntu 24.04's published package is still
+based on 2.3. Check your package's source and changelog when upgrading.
+
+Use a module build compatible with your installed NGINX package. Distribution
+modules may depend on a specific NGINX version or ABI, and 2.x packages do not
+provide the background queue directives introduced in 3.x.
+
+---
+
+### Build from source
 
 ```bash
 cd /path/to/nginx-source
@@ -550,6 +583,16 @@ STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
+
+---
+
+## Technical and historical notes
+
+- The original default branch ends on [23 December 2014](https://github.com/FRiCKLE/ngx_cache_purge/commit/331fe43e8d9a3d1fa5e0c9fec7d3201d431a9177). As of this check, twelve full years have not elapsed.
+- **Avoid “fully non-blocking.”** The queue callback still calls `ngx_walk_tree` synchronously. Deferring a purge does not remove its filesystem cost. Exact-key purges remain synchronous; enabling `Vary` handling adds a directory scan.
+- **Do not promise unchanged behavior for every upgrade.** The 2.5 status-code change alone makes that inaccurate. Release 3.0.0 also flags internal breaking changes.
+- **Describe CI configuration accurately.** The checked workflow targets NGINX 1.20.2, 1.26.3, 1.28.2, and 1.29.6. This research did not run the test suite or establish compatibility with every newer NGINX version.
+- **Keep package links factual.** Downstream packaging demonstrates use of the source, not endorsement, an audit, or a support commitment from that distribution to this repository.
 
 ---
 
