@@ -499,3 +499,103 @@ X-Trigger-If: 1
 ["X-Cache-Status: MISS", "X-Cache-Status: HIT"]
 --- no_error_log
 [error]
+
+=== TEST 21: PURGE in a location without proxy_cache returns 404 (was segfault)
+# The inline form is accepted in a location that has no proxy_cache, so
+# upstream.cache_zone and upstream.cache_value are both NULL at request
+# time.  Evaluating the NULL complex value crashed the worker.
+--- http_config eval: $::HttpConfig
+--- config
+    location /nocache {
+        proxy_pass        http://backend/origin;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request
+PURGE /nocache/t21
+--- error_code: 404
+--- error_log
+no cache configured for this location
+--- no_error_log
+[alert]
+
+=== TEST 22: PURGE inherited from server level into a location without proxy_cache
+--- http_config eval: $::HttpConfig
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+    location /nocache {
+        proxy_pass        http://backend/origin;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request
+PURGE /nocache/t22
+--- error_code: 404
+--- error_log
+no cache configured for this location
+--- no_error_log
+[alert]
+
+=== TEST 23: separate-location purge whose key is built inside an if block
+# The if block creates an anonymous child location.  The zone and key of
+# the 3-arg form must be inherited by it, otherwise a request that takes
+# the if-branch falls through to the inline code path with no cache
+# configured (segfault before the NULL check, 404 after it).
+--- http_config eval: $::HttpConfig
+--- config
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri$is_args$args";
+        proxy_cache_valid 200 1m;
+    }
+    location ~ ^/purge(?<purge_uri>/.*)$ {
+        set $purge_args "";
+        if ($args != "") {
+            set $purge_args "?$args";
+        }
+        proxy_cache_purge cache_zone "$purge_uri$purge_args";
+    }
+    location /origin {
+        return 200 "if-separate";
+    }
+--- request eval
+[
+    "GET /cache/if23",
+    "GET /cache/if23?cno=1",
+    "GET /purge/cache/if23",
+    "GET /purge/cache/if23?cno=1",
+    "GET /purge/cache/if23?cno=1"
+]
+--- error_code eval
+[200, 200, 200, 200, 412]
+--- no_error_log
+[alert]
+
+=== TEST 24: non-PURGE request in a location that inherits the purge directive from the server level
+# original_handler must come from the location's own clcf->handler
+# (ngx_http_proxy_handler here).  Only an anonymous "if" / "limit_except"
+# child location has to take it from its parent.
+--- http_config eval: $::HttpConfig
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri";
+        proxy_cache_valid 200 1m;
+    }
+    location /origin {
+        return 200 "inherited";
+    }
+--- request eval
+["GET /cache/t24", "PURGE /cache/t24", "PURGE /cache/t24"]
+--- error_code eval
+[200, 200, 412]
+--- response_body eval
+["inherited", qr/purged/i, qr/412/]
+--- no_error_log
+[alert]
