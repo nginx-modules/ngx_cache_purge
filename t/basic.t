@@ -574,3 +574,28 @@ no cache configured for this location
 [200, 200, 200, 200, 412]
 --- no_error_log
 [alert]
+
+=== TEST 24: non-PURGE request in a location that inherits the purge directive from the server level
+# original_handler must come from the location's own clcf->handler
+# (ngx_http_proxy_handler here).  Only an anonymous "if" / "limit_except"
+# child location has to take it from its parent.
+--- http_config eval: $::HttpConfig
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       cache_zone;
+        proxy_cache_key   "$uri";
+        proxy_cache_valid 200 1m;
+    }
+    location /origin {
+        return 200 "inherited";
+    }
+--- request eval
+["GET /cache/t24", "PURGE /cache/t24", "PURGE /cache/t24"]
+--- error_code eval
+[200, 200, 412]
+--- response_body eval
+["inherited", qr/purged/i, qr/412/]
+--- no_error_log
+[alert]

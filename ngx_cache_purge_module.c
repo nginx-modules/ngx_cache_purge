@@ -3354,14 +3354,21 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
      *
      * was_set_* captures whether each protocol's purge directive was
      * explicitly present in THIS location block BEFORE merging from the
-     * parent.  This is the only reliable way to distinguish two cases:
+     * parent.  Together with clcf->noname it distinguishes three cases:
      *
      *   Case A -- explicit (enable == 1 before merge):
      *     proxy_cache_purge is in this location.  clcf->handler is the
      *     real upstream handler (e.g. ngx_http_proxy_handler set by
      *     proxy_pass).  Save it as original_handler and install ours.
      *
-     *   Case B -- inherited (enable == NGX_CONF_UNSET before merge):
+     *   Case B -- inherited into a named location (enable ==
+     *     NGX_CONF_UNSET, clcf->noname == 0):
+     *     proxy_cache_purge is set at the server level or in an enclosing
+     *     location.  clcf->handler is this location's own handler, as in
+     *     case A.
+     *
+     *   Case C -- inherited into an anonymous location (enable ==
+     *     NGX_CONF_UNSET, clcf->noname == 1):
      *     This is an anonymous if-child location synthesised by nginx when
      *     it encounters an "if" block.  The if-block has no handler
      *     directive, so clcf->handler is NULL.  Saving NULL as
@@ -3411,7 +3418,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->fastcgi.enable) {
         conf->conf             = &conf->fastcgi;
         conf->handler          = ngx_http_fastcgi_cache_purge_handler;
-        conf->original_handler = was_set_fastcgi
+        conf->original_handler = (was_set_fastcgi || !clcf->noname)
                                  ? clcf->handler
                                  : prev->original_handler;
         clcf->handler          = ngx_http_cache_purge_access_handler;
@@ -3434,7 +3441,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->proxy.enable) {
         conf->conf             = &conf->proxy;
         conf->handler          = ngx_http_proxy_cache_purge_handler;
-        conf->original_handler = was_set_proxy
+        conf->original_handler = (was_set_proxy || !clcf->noname)
                                  ? clcf->handler
                                  : prev->original_handler;
         clcf->handler          = ngx_http_cache_purge_access_handler;
@@ -3448,7 +3455,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->scgi.enable) {
         conf->conf             = &conf->scgi;
         conf->handler          = ngx_http_scgi_cache_purge_handler;
-        conf->original_handler = was_set_scgi
+        conf->original_handler = (was_set_scgi || !clcf->noname)
                                  ? clcf->handler
                                  : prev->original_handler;
         clcf->handler          = ngx_http_cache_purge_access_handler;
@@ -3462,7 +3469,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     if (conf->uwsgi.enable) {
         conf->conf             = &conf->uwsgi;
         conf->handler          = ngx_http_uwsgi_cache_purge_handler;
-        conf->original_handler = was_set_uwsgi
+        conf->original_handler = (was_set_uwsgi || !clcf->noname)
                                  ? clcf->handler
                                  : prev->original_handler;
         clcf->handler          = ngx_http_cache_purge_access_handler;
