@@ -499,3 +499,42 @@ X-Trigger-If: 1
 ["X-Cache-Status: MISS", "X-Cache-Status: HIT"]
 --- no_error_log
 [error]
+
+=== TEST 21: PURGE in a location without proxy_cache returns 404 (was segfault)
+# The inline form is accepted in a location that has no proxy_cache, so
+# upstream.cache_zone and upstream.cache_value are both NULL at request
+# time.  Evaluating the NULL complex value crashed the worker.
+--- http_config eval: $::HttpConfig
+--- config
+    location /nocache {
+        proxy_pass        http://backend/origin;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request
+PURGE /nocache/t21
+--- error_code: 404
+--- error_log
+no cache configured for this location
+--- no_error_log
+[alert]
+
+=== TEST 22: PURGE inherited from server level into a location without proxy_cache
+--- http_config eval: $::HttpConfig
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+    location /nocache {
+        proxy_pass        http://backend/origin;
+    }
+    location /origin {
+        return 200 "ok";
+    }
+--- request
+PURGE /nocache/t22
+--- error_code: 404
+--- error_log
+no cache configured for this location
+--- no_error_log
+[alert]

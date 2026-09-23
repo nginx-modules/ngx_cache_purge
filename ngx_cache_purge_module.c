@@ -2887,6 +2887,12 @@ ngx_http_cache_purge_cache_get(ngx_http_request_t *r, ngx_http_upstream_t *u,
         return NGX_OK;
     }
 
+    if (u->conf->cache_value == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "ngx_cache_purge: no cache configured for this location");
+        return NGX_HTTP_NOT_FOUND;
+    }
+
     if (ngx_http_complex_value(r, u->conf->cache_value, &val) != NGX_OK) {
         return NGX_ERROR;
     }
