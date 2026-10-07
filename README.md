@@ -207,6 +207,56 @@ new wildcard / `purge_all` purge requests fall back to synchronous processing.
 Only meaningful when `cache_purge_background_queue on`.
 
 
+The size of the shared zone is fixed when nginx starts.  Changing this value
+and reloading is rejected with an `emerg` message, because nginx would replace
+the zone and abandon its queued work; restart nginx instead.
+
+
+### `cache_purge_queue_status`
+
+```
+Syntax:  cache_purge_queue_status <cache_path>;
+Context: location
+```
+
+Serves a read-only JSON snapshot of the background queue for the cache
+rooted at `<cache_path>` (the `proxy_cache_path` directory).  `GET` and `HEAD`
+are accepted; the response carries `Cache-Control: no-store`.  Restrict the
+location with `allow` / `deny`.
+
+```nginx
+location = /cache_purge_queue_status {
+    allow 127.0.0.1;
+    deny  all;
+    cache_purge_queue_status /var/cache/nginx;
+}
+```
+
+```json
+{"queued":0,"capacity":1024,"queued_total":0,"oldest_ms":0,"purge_all_pending":false,"full":false,"active":false,"rejected_full":0,"files_deleted":0,"protected_skipped":0}
+```
+
+| Field | Scope | Meaning |
+|-------|-------|---------|
+| `queued` | this cache path | tasks waiting in the queue |
+| `capacity` | zone | `cache_purge_queue_size` |
+| `queued_total` | zone | tasks waiting for all cache paths |
+| `oldest_ms` | zone | age in milliseconds of the task at the head of the queue, `0` when empty |
+| `purge_all_pending` | this cache path | a `purge_all` task is waiting |
+| `full` | zone | `queued_total` has reached `capacity`; new tasks purge synchronously |
+| `active` | this cache path | a worker is walking this cache now |
+| `rejected_full` | this cache path | requests that purged synchronously because the queue was full |
+| `files_deleted` | this cache path | files removed by background walks |
+| `protected_skipped` | this cache path | nginx temporary directories and files passed over by background walks |
+
+The last three are cumulative counters kept in shared memory.  They survive a
+reload and are reset by a restart.  A worker that dies during a walk can leave
+a counter short by that walk, so treat them as metrics, not as an audit log.
+If the queue is disabled and has no zone, every field is `0` or `false`.
+
+Reading the snapshot takes the zone mutex only to copy these values.
+
+
 ### `cache_purge_batch_size`
 
 ```
@@ -540,6 +590,15 @@ previous queue parameters to `cache_purge_queue_size`, `cache_purge_batch_size`,
 and `cache_purge_throttle_ms`.
 
 ---
+
+## Temporary directories
+
+A wildcard or `purge_all` walk never descends into, or deletes from, the
+temporary paths nginx itself uses (`proxy_temp_path`, `client_body_temp_path`,
+`fastcgi_temp_path`, `scgi_temp_path`, `uwsgi_temp_path`), even when they are
+placed inside the cache directory, and it never removes in-flight response
+files.  Components are compared whole, so a sibling such as `proxy_temp_old`
+is not affected.
 
 ## Security
 

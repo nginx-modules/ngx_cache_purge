@@ -1,0 +1,54 @@
+name: Purge safety V&V
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ['1.7.9', '1.7.10', '1.20.2', '1.26.3', '1.29.0', '1.29.6', '1.31.6']
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang libclang-rt-18-dev libssl-dev zlib1g-dev
+      - name: Fetch upstream source
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+        run: |
+          curl --fail --location --retry 3 "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" -o nginx.tar.gz
+          tar --no-same-owner -xzf nginx.tar.gz
+      - name: Strict module build and runtime regressions
+        env:
+          CC: ${{ matrix.cc }}
+          NGINX_VERSION: ${{ matrix.nginx }}
+        run: python3 t/build_verify.py --nginx-source "nginx-${NGINX_VERSION}" --workers 8
+
+  native-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+      - run: brew install openssl@3
+      - name: Build and test native path semantics
+        run: |
+          curl --fail --location --retry 3 https://nginx.org/download/nginx-1.29.6.tar.gz -o nginx.tar.gz
+          tar -xzf nginx.tar.gz
+          export C_INCLUDE_PATH="$(brew --prefix openssl@3)/include"
+          export LIBRARY_PATH="$(brew --prefix openssl@3)/lib"
+          python3 t/build_verify.py --cc clang --nginx-source nginx-1.29.6
+
+  sanitizer-stress:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get update && sudo apt-get install -y build-essential libssl-dev zlib1g-dev
+      - run: |
+          curl --fail --location --retry 3 https://nginx.org/download/nginx-1.29.6.tar.gz -o nginx.tar.gz
+          tar --no-same-owner -xzf nginx.tar.gz
+          python3 t/build_verify.py --cc gcc --nginx-source nginx-1.29.6 --sanitize --workers 16 --files 16384
