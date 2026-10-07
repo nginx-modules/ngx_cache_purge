@@ -94,3 +94,57 @@ on nginx ≥ 1.27:
 GitHub Actions (`.github/workflows/ci.yml`) runs the full matrix
 automatically on push / PR. `CHANGELOG.md` is generated from git commits
 in the `create-release` job — no static `CHANGES` file is maintained.
+
+## Purge safety and queue status
+
+The focused workflow `purge-status.yml` builds NGINX 1.7.9, 1.20.2, and
+1.29.6 with GCC and Clang. It compiles this module separately with GNU89,
+`-Wall -Wextra -Werror -Wdeclaration-after-statement`. Old NGINX core
+warnings are not treated as errors; the module's strict check has no such
+exception. A configured CI matrix is not evidence that its jobs passed.
+
+Run the focused checks from the module directory:
+
+```sh
+CC=gcc CFLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+    python3 t/purge_bounds.py
+python3 t/purge_status.py /absolute/path/to/nginx
+PURGE_TEST_WORKERS=8 PURGE_TEST_FILES=8192 \
+    python3 t/purge_status.py /absolute/path/to/sanitized/nginx
+```
+
+The boundary test compiles the actual guards and timeout expression with
+a small type adapter. It covers exact-length nonterminated buffers, root
+boundaries, reserved-name prefixes, both separator conventions, filename
+case handling, clock skew, and 32-bit rollover. It models Windows path
+semantics; it does not execute Windows filesystem operations.
+
+The integration test starts real workers and checks JSON/HEAD/method handling,
+path isolation, shared-key purge modes, duplicates at capacity, synchronous
+fallback, unknown paths, overlapping walks, Vary, failed resizing reloads,
+and draining after enqueueing is disabled. It verifies filesystem results
+as well as status. Runtime coverage uses proxy caching; other protocols
+still need native integration coverage. Run native FreeBSD, macOS, and
+Windows checks before claiming those platforms validated.
+
+The queue invariant is that each linked item contributes one waiting count
+and, for purge-all, one pending count to its independently owned path record.
+Dequeue removes those contributions and adds one active count under the same
+mutex. Completion removes the active count before freeing the item. Status
+reads only these counters and the global capacity under that mutex.
+No queue/slab mutex is held while walking or while formatting JSON.
+
+Constant work under a mutex does not guarantee sub-millisecond latency.
+Sanitizers do not prove crash recovery or validate every shared-slab lifetime.
+Timers use NGINX's signed modular difference convention, requiring relevant
+intervals below half the millisecond counter range. Queue idle does not prove
+that every accepted purge succeeded; inspect filesystem effects and logs.
+
+Local validation on Linux with GCC 13.3.0 passed strict module compilation
+and real-worker tests on all three versions above. NGINX 1.29.6 also passed
+the integration test with ASan/UBSan, eight workers, and 8192 fixture files.
+Leak detection was disabled because the sandbox does not expose procfs;
+this is not a leak-check result. The origin supplies ETag headers to avoid
+the core cache writer's zero-length NULL memcpy diagnostic under UBSan.
+The bounds test passed ASan/UBSan in all three modeled path configurations.
+Clang jobs and native non-Linux runs have not been executed locally.

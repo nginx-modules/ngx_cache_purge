@@ -189,8 +189,55 @@ Context: http
 
 When enabled, wildcard and `purge_all` purge requests are enqueued and return
 `202 Accepted` immediately; a per-worker background timer drains the queue in
-batches. Has no effect on exact-key purges, which are always synchronous. When
-disabled, all purges are processed synchronously in the request handler.
+single-item steps. Exact-key purges remain synchronous. When disabled, new
+purges run synchronously; an existing queue survives reload and continues
+draining. Changing the allocated queue zone size requires a restart.
+
+
+### `cache_purge_status`
+
+```
+Syntax:  cache_purge_status <cache-path>
+Default: none
+Context: location
+```
+
+Provides GET/HEAD JSON status for an explicitly configured cache path:
+
+```nginx
+location = /purge-status {
+    allow 127.0.0.1;
+    deny all;
+    cache_purge_status /var/cache/nginx;
+}
+```
+
+```json
+{"queue_size":0,"purge_all_pending":false,"queue_full":false,"purge_in_flight":false}
+```
+
+`queue_size` and `purge_all_pending` describe waiting work for this path;
+`purge_in_flight` describes work taken by a worker. `queue_full` describes
+the global queue. Values come from one constant-size snapshot under the
+zone mutex; allocation and formatting happen after unlocking. Responses
+carry `Cache-Control: no-store`. Unknown paths fail configuration, and an
+instance started with the queue disabled returns 503.
+
+This is an activity endpoint, not a purge completion or durability barrier.
+Timeouts discard tasks; filesystem errors may leave entries; synchronous
+purges are not tracked. A worker lost during a walk leaves activity marked
+until restart. Worker death during shared-state modification is not recovered
+transactionally. Directory walks still block their worker's event loop.
+Counter records own their paths until the zone is freed; repeated configuration
+changes can consume its finite capacity and force synchronous fallback.
+
+Bulk walks delete only files with a 32-hex-digit basename. NGINX temporary
+files, including files created with `use_temp_path=off` or custom temp paths,
+do not have that form and are retained. Reserved temp-directory components
+below the walk root are also excluded, using platform filename comparison.
+These reserved names are conservative exclusions, not a filesystem sandbox.
+Use a full restart when replacing the module binary; graceful configuration
+reloads are supported within the same build.
 
 
 ### `cache_purge_queue_size`

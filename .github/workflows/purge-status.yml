@@ -1,0 +1,46 @@
+name: Purge safety and status
+
+on: [push, pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        nginx: ['1.7.9', '1.20.2', '1.29.6']
+        cc: [gcc, clang]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpcre3-dev
+      - name: Build NGINX
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+          CC: ${{ matrix.cc }}
+        run: |
+          curl -fsSLo nginx.tar.gz "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz"
+          tar xzf nginx.tar.gz
+          mv "nginx-${NGINX_VERSION}" nginx
+          cd nginx
+          ./configure --with-cc="$CC" --with-cc-opt=-Wno-error \
+            --with-debug --without-http_auth_basic_module \
+            --without-http_gzip_module --add-module="$GITHUB_WORKSPACE"
+          make -j2
+      - name: Compile the module with strict GNU89 warnings
+        env:
+          CC: ${{ matrix.cc }}
+        run: |
+          cd nginx
+          "$CC" -std=gnu89 -Wall -Wextra -Werror \
+            -Wdeclaration-after-statement \
+            -I src/core -I src/event -I src/event/modules -I src/os/unix \
+            -I objs -I src/http -I src/http/modules \
+            -c ../ngx_cache_purge_module.c -o objs/purge-strict.o
+      - name: Check path bounds and timer rollover
+        env:
+          CC: ${{ matrix.cc }}
+          CFLAGS: -fsanitize=address,undefined -fno-omit-frame-pointer
+        run: python3 t/purge_bounds.py
+      - name: Exercise actual workers and reloads
+        run: python3 t/purge_status.py nginx/objs/nginx
