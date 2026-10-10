@@ -286,6 +286,8 @@ char *ngx_http_cache_purge_vary_aware_conf(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
+static ngx_int_t ngx_http_purge_file_cache_pre_tree(ngx_tree_ctx_t *ctx,
+    ngx_str_t *path);
 static ngx_int_t ngx_http_purge_file_cache_delete_file(ngx_tree_ctx_t *ctx,
     ngx_str_t *path);
 static ngx_int_t ngx_http_purge_file_cache_delete_partial_file(
@@ -965,7 +967,7 @@ ngx_http_cache_purge_process_queue(ngx_cycle_t *cycle)
     ngx_memzero(&ctx,  sizeof(ngx_http_cache_purge_walk_ctx_t));
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
 
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_purge_file_cache_pre_tree;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -1433,7 +1435,7 @@ ngx_http_cache_purge_delete_variants(ngx_http_request_t *r,
     ctx.cache       = cache;   /* enables shm metadata updates in the walk */
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_exact_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_purge_file_cache_pre_tree;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -1453,6 +1455,39 @@ ngx_http_purge_file_cache_noop(ngx_tree_ctx_t *ctx, ngx_str_t *path)
 {
     (void) ctx;
     (void) path;
+    return NGX_OK;
+}
+
+/*
+ * pre_tree_handler: never descend into a symbolic link found inside the
+ * cache tree.
+ *
+ * ngx_walk_tree() classifies every directory entry with stat(), which
+ * follows symbolic links, so a planted "dir -> /elsewhere" link would be
+ * walked (and its files purged) as if it were a real cache directory.
+ * nginx itself only ever creates regular directories and files in a cache
+ * path, therefore any symbolic link below the cache root is foreign and is
+ * skipped.  The cache root itself is not passed to this handler, so a
+ * cache path that is a symbolic link keeps working.
+ */
+static ngx_int_t
+ngx_http_purge_file_cache_pre_tree(ngx_tree_ctx_t *ctx, ngx_str_t *path)
+{
+    ngx_file_info_t  fi;
+
+    if (ngx_link_info(path->data, &fi) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_CRIT, ctx->log, ngx_errno,
+                      ngx_link_info_n " \"%V\" failed", path);
+        return NGX_DECLINED;
+    }
+
+    if (ngx_is_link(&fi)) {
+        ngx_log_error(NGX_LOG_WARN, ctx->log, 0,
+                      "ngx_cache_purge: skipping symbolic link in cache "
+                      "tree \"%V\"", path);
+        return NGX_DECLINED;
+    }
+
     return NGX_OK;
 }
 
@@ -3111,7 +3146,7 @@ ngx_http_cache_purge_all(ngx_http_request_t *r, ngx_http_file_cache_t *cache)
     ngx_memzero(&tree, sizeof(ngx_tree_ctx_t));
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_purge_file_cache_pre_tree;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
@@ -3147,7 +3182,7 @@ ngx_http_cache_purge_partial(ngx_http_request_t *r,
     ctx.key_len     = len;
 
     tree.file_handler      = ngx_http_purge_file_cache_delete_partial_file;
-    tree.pre_tree_handler  = ngx_http_purge_file_cache_noop;
+    tree.pre_tree_handler  = ngx_http_purge_file_cache_pre_tree;
     tree.post_tree_handler = ngx_http_purge_file_cache_noop;
     tree.spec_handler      = ngx_http_purge_file_cache_noop;
     tree.data              = &ctx;
