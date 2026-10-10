@@ -17,6 +17,10 @@ our $HttpConfig = qq{
 };
 
 $ENV{TEST_NGINX_SERVROOT} = server_root();
+$ENV{TEST_NGINX_PWD}      = $pwd;
+# package-scope copies for the eval/init sections of the symlink tests
+our $PWD  = $pwd;
+our $PORT = $port;
 no_long_string();
 run_tests();
 
@@ -597,5 +601,87 @@ no cache configured for this location
 [200, 200, 412]
 --- response_body eval
 ["inherited", qr/purged/i, qr/412/]
+--- no_error_log
+[alert]
+
+=== TEST 25: purge_all does not follow a symbolic link planted in the cache tree
+# A "dir -> /elsewhere" link inside the cache path must be skipped, otherwise
+# purge_all would delete files that live outside the cache.  The target is
+# world-writable and holds a file with a KEY header, so the walk could delete
+# it if it were followed.
+--- http_config eval
+"proxy_cache_path $::PWD/cache_symlink25 levels=1:2 keys_zone=symlink25:10m;
+ upstream backend { server 127.0.0.1:$::PORT; }"
+--- config
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       symlink25;
+        proxy_cache_key   "$uri";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE purge_all from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "content";
+    }
+    location /outside25/ {
+        alias $TEST_NGINX_PWD/outside_symlink25/;
+    }
+--- init
+    use File::Path qw(make_path remove_tree);
+    remove_tree("$main::PWD/cache_symlink25", "$main::PWD/outside_symlink25");
+    make_path("$main::PWD/cache_symlink25", "$main::PWD/outside_symlink25");
+    chmod 0777, "$main::PWD/outside_symlink25";
+    open my $fh, '>', "$main::PWD/outside_symlink25/secret.txt" or die $!;
+    print $fh "KEY: /cache/outside\nmust survive\n";
+    close $fh;
+    chmod 0666, "$main::PWD/outside_symlink25/secret.txt";
+    symlink("$main::PWD/outside_symlink25", "$main::PWD/cache_symlink25/evil")
+        or die $!;
+--- request eval
+["GET /cache/sym25", "PURGE /cache/sym25", "GET /outside25/secret.txt"]
+--- response_body eval
+["content", qr/purged/i, qr/must survive/]
+--- error_code eval
+[200, 200, 200]
+--- no_error_log
+[alert]
+
+=== TEST 26: wildcard purge with an empty prefix does not follow a planted symbolic link
+# The key "*" strips to an empty prefix, which matches every file the walk
+# visits.  The walk must still not leave the cache tree.
+--- http_config eval
+"proxy_cache_path $::PWD/cache_symlink26 levels=1:2 keys_zone=symlink26:10m;
+ upstream backend { server 127.0.0.1:$::PORT; }"
+--- config
+    location /cache {
+        proxy_pass        http://backend/origin;
+        proxy_cache       symlink26;
+        proxy_cache_key   "$arg_k";
+        proxy_cache_valid 200 1m;
+        proxy_cache_purge PURGE from 127.0.0.1;
+    }
+    location /origin {
+        return 200 "content";
+    }
+    location /outside26/ {
+        alias $TEST_NGINX_PWD/outside_symlink26/;
+    }
+--- init
+    use File::Path qw(make_path remove_tree);
+    remove_tree("$main::PWD/cache_symlink26", "$main::PWD/outside_symlink26");
+    make_path("$main::PWD/cache_symlink26", "$main::PWD/outside_symlink26");
+    chmod 0777, "$main::PWD/outside_symlink26";
+    open my $fh, '>', "$main::PWD/outside_symlink26/secret.txt" or die $!;
+    print $fh "KEY: /cache/outside\nmust survive\n";
+    close $fh;
+    chmod 0666, "$main::PWD/outside_symlink26/secret.txt";
+    symlink("$main::PWD/outside_symlink26", "$main::PWD/cache_symlink26/evil")
+        or die $!;
+--- request eval
+["GET /cache/sym26?k=sym26", "PURGE /cache/sym26?k=*", "GET /outside26/secret.txt"]
+--- response_body eval
+["content", qr/purged/i, qr/must survive/]
+--- error_code eval
+[200, 200, 200]
 --- no_error_log
 [alert]
