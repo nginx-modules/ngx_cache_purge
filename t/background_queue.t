@@ -128,3 +128,38 @@ PURGE /cache/test
 [202, 202]
 --- response_body eval
 [qr{Key: /cache/same}, qr{Key: /cache/same}]
+
+=== TEST 7: $cache_purge_queue_size and $cache_purge_queue_max_size return integers when queue is enabled
+--- http_config
+    proxy_cache_path $TEST_NGINX_SERVROOT/cache levels=1:2
+                     keys_zone=qsv_zone:1m;
+    cache_purge_background_queue on;
+    cache_purge_queue_size 10;
+--- config
+    location /health {
+        add_header X-Queue-Size    $cache_purge_queue_size;
+        add_header X-Queue-MaxSize $cache_purge_queue_max_size;
+        return 200 "ok";
+    }
+--- request
+GET /health
+--- error_code: 200
+--- response_headers_like
+X-Queue-Size: \d+
+X-Queue-MaxSize: 10
+
+=== TEST 8: $cache_purge_queue_size and $cache_purge_queue_max_size return "-" when queue is disabled
+--- http_config
+    cache_purge_background_queue off;
+--- config
+    location /health {
+        add_header X-Queue-Size    $cache_purge_queue_size;
+        add_header X-Queue-MaxSize $cache_purge_queue_max_size;
+        return 200 "ok";
+    }
+--- request
+GET /health
+--- error_code: 200
+--- response_headers
+X-Queue-Size: -
+X-Queue-MaxSize: -
