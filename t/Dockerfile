@@ -13,8 +13,9 @@ RUN printf '%s\n' 'Acquire::Retries "3";' \
 
 # Older Ubuntu clang packages bundle sanitizer runtimes in their dependencies.
 # Install the separate package where available and verify both runtimes link.
+# APT downloads as _apt; the public CA bundle must be readable beyond root.
 RUN --mount=type=secret,id=apt_mirror \
-    --mount=type=secret,id=apt_ca \
+    --mount=type=secret,id=apt_ca,mode=0444 \
     if [ -s /run/secrets/apt_mirror ]; then \
         mirror="$(cat /run/secrets/apt_mirror)"; \
         if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
