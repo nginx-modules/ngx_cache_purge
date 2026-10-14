@@ -1,0 +1,13 @@
+.git
+**/servroot
+**/test-results
+cache
+cache2
+perfcache
+bgcache
+concurrent
+throttle
+purge-runtime-*
+*.tar.gz
+nginx-*
+CHANGELOG.md

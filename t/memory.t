@@ -36,7 +36,7 @@ __DATA__
 --- request
 PURGE /purge/test*
 --- error_code: 202
---- response_body_like: queued
+--- response_body_like: accepted
 --- timeout: 30
 
 === MEMORY TEST 2: repeated partial purges don't accumulate memory

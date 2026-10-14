@@ -1,0 +1,22 @@
+name: Select APT mirror for container builds
+description: Configure the runner and export its selected Ubuntu mirror to BuildKit.
+outputs:
+  mirror:
+    description: Validated mirror URL; empty retains the distribution default.
+    value: ${{ steps.selected.outputs.mirror }}
+  buildkit_secret:
+    description: Complete BuildKit secret input, or empty when no mirror is selected.
+    value: ${{ steps.selected.outputs.buildkit_secret }}
+runs:
+  using: composite
+  steps:
+    - uses: vegardit/fast-apt-mirror.sh@806c59276adfff2df420124ad5e4587f018c358a # 1.4.5
+      with:
+        healthchecks: '10'
+        speedtests: '3'
+        parallel: '2'
+        sample-size: '256'
+        exclude-current: 'true'
+    - id: selected
+      shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/export_mirror.py"

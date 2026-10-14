@@ -44,7 +44,7 @@ __DATA__
 --- request eval
 ["GET /cache/test", "PURGE /cache/test*"]
 --- response_body eval
-["test content", qr/"Status":\s*"queued"/]
+["test content", qr/"code":\s*"accepted"/]
 --- error_code eval
 [200, 202]
 
@@ -60,14 +60,13 @@ __DATA__
 --- error_log eval
 qr/invalid number/
 
-=== TEST 3: queue overflow — second wildcard purge falls back to 412
-# queue_size=1 so the second enqueue attempt is rejected; the sync
-# fallback finds no cached entry for that key and returns 412.
+=== TEST 3: queue overflow — second wildcard purge waits for admission
+# queue_size=1 keeps one credit; the second request waits for its release.
 --- http_config
     cache_purge_background_queue on;
     cache_purge_queue_size  1;
     cache_purge_batch_size  1;
-    cache_purge_throttle_ms 1000ms;
+    cache_purge_throttle_ms 100ms;
     proxy_cache_path $TEST_NGINX_SERVROOT/cache levels=1:2
                      keys_zone=qs_zone:1m;
 --- config
@@ -79,7 +78,7 @@ qr/invalid number/
 --- request eval
 ["PURGE /cache/test1*", "PURGE /cache/test2*"]
 --- error_code eval
-[202, 412]
+[202, 202]
 
 === TEST 4: purge_all is enqueued
 --- http_config eval: $::HttpConfig
@@ -96,9 +95,9 @@ qr/invalid number/
 --- request
 PURGE /cache/anything
 --- error_code: 202
---- response_body_like: queued
+--- response_body_like: accepted
 
-=== TEST 5: background queue off — sync purge returns 412 on miss
+=== TEST 5: background queue off — sync purge returns 200 no_match
 --- http_config
     proxy_cache_path $TEST_NGINX_SERVROOT/cache levels=1:2
                      keys_zone=sync_zone:10m;
@@ -111,7 +110,9 @@ PURGE /cache/anything
     }
 --- request
 PURGE /cache/test
---- error_code: 412
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
 === TEST 6: duplicate wildcard purge requests both accepted
 --- http_config eval: $::HttpConfig

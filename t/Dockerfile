@@ -1,40 +1,37 @@
 # t/Dockerfile — build context is always the repo root
-ARG UBUNTU_VERSION=22.04
-FROM ubuntu:${UBUNTU_VERSION}
+ARG UBUNTU_VERSION=24.04
+FROM ubuntu:${UBUNTU_VERSION} AS tools
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Allow nginx version to be passed in from CI matrix
-ARG NGINX_VERSION=1.24.0
-ENV NGINX_VERSION=${NGINX_VERSION}
+# The workflow selects a mirror with vegardit/fast-apt-mirror.sh. BuildKit
+# secrets carry that URL and the runner's CA bundle without varying cache keys.
+# Local builds keep the distribution defaults when no secrets are provided.
+RUN printf '%s\n' 'Acquire::Retries "3";' \
+        'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+        > /etc/apt/apt.conf.d/80-network-retries
 
-# Prioritized mirrors
-ARG UBUNTU_MIRROR=azure
-RUN . /etc/os-release && \
-    \
-    # Resolve mirror URL from ARG
-    case "${UBUNTU_MIRROR}" in \
-        azure)   MIRROR_URL="http://azure.archive.ubuntu.com/ubuntu/" ;; \
-        kernel)  MIRROR_URL="http://mirrors.kernel.org/ubuntu/" ;; \
-        *)       echo "Unknown UBUNTU_MIRROR: ${UBUNTU_MIRROR}"; exit 1 ;; \
-    esac && \
-    \
-    # 1. Identify the active config file (Standard vs 24.04+ DEB822 format)
-    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-        TARGET="/etc/apt/sources.list.d/ubuntu.sources"; \
-        # For 24.04+, replace URIs with selected mirror
-        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
-        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
-    else \
-        TARGET="/etc/apt/sources.list"; \
-        # For 22.04 and below, replace URIs with selected mirror
-        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
-        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
-    fi
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
+# Older Ubuntu clang packages bundle sanitizer runtimes in their dependencies.
+# Install the separate package where available and verify both runtimes link.
+RUN --mount=type=secret,id=apt_mirror \
+    --mount=type=secret,id=apt_ca \
+    if [ -s /run/secrets/apt_mirror ]; then \
+        mirror="$(cat /run/secrets/apt_mirror)"; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sources=/etc/apt/sources.list.d/ubuntu.sources; \
+        else sources=/etc/apt/sources.list; fi; \
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|$mirror|g" "$sources"; \
+    fi && \
+    ca_option="" && \
+    if [ -s /run/secrets/apt_ca ]; then \
+        ca_option="-o Acquire::https::CaInfo=/run/secrets/apt_ca"; \
+    fi && \
+    apt-get $ca_option update && apt-get $ca_option install -y \
+    ca-certificates \
     build-essential \
+    clang \
+    valgrind \
+    cppcheck \
     libpcre3-dev \
     libssl-dev \
     zlib1g-dev \
@@ -47,10 +44,16 @@ RUN apt-get update && apt-get install -y \
     git \
     perl \
     cpanminus \
+    && if apt-cache show libclang-rt-dev >/dev/null 2>&1; then \
+        apt-get $ca_option install -y libclang-rt-dev; \
+    fi \
+    && printf '%s\n' 'int main(void) { return 0; }' \
+        | clang -fsanitize=address,undefined -x c - -o /tmp/clang-runtime-check \
+    && rm -f /tmp/clang-runtime-check \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Test::Nginx and dependencies
-RUN cpanm --notest \
+RUN cpanm --mirror https://cpan.metacpan.org --mirror-only --notest \
     Test::Nginx \
     Test::More \
     Test::Base \
@@ -59,19 +62,25 @@ RUN cpanm --notest \
     IO::Socket::SSL \
     TAP::Formatter::JUnit
 
-# Download and extract nginx
-RUN wget http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
-    && tar xzf nginx-${NGINX_VERSION}.tar.gz \
-    && rm nginx-${NGINX_VERSION}.tar.gz
-
-# Create working directory
 WORKDIR /src
-
-# Copy module source
 COPY . /src/
 
+FROM tools AS source
+ARG NGINX_VERSION=1.31.6
+RUN mkdir -p /opt/nginx && \
+    sh t/download.sh "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" /tmp/nginx.tar.gz && \
+    tar -xzf /tmp/nginx.tar.gz --strip-components=1 -C /opt/nginx && \
+    rm /tmp/nginx.tar.gz
+ENV NGINX_SOURCE=/opt/nginx \
+    TEST_NGINX_BINARY=/opt/nginx/objs/nginx
+
+# Strict GCC/Clang and sanitizer jobs build their selected configuration at run time.
+FROM source AS verify
+CMD ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx"]
+
+FROM source AS integration
 # Build nginx with the module
-RUN cd /nginx-${NGINX_VERSION} && \
+RUN cd /opt/nginx && \
     ./configure \
         --prefix=/etc/nginx \
         --sbin-path=/usr/sbin/nginx \
@@ -102,6 +111,7 @@ RUN cd /nginx-${NGINX_VERSION} && \
         --with-http_xslt_module=dynamic \
         --with-http_image_filter_module=dynamic \
         --with-http_geoip_module=dynamic \
+        --with-debug \
         --with-threads \
         --with-stream \
         --with-stream_ssl_module \
@@ -112,7 +122,7 @@ RUN cd /nginx-${NGINX_VERSION} && \
         --with-file-aio \
         --with-http_v2_module \
         --add-module=/src && \
-    make && \
+    make -j2 && \
     make install
 
 # Create nginx cache directories
@@ -122,42 +132,7 @@ RUN mkdir -p /var/cache/nginx/client_temp \
     /var/cache/nginx/uwsgi_temp \
     /var/cache/nginx/scgi_temp
 
-# Set working directory for tests
-WORKDIR /src
+ENV TEST_NGINX_THREADS=1
 
-# Create convenience test runner script
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# purge_servroot: remove the Test::Nginx work directory between test\n\
-# files so that a failed test cannot leave stale nginx workers or open\n\
-# file descriptors that cause the next prove(1) invocation to bail out\n\
-# with "Directory not empty" when setting up a fresh servroot.\n\
-purge_servroot() { rm -rf /src/t/servroot; }\n\
-\n\
-echo "Starting nginx cache purge module tests..."\n\
-\n\
-rm -rf cache/ logs/ t/servroot/\n\
-\n\
-mkdir -p cache logs\n\
-\n\
-echo "Running basic tests..."\n\
-prove -v t/basic.t; purge_servroot\n\
-\n\
-echo "Running background queue tests..."\n\
-prove -v t/background_queue.t; purge_servroot\n\
-\n\
-echo "Running configuration tests..."\n\
-prove -v t/config.t; purge_servroot\n\
-\n\
-echo "Running memory tests..."\n\
-prove -v t/memory.t; purge_servroot\n\
-\n\
-echo "Running performance tests..."\n\
-prove -v t/performance.t\n\
-\n\
-echo "All tests completed successfully!"\n\
-' > /usr/local/bin/run_tests.sh && chmod +x /usr/local/bin/run_tests.sh
-
-# Default command
-CMD ["/usr/local/bin/run_tests.sh"]
+# With no file arguments, prove discovers every top-level t/*.t suite.
+CMD ["sh", "t/run_tests.sh"]

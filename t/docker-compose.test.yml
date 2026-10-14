@@ -1,42 +1,78 @@
-# t/docker-compose.test.yml
-# Build context is the repo root so the module source is available to COPY.
-# Run from t/: docker-compose -f docker-compose.test.yml run --rm nginx-test prove -v t/basic.t
-
-version: "3.8"
-
+# Run from t/; build context is the repository root.
 x-test-base: &test-base
+  image: ngx-cache-purge-test:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
   build:
     context: ..
     dockerfile: t/Dockerfile
+    target: integration
     args:
-      NGINX_VERSION: ${NGINX_VERSION:-1.28.2}
-      UBUNTU_VERSION: ${UBUNTU_VERSION:-22.04}
+      NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+      UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
   volumes:
     - ..:/src
+    - ./test-results:/reports
+  environment: &test-environment
+    TEST_REPORT_DIR: ${TEST_REPORT_DIR:-}
+
+x-verify-base: &verify-base
+  <<: *test-base
+  image: ngx-cache-purge-verify:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
+  build:
+    context: ..
+    dockerfile: t/Dockerfile
+    target: verify
+    args:
+      NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+      UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
+  environment:
+    <<: *test-environment
+    CC: ${CC:-gcc}
 
 services:
-  # Main test runner — default prove target
   nginx-test:
     <<: *test-base
-    command: prove -v t/basic.t t/background_queue.t t/config.t t/memory.t t/performance.t
+    command: ["sh", "t/run_tests.sh"]
 
-  # Individual suites (useful for `docker-compose run --rm <service>`)
   test-basic:
     <<: *test-base
-    command: prove -v t/basic.t
+    command: ["sh", "t/run_tests.sh", "t/basic.t"]
 
   test-queue:
     <<: *test-base
-    command: prove -v t/background_queue.t
+    command: ["sh", "t/run_tests.sh", "t/background_queue.t"]
 
   test-config:
     <<: *test-base
-    command: prove -v t/config.t
+    command: ["sh", "t/run_tests.sh", "t/config.t"]
 
   test-memory:
     <<: *test-base
-    command: prove -v t/memory.t
+    command: ["sh", "t/run_tests.sh", "t/memory.t"]
 
   test-performance:
     <<: *test-base
-    command: prove -v t/performance.t
+    command: ["sh", "t/run_tests.sh", "t/performance.t"]
+
+  test-native:
+    <<: *test-base
+    command: ["sh", "t/run_tests.sh", "t/native_helpers.t"]
+
+  test-runtime:
+    <<: *test-base
+    command: ["sh", "t/run_tests.sh", "t/purge_runtime.t"]
+
+  test-verify:
+    <<: *verify-base
+    command: ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx"]
+
+  test-sanitize:
+    <<: *verify-base
+    command: ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx", "--threads", "--sanitize", "--workers", "16", "--files", "16384"]
+
+  test-valgrind:
+    <<: *test-base
+    environment:
+      <<: *test-environment
+      TEST_NGINX_USE_VALGRIND: "1"
+      TEST_NGINX_VALGRIND_EXIT_ON_FIRST_ERR: "1"
+    command: ["sh", "t/run_tests.sh", "t/memory.t"]
