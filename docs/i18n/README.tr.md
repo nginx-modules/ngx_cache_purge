@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
-`FastCGI`, `proxy`, `SCGI` ve `uWSGI` önbelleklerini temizleyen NGINX modülü. 4.0 sürümü eski arayüzü korur; ertelenmiş dosya silmeden önce isteğe bağlı nesil geçersizleştirmesi ve proxy önbellekleri için sınırlandırılmış koşullu REFRESH ekler.
+`FastCGI`, `proxy`, `SCGI` ve `uWSGI` önbelleklerinden kayıt silen NGINX modülü. v4 sürümünde anahtar nesilleri, dosyalar silinmeden önce yeni isteklerin eski kayıtları kullanmasını engeller. REFRESH, proxy önbelleğindeki içeriğin değişip değişmediğini kaynak sunucuya sorar. İki özellik de açıkça yapılandırılmalıdır. PURGE sözdizimi korunur, ancak HTTP yanıtları değişir; [geçiş notlarına](#migration) bakın.
 
 ---
 
@@ -13,14 +13,15 @@
 ## İçindekiler
 
 - [Özellikler](#features)
+- [Gereken davranışı seçin](#choosing-a-mode)
 - [Uyumluluk](#compatibility)
 - [Kurulum](#installation)
-- [Yürütme modeli](#execution-model)
-- [Yönergeler](#directives)
 - [Kısmi anahtarla temizleme](#partial-key-purge)
 - [Nesil geçersizleştirmesi](#generation-invalidation)
-- [Koşullu REFRESH](#conditional-refresh)
+- [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
 - [Yapılandırma örnekleri](#sample-configurations)
+- [Yönergeler](#directives)
+- [Yürütme modeli](#execution-model)
 - [Performans ayarı](#performance-tuning)
 - [İzleme ve hata ayıklama](#monitoring-and-debugging)
 - [Sorun giderme](#troubleshooting)
@@ -47,7 +48,22 @@
 - **Etkin görev tekilleştirmesi** — bir indeksli işlem ve tarama sırasında gelen tekrarlar için en fazla bir bekleyen yeniden tarama
 - **Durum** — ortak kuyruk mutex’ini almadan okunan, önbellek bazında kuyruk, silme ve HIT/MISS ölçümleri
 - **Nesil anahtarları** — isteğin işlenme yolunda disk G/Ç’si olmadan tam anahtar, önek ve ad alanı geçersizleştirmesi; geç tamamlanan eski yazmalar erişilemez kalır
-- **Koşullu REFRESH** — açık HEAD profili, ortak yoklama sınırı ve 32 kayıtlık devam sayfaları
+- [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## Gereken davranışı seçin
+
+| Amaç | Yapılandırma | Yanıtın anlamı |
+|---|---|---|
+| Eski kayıtları silmek ve silme girişimini beklemek | Arka plan kuyruğu kapalı PURGE | `200 purged` veya `200 no_match`; hata durumunda 4xx/5xx |
+| Öneke göre veya tüm önbellek için temizlik planlamak | PURGE ve `cache_purge_background_queue on` | `202 accepted`; temizlik beklerken eski kayıtlar sunulabilir |
+| Geç yazılan dosyalar dahil eski içeriği yeni isteklere kapatmak | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; yeni anahtar nesli kullanılır, dosyalar sonra silinir |
+| Kaynak sunucudaki değişiklikleri denetlemek | Nesiller + `proxy_cache_refresh` + dahili profil | `200`, kayıt başına sonuç ve devam bilgisi; önbelleği önceden doldurmaz |
+
+Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyruk tek başına geç yazmalara karşı koruma sağlamaz. [v4 örneğine](#generation-and-refresh-example), [PURGE örneklerine](#sample-configurations) ve [HTTP yanıtlarına](../HTTP_RESPONSES.md) (İngilizce) bakın.
 
 ---
 
@@ -96,53 +112,288 @@ make modules
 
 ---
 
-<a id="execution-model"></a>
+<a id="partial-key-purge"></a>
 
-## Yürütme modeli
+## Kısmi anahtarla temizleme
 
-**Görev**, bir joker veya `purge_all` işlemidir. **Grup**, worker’ın bekleme öncesi işlediği görev sayısıdır. **Dilim**, artımlı dizin gezisinin sınırlı adımıdır; bir görev birçok dilim gerektirebilir.
+**Değerlendirilmiş önbellek anahtarına** `*` ekleyerek büyük/küçük harfe duyarsız önek eşleşmesi isteyin. Tam anahtar ve Vary eşleşmeleri harf boyutuna duyarlıdır. Fiziksel temizleme öneki, sondaki `*` hariç 511 bayt olabilir. Daha uzun önek bir kez günlüğe yazılır ve dosyalar taranmadan `400 invalid_selector` döndürür.
 
-Nesil anahtarlarında her önbellek yolu/ad alanı için tek fiziksel tarama kabul edilen geçersizleştirmeleri birleştirir. REFRESH sayfaları kuyruk görevi değil, ayrı HTTP işlemleridir.
+`cache_purge_key` ile mantıksal ifade eşleştirilir; sondaki `*` dahil 8096 bayt kabul edilir.
 
-| İstek ve yapılandırma | Dosya taraması | HTTP tamamlanması |
-|---|---|---|
-| Eski tam anahtar, Vary ile veya olmadan | İstek worker’ı; Vary dizin taraması ekler | İşlem sonrası |
-| Joker veya `purge_all`, kuyruk kapalı | İstek worker’ında eşzamanlı tarama | Tarama sonrası |
-| Arka plan görevi, seçili havuz | Worker başına aynı anda bir havuz görevi | Kabul sonrası `202` |
-| Arka plan görevi, kullanılabilir havuz yok | Worker olay döngüsünde artımlı dilimler | Kuyruğa alma sonrası `202` |
-| Kuyruk kapasitesi/bellek tükendi | İstek tarama yapmadan kabul bekler | Kabul sonrası `202` |
-| Nesil PURGE, her anahtar biçimi | Ertelenmiş ad alanı taraması; istekte önbellek açma/silme yok | Yayımlama ve kabul sonrası `200 invalidated` |
-| REFRESH uç noktası | Sınırlı tarama ve en fazla 32 ardışık HEAD | Tamamlanma/devam alanlarıyla `200` JSON |
+`$uri` ile biten ifade için bu istek URI öneki seçer:
 
-Nesil anahtarı olmayan satırlar eski davranıştır. Kapasite bekleyen nesil isteği kabul edilince `202` değil `200` döner.
-
-Bir dilim en fazla 64 dizin yinelemesinde veya 5 ms geçtiği gözlenince durur; atlanan girdiler ve dizin sonları dahildir. Tek bir sistem çağrısının süresini sınırlamaz.
-
-Arka plan dosya G/Ç’sini iş parçacıklarına taşımak için `--with-threads` ile derleyip `http` dışında **main** bağlamında çekirdek havuzu tanımlayın:
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>`, `http`, `server` veya `location` içinde mevcut havuzu seçer. Varsayılan `default`, tanımlanmadan kullanılırsa NGINX standart ayarlarıyla oluşturur. Özel adlar çekirdek `thread_pool` bildirimi gerektirir. Seçim miras alınır; ilk kabul edilen istek birleşik işin yürütücüsünü belirler. Her worker’ın havuzları ayrıdır. Havuz doluysa görev kabul hakkını koruyarak 10 ms sonra yeniden gönderilir, eşzamanlı tarama başlamaz. İş parçacıksız derleme, Windows, tek süreç modu veya eski görevin havuzunun reload ile kaldırılması durumunda artımlı imleç kullanılır.
+Yıldız yalnızca URI yolunun değil, değerlendirilmiş anahtarın son baytı olmalıdır. `proxy_cache_key` sorgu veya değişken eklerini hesaba katın. Tek başına `*`, tüm uygun girdileri tarar.
 
-REFRESH, worker başına ek bir tarayıcı için seçili havuzu kullanır. Yerel HTTP alt istekleri olay döngüsündedir; G/Ç iş parçacığı onların durumuna erişmez.
+---
 
-Kuyruk/indeks yapısal değişiklikleri slab mutex’iyle korunur. Kabul ve arka plan callback’leri trylock ve zamanlayıcıyla yeniden deneme kullanır. Bekleyen **ve çalışan** görevler yol başına çekirdek dize rbtree’sinde kalır; tam anahtar karşılaştırması hash çakışmalarını çözer. `Q` bitmemiş görev için indeks `O(log Q)`; yol arama, kayıtlı yol sayısına göre doğrusaldır. `ngx_queue_t` listeleri bekleyen/etkin işi izler. Çalışan görevin ilk tekrarı yeniden geçiş ister, diğerleri birleşir. Mevcut geçişten sonra tekrar kuyruğun sonuna gider; sonraki PURGE kaybolmaz. Sürekli yeni purgeler daha fazla geçiş doğurabilir. Kabul hakkı yalnızca kesin bitişte bırakılır. Dosya G/Ç’si ve yanıt biçimleme kilit dışındadır.
+<a id="generation-invalidation"></a>
 
-Rbtree yalnızca fiziksel temizlemeyi tekilleştirir. Nesil kuralları ayrı SHM bölgesindeki sınırlı bayt trie’larında tutulur. Sıkı ad alanı taramasının indeks kimliği eski anahtar görevinden farklıdır; REFRESH kararları aynı temizleme yoluna katılır.
+## Nesil geçersizleştirmesi
 
-Kuyruk dolması veya görev ayırma hatasında istek, 10 ms zamanlayıcı ve çekirdek bağlantı kesilmesi yönetimiyle bekler. İstekler/temizleme handler’ları kendi worker’ında kalır; SHM istek işaretçisi içermez. HTTP/2 ve HTTP/3 bağlantısının tüm okuması kapatılmaz. Kuyruk baskısı 429/503 üretmez; okunmuş kısa PURGE, TCP Zero Window garanti etmez. Bekleyen istekler bellek/bağlantı tüketir; çekirdek zaman aşımı ve kabul politikalarını bağlantı bütçesine göre ayarlayın.
+Mantıksal anahtar bir nesneyi tanımlar. Ad alanı, aynı geçersizleştirme kurallarını paylaşan anahtarları gruplar. Nesil, NGINX önbellek anahtarına eklenen sürümdür. PURGE sonrasında yeni istekler yeni sürümü kullanır. Önceki GET tamamlanabilir, ancak geç yazdığı dosya yeni istekler için HIT olmaz.
 
-Kabul edilen görevler normal reload boyunca anahtar, havuz ve geçici yol korumalarını saklar. Yeni tekrar, bekleyen görevi veya sonraki geçişi günceller. Yeni kabulleri kapatmak mevcut işi korur. Zarif kapanan worker mevcut geçişi bitirir, yeni görev almaz. Hızlı çıkış, bitmemiş artımlı görevi çıkış hook’unda taramayı tamamlamadan kuyruğa döndürür. Gönderilmiş iş parçacığı görevlerinin yaşamını çekirdek havuz kapanışı yönetir.
+Bağlı ad alanında PURGE yeni nesli yayımlar, eski nesiller için tekilleştirilmiş tarama planlar ve `invalidated` durumuyla `200` döner. Kabul yolunda önbellek dosyası açılmaz/silinmez. Yayımdan sonra anahtarı ilk değerlendiren yeni istek eski nesle HIT yapamaz. İstek, iç yönlendirmeler dahil ad alanı/mantıksal anahtar başına nesli sabitler; başlamış yanıt bitebilir ama geç yazması yeni istekler için HIT olamaz. Tam eşleşme harfe duyarlı; önek ASCII harfe duyarsızdır. `purge_all`, bilinçli paylaşılan diğer yollar dahil tüm ad alanını değiştirir. Fiziksel temizleme hedef yola alınır; diğerleri çekirdek sona ermesi veya sonraki purge ile temizlenir.
 
-PID/slot dönemleri atanmış görevleri tanımlar. Worker’lar saniyede bir, geçiş başına en fazla 64 etkin kaydı kontrol edip sahibi çıkmış işi yeniden kuyruğa alır. Bu sahipsiz işi kurtarır; işlemsel günlük değildir. Ortak liste/slab güncellemesinde çökme durumu bozup yeniden başlatma gerektirebilir. Çökme öncesi silmeler ölçümlerde eksik kalabilir. Bekleyen işler/tekrarlar çalışan worker gerektirir; bitmeleri önemliyse durmadan önce kuyruğu boşaltın. Kuyruk kalıcı değildir.
+Kabul, hemen disk alanı kazanımı değildir. Tarama sonrası geç eski yazma erişilemez kalır; sonraki temizleme veya çekirdek inactive süresi kaldırır. Ad alanı SHM baskısında kurallar yeni ortak tabana daraltılır: geçersiz anahtar geri gelmez, ek anahtarlar soğur. Sonraki her geçersizleştirmede en fazla 64 ayrılmış trie düğümü geri kazanılır. Sık aynı anahtar purgesi ağacı sonsuz büyütmez. Karmaşıklık dosya sayısına değil sınırlı anahtar uzunluğuna/görev indeksine bağlıdır; aşırı yükte gerçek zamanlı O(1) veya aç kalmama garantisi yoktur. Kabul bekleyebilir. GET yığılmalarını `proxy_cache_lock` ve eşdeğerlerle yönetin.
 
-Kuyruk iç yapısı yükseltme ABI’si değildir. Farklı yapıya geçerken, bitmesi gereken işleri boşaltıp tam yeniden başlatın. Aynı derlemenin normal reload’u bölgeyi yeniden kullanır.
+<a id="conditional-refresh"></a>
 
-Silme best effort’dur. `202`, tamamlanan silmeyi değil kabulü doğrular; biten tarama atomik görüntü değildir. Eşzamanlı istekler tarama sırasında/sonrasında kayıt oluşturabilir; hatalar loglanır. Joker/tam tarama her yerel düğümü eşzamanlı güncellemeden dosyaları siler. Tam anahtar ve Vary eşleşen düğümleri geçersizleştirir.
+## Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)
 
-Başarısız arka plan geçişi 100 ms, 1 s ve 10 s sonra, en fazla üç kez tekrarlanır. Ertelenen görev kabul/tekilleştirme yerini tutar, diğerlerine izin verir. Yeni PURGE pencereyi sıfırlar. Denemeler tükenince görev kaldırılıp hata loglanır; depoyu düzelttikten sonra `cleanup.exhausted` değerini inceleyip yeniden deneyin. Fiziksel hata nesil geçersizleştirmesini bozmaz. Eksik dosya beklenen yarıştır; bozuk dosyalar sonsuza kadar denenmez, atlanır.
+Bir nesne önbellekteyken kaynağın değişip değişmediğini bilmiyorsanız REFRESH kullanın; örneğin katalog içe aktarıldıktan sonra. İçeriğin eski olduğunu biliyorsanız PURGE kullanın. REFRESH, gövde indirmeden HEAD gönderir; kayıtlı ETag veya değişiklik tarihini HTTP koşulları olarak iletir. Profil, kaynak sunucuyu, Host değerini, başlıkları ve URI eşlemesini belirleyen dahili proxy konumudur.
+
+REFRESH, TTL dolmadan hâlâ önbellekteki nesneyi doğrular; önceden doldurmaz, `304` ile TTL uzatmaz. Süresi dolmuş normal trafiği işleyen `proxy_cache_revalidate` ve `proxy_cache_background_update` tamamlayıcısıdır. Doğrulayıcıyı yok sayıp hep `200` veren kaynakta, geçersizleştirme ve ek HEAD olur. Yalnızca güncel, geçerli, kanonik hash yolundakiler adaydır. Aynı nesilde fiziksel değişim temkinli biçimde geçersizleştirilebilir; nesil karşılaştırması eski HEAD’in sonraki PURGE neslini bozmasını engeller.
+
+| Ham kaynak sonucu | İşlem / sonuç |
+|---|---|
+| `304` | Koru; `kept` |
+| `200`, `404`, `410` | Koşullu nesil geçersizleştirmesi ve ertelenmiş temizleme; `invalidated` |
+| Diğer durum | Koru; `upstream_status` |
+| Kaynak durumu yok / taşıma hatası | Koru; `transport_error` |
+| Vary metaverisi | HEAD yok; `skipped_vary` |
+| Geçersiz eşleme/profil | Koru; `skipped_profile` |
+| Bu sırada nesil değişti | Yeni geçersizleştirme yok; `raced_replaced` |
+| İç geçersizleştirme/ayırma hatası | Koru; `invalidation_error` |
+| Sayfa durmadan gönderilemeyen/bitmeyen iş | `undispatched`; imleç üzerinden geçmez |
+
+Worker aynı anda en fazla bir etkin sayfa ve bir yoklama tutar; ortak sınır worker’lar arasında 16 yoklamadır. Diğer sayfalar aday dizisi ayırmadan bekler. Sayfa ortak imleçle tarar, en fazla 32 aday tutar, yerel HEAD alt isteklerini sırayla gönderir. Böylece bellek ve ana istek havuzunu paylaşan alt istekler sınırlanır. Aynı REFRESH istekleri tekilleştirilmez, eşzamanlılık sınırını paylaşır. Geçersizleştirmeleri ortak tekilleştirilmiş PURGE kuyruğunu kullanır.
+
+İmleçsiz başlayın, sonra aynı uç noktaya aynı mantıksal seçici/profille `complete` doğru olana kadar `X-Cache-Purge-Cursor: <next_cursor>` gönderin. İmleç son tamamlanan 32 haneli hex dosya adıdır; geçersiz/tekrarlı başlık `400` alır. `scan_complete` başarılı dizin sayımını; `complete` ayrıca sonraki sayfa kalmadığını ve kararların bittiğini belirtir. `timed_out` süre sınırını belirtir; tarama hatası `500 scan_failed` döndürür. `undispatched` seçilmiş bitmeyenleri sayar; eksik tarama toplam değil yalnızca alt sınırdır. Tarama eksikse yoklama çalışmaz, sonuç boş ve giriş imleci aynı kalır. Sonuçlar anahtar/kimlik bilgisi değil hash ve ham upstream durumlarını gösterir.
+
+Her sayfa sonraki hash’ler için yeniden tarar: sınırlı bellek karşılığı tekrarlı G/Ç, toplam `O(files × pages)`. Eşzamanlı ekleme/silmede sayfalama zayıf tutarlıdır; daha sonra tam görüntü gerekiyorsa baştan başlayın. Seçici/süreleri buna göre ayarlayın. Büyük canlı önbellekleri sık taramak için uygun değildir.
+
+<a id="generation-and-refresh-example"></a>
+
+### Nesil ve REFRESH örneği
+
+Bu parça main/http içindir; mevcut `events` bloğunu koruyun. Kaynak ve yolları uyarlayın. `--with-threads` yoksa `thread_pool` ve `cache_purge_thread_pool` satırlarını kaldırarak artımlı taramayı kullanın.
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+Önce var olan ve önbelleğe alınabilen bir nesneyi isteyin. `X-Cache-Status: HIT` görülene kadar GET isteğini tekrarlayın, sonra aynı nesneyi REFRESH ile denetleyin. `kept` sonrasında GET, HIT kalır; `invalidated` sonrasında kaynağa döner.
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Önek için imleç olmadan başlayın. `complete: false` ise dönen değeri `X-Cache-Purge-Cursor` içinde kullanıp `<next_cursor>` yerine koyarak tekrarlayın. Seçiciyi değiştirmeyin. HTTP hatalarını gidermeden devam etmeyin.
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Nesnenin eski olduğunu biliyorsanız doğrudan PURGE kullanın. Bu örnekteki nesillerle `200 invalidated`, dosyalar hâlâ bulunsa bile yeni isteklerin eski nesli kullanmasını engeller.
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+[HTTP ve uç durumlara](../REFRESH.md) bakın (İngilizce). Tarama hatası, `scan_error: true` içeren devam sayfası yerine `500 scan_failed` döndürür.
+
+<a id="sample-configurations"></a>
+
+## Yapılandırma örnekleri
+
+<a id="basic--inline-purge-method"></a>
+
+### Temel — yerinde temizleme yöntemi
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Temel — ayrı temizleme location’ı
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Arka plan kuyruğu açık
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Tüm girdileri temizleme
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Location bazında değiştirilebilen JSON yanıtları
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary destekli temizleme
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Anahtar temizlenince farklı yollardaki tüm gzip ve Vary çeşitleri otomatik silinir.
 
 ---
 
@@ -483,261 +734,53 @@ Worker tarayıcısını bekleme dahil REFRESH sayfasında yeni tarama/yoklama g�
 
 ---
 
-<a id="partial-key-purge"></a>
+<a id="execution-model"></a>
 
-## Kısmi anahtarla temizleme
+## Yürütme modeli
 
-**Değerlendirilmiş önbellek anahtarına** `*` ekleyerek büyük/küçük harfe duyarsız önek eşleşmesi isteyin. Tam anahtar ve Vary eşleşmeleri harf boyutuna duyarlıdır. Fiziksel temizleme öneki, sondaki `*` hariç 511 bayt olabilir. Daha uzun önek bir kez günlüğe yazılır ve dosyalar taranmadan `400 invalid_selector` döndürür.
+**Görev**, bir joker veya `purge_all` işlemidir. **Grup**, worker’ın bekleme öncesi işlediği görev sayısıdır. **Dilim**, artımlı dizin gezisinin sınırlı adımıdır; bir görev birçok dilim gerektirebilir.
 
-`cache_purge_key` ile mantıksal ifade eşleştirilir; sondaki `*` dahil 8096 bayt kabul edilir.
+Nesil anahtarlarında her önbellek yolu/ad alanı için tek fiziksel tarama kabul edilen geçersizleştirmeleri birleştirir. REFRESH sayfaları kuyruk görevi değil, ayrı HTTP işlemleridir.
 
-`$uri` ile biten ifade için bu istek URI öneki seçer:
+| İstek ve yapılandırma | Dosya taraması | HTTP tamamlanması |
+|---|---|---|
+| Eski tam anahtar, Vary ile veya olmadan | İstek worker’ı; Vary dizin taraması ekler | İşlem sonrası |
+| Joker veya `purge_all`, kuyruk kapalı | İstek worker’ında eşzamanlı tarama | Tarama sonrası |
+| Arka plan görevi, seçili havuz | Worker başına aynı anda bir havuz görevi | Kabul sonrası `202` |
+| Arka plan görevi, kullanılabilir havuz yok | Worker olay döngüsünde artımlı dilimler | Kuyruğa alma sonrası `202` |
+| Kuyruk kapasitesi/bellek tükendi | İstek tarama yapmadan kabul bekler | Kabul sonrası `202` |
+| Nesil PURGE, her anahtar biçimi | Ertelenmiş ad alanı taraması; istekte önbellek açma/silme yok | Yayımlama ve kabul sonrası `200 invalidated` |
+| REFRESH uç noktası | Sınırlı tarama ve en fazla 32 ardışık HEAD | Tamamlanma/devam alanlarıyla `200` JSON |
 
-```http
-PURGE /images/header*
-```
+Nesil anahtarı olmayan satırlar eski davranıştır. Kapasite bekleyen nesil isteği kabul edilince `202` değil `200` döner.
 
-Yıldız yalnızca URI yolunun değil, değerlendirilmiş anahtarın son baytı olmalıdır. `proxy_cache_key` sorgu veya değişken eklerini hesaba katın. Tek başına `*`, tüm uygun girdileri tarar.
+Bir dilim en fazla 64 dizin yinelemesinde veya 5 ms geçtiği gözlenince durur; atlanan girdiler ve dizin sonları dahildir. Tek bir sistem çağrısının süresini sınırlamaz.
 
----
-
-<a id="generation-invalidation"></a>
-
-## Nesil geçersizleştirmesi
-
-Bağlı ad alanında PURGE yeni nesli yayımlar, eski nesiller için tekilleştirilmiş tarama planlar ve `invalidated` durumuyla `200` döner. Kabul yolunda önbellek dosyası açılmaz/silinmez. Yayımdan sonra anahtarı ilk değerlendiren yeni istek eski nesle HIT yapamaz. İstek, iç yönlendirmeler dahil ad alanı/mantıksal anahtar başına nesli sabitler; başlamış yanıt bitebilir ama geç yazması yeni istekler için HIT olamaz. Tam eşleşme harfe duyarlı; önek ASCII harfe duyarsızdır. `purge_all`, bilinçli paylaşılan diğer yollar dahil tüm ad alanını değiştirir. Fiziksel temizleme hedef yola alınır; diğerleri çekirdek sona ermesi veya sonraki purge ile temizlenir.
-
-Kabul, hemen disk alanı kazanımı değildir. Tarama sonrası geç eski yazma erişilemez kalır; sonraki temizleme veya çekirdek inactive süresi kaldırır. Ad alanı SHM baskısında kurallar yeni ortak tabana daraltılır: geçersiz anahtar geri gelmez, ek anahtarlar soğur. Sonraki her geçersizleştirmede en fazla 64 ayrılmış trie düğümü geri kazanılır. Sık aynı anahtar purgesi ağacı sonsuz büyütmez. Karmaşıklık dosya sayısına değil sınırlı anahtar uzunluğuna/görev indeksine bağlıdır; aşırı yükte gerçek zamanlı O(1) veya aç kalmama garantisi yoktur. Kabul bekleyebilir. GET yığılmalarını `proxy_cache_lock` ve eşdeğerlerle yönetin.
-
-<a id="conditional-refresh"></a>
-
-## Koşullu REFRESH
-
-REFRESH, TTL dolmadan hâlâ önbellekteki nesneyi doğrular; önceden doldurmaz, `304` ile TTL uzatmaz. Süresi dolmuş normal trafiği işleyen `proxy_cache_revalidate` ve `proxy_cache_background_update` tamamlayıcısıdır. Doğrulayıcıyı yok sayıp hep `200` veren kaynakta, geçersizleştirme ve ek HEAD olur. Yalnızca güncel, geçerli, kanonik hash yolundakiler adaydır. Aynı nesilde fiziksel değişim temkinli biçimde geçersizleştirilebilir; nesil karşılaştırması eski HEAD’in sonraki PURGE neslini bozmasını engeller.
-
-| Ham kaynak sonucu | İşlem / sonuç |
-|---|---|
-| `304` | Koru; `kept` |
-| `200`, `404`, `410` | Koşullu nesil geçersizleştirmesi ve ertelenmiş temizleme; `invalidated` |
-| Diğer durum | Koru; `upstream_status` |
-| Kaynak durumu yok / taşıma hatası | Koru; `transport_error` |
-| Vary metaverisi | HEAD yok; `skipped_vary` |
-| Geçersiz eşleme/profil | Koru; `skipped_profile` |
-| Bu sırada nesil değişti | Yeni geçersizleştirme yok; `raced_replaced` |
-| İç geçersizleştirme/ayırma hatası | Koru; `invalidation_error` |
-| Sayfa durmadan gönderilemeyen/bitmeyen iş | `undispatched`; imleç üzerinden geçmez |
-
-Worker aynı anda en fazla bir etkin sayfa ve bir yoklama tutar; ortak sınır worker’lar arasında 16 yoklamadır. Diğer sayfalar aday dizisi ayırmadan bekler. Sayfa ortak imleçle tarar, en fazla 32 aday tutar, yerel HEAD alt isteklerini sırayla gönderir. Böylece bellek ve ana istek havuzunu paylaşan alt istekler sınırlanır. Aynı REFRESH istekleri tekilleştirilmez, eşzamanlılık sınırını paylaşır. Geçersizleştirmeleri ortak tekilleştirilmiş PURGE kuyruğunu kullanır.
-
-İmleçsiz başlayın, sonra aynı uç noktaya aynı mantıksal seçici/profille `complete` doğru olana kadar `X-Cache-Purge-Cursor: <next_cursor>` gönderin. İmleç son tamamlanan 32 haneli hex dosya adıdır; geçersiz/tekrarlı başlık `400` alır. `scan_complete` başarılı dizin sayımını; `complete` ayrıca sonraki sayfa kalmadığını ve kararların bittiğini belirtir. `timed_out`, `scan_error` kesinti/hata ayrımıdır. `undispatched` seçilmiş bitmeyenleri sayar; eksik tarama toplam değil yalnızca alt sınırdır. Tarama eksikse yoklama çalışmaz, sonuç boş ve giriş imleci aynı kalır. Sonuçlar anahtar/kimlik bilgisi değil hash ve ham upstream durumlarını gösterir.
-
-Her sayfa sonraki hash’ler için yeniden tarar: sınırlı bellek karşılığı tekrarlı G/Ç, toplam `O(files × pages)`. Eşzamanlı ekleme/silmede sayfalama zayıf tutarlıdır; daha sonra tam görüntü gerekiyorsa baştan başlayın. Seçici/süreleri buna göre ayarlayın. Büyük canlı önbellekleri sık taramak için uygun değildir.
-
-<a id="generation-and-refresh-example"></a>
-
-### Nesil ve REFRESH örneği
+Arka plan dosya G/Ç’sini iş parçacıklarına taşımak için `--with-threads` ile derleyip `http` dışında **main** bağlamında çekirdek havuzu tanımlayın:
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>`, `http`, `server` veya `location` içinde mevcut havuzu seçer. Varsayılan `default`, tanımlanmadan kullanılırsa NGINX standart ayarlarıyla oluşturur. Özel adlar çekirdek `thread_pool` bildirimi gerektirir. Seçim miras alınır; ilk kabul edilen istek birleşik işin yürütücüsünü belirler. Her worker’ın havuzları ayrıdır. Havuz doluysa görev kabul hakkını koruyarak 10 ms sonra yeniden gönderilir, eşzamanlı tarama başlamaz. İş parçacıksız derleme, Windows, tek süreç modu veya eski görevin havuzunun reload ile kaldırılması durumunda artımlı imleç kullanılır.
 
-<a id="sample-configurations"></a>
+REFRESH, worker başına ek bir tarayıcı için seçili havuzu kullanır. Yerel HTTP alt istekleri olay döngüsündedir; G/Ç iş parçacığı onların durumuna erişmez.
 
-## Yapılandırma örnekleri
+Kuyruk/indeks yapısal değişiklikleri slab mutex’iyle korunur. Kabul ve arka plan callback’leri trylock ve zamanlayıcıyla yeniden deneme kullanır. Bekleyen **ve çalışan** görevler yol başına çekirdek dize rbtree’sinde kalır; tam anahtar karşılaştırması hash çakışmalarını çözer. `Q` bitmemiş görev için indeks `O(log Q)`; yol arama, kayıtlı yol sayısına göre doğrusaldır. `ngx_queue_t` listeleri bekleyen/etkin işi izler. Çalışan görevin ilk tekrarı yeniden geçiş ister, diğerleri birleşir. Mevcut geçişten sonra tekrar kuyruğun sonuna gider; sonraki PURGE kaybolmaz. Sürekli yeni purgeler daha fazla geçiş doğurabilir. Kabul hakkı yalnızca kesin bitişte bırakılır. Dosya G/Ç’si ve yanıt biçimleme kilit dışındadır.
 
-<a id="basic--inline-purge-method"></a>
+Rbtree yalnızca fiziksel temizlemeyi tekilleştirir. Nesil kuralları ayrı SHM bölgesindeki sınırlı bayt trie’larında tutulur. Sıkı ad alanı taramasının indeks kimliği eski anahtar görevinden farklıdır; REFRESH kararları aynı temizleme yoluna katılır.
 
-### Temel — yerinde temizleme yöntemi
+Kuyruk dolması veya görev ayırma hatasında istek, 10 ms zamanlayıcı ve çekirdek bağlantı kesilmesi yönetimiyle bekler. İstekler/temizleme handler’ları kendi worker’ında kalır; SHM istek işaretçisi içermez. HTTP/2 ve HTTP/3 bağlantısının tüm okuması kapatılmaz. Kuyruk baskısı 429/503 üretmez; okunmuş kısa PURGE, TCP Zero Window garanti etmez. Bekleyen istekler bellek/bağlantı tüketir; çekirdek zaman aşımı ve kabul politikalarını bağlantı bütçesine göre ayarlayın.
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+Kabul edilen görevler normal reload boyunca anahtar, havuz ve geçici yol korumalarını saklar. Yeni tekrar, bekleyen görevi veya sonraki geçişi günceller. Yeni kabulleri kapatmak mevcut işi korur. Zarif kapanan worker mevcut geçişi bitirir, yeni görev almaz. Hızlı çıkış, bitmemiş artımlı görevi çıkış hook’unda taramayı tamamlamadan kuyruğa döndürür. Gönderilmiş iş parçacığı görevlerinin yaşamını çekirdek havuz kapanışı yönetir.
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+PID/slot dönemleri atanmış görevleri tanımlar. Worker’lar saniyede bir, geçiş başına en fazla 64 etkin kaydı kontrol edip sahibi çıkmış işi yeniden kuyruğa alır. Bu sahipsiz işi kurtarır; işlemsel günlük değildir. Ortak liste/slab güncellemesinde çökme durumu bozup yeniden başlatma gerektirebilir. Çökme öncesi silmeler ölçümlerde eksik kalabilir. Bekleyen işler/tekrarlar çalışan worker gerektirir; bitmeleri önemliyse durmadan önce kuyruğu boşaltın. Kuyruk kalıcı değildir.
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
+Kuyruk iç yapısı yükseltme ABI’si değildir. Farklı yapıya geçerken, bitmesi gereken işleri boşaltıp tam yeniden başlatın. Aynı derlemenin normal reload’u bölgeyi yeniden kullanır.
 
-<a id="basic--separate-purge-location"></a>
+Silme best effort’dur. `202`, tamamlanan silmeyi değil kabulü doğrular; biten tarama atomik görüntü değildir. Eşzamanlı istekler tarama sırasında/sonrasında kayıt oluşturabilir; hatalar loglanır. Joker/tam tarama her yerel düğümü eşzamanlı güncellemeden dosyaları siler. Tam anahtar ve Vary eşleşen düğümleri geçersizleştirir.
 
-### Temel — ayrı temizleme location’ı
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### Arka plan kuyruğu açık
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### Tüm girdileri temizleme
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### Location bazında değiştirilebilen JSON yanıtları
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Vary destekli temizleme
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-Anahtar temizlenince farklı yollardaki tüm gzip ve Vary çeşitleri otomatik silinir.
+Başarısız arka plan geçişi 100 ms, 1 s ve 10 s sonra, en fazla üç kez tekrarlanır. Ertelenen görev kabul/tekilleştirme yerini tutar, diğerlerine izin verir. Yeni PURGE pencereyi sıfırlar. Denemeler tükenince görev kaldırılıp hata loglanır; depoyu düzelttikten sonra `cleanup.exhausted` değerini inceleyip yeniden deneyin. Fiziksel hata nesil geçersizleştirmesini bozmaz. Eksik dosya beklenen yarıştır; bozuk dosyalar sonsuza kadar denenmez, atlanır.
 
 ---
 
@@ -875,6 +918,8 @@ Sınanan tanılar için [log denetimleri](../../t/TESTING.md#logging-contracts).
 <a id="testing"></a>
 
 ## Testler
+
+[Test kapsamı](../TEST_COVERAGE.md) (İngilizce), test edilen davranışları ve kalan eksikleri gösterir.
 
 Tüm takımı Docker’da derleyip çalıştırın:
 

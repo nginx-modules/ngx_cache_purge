@@ -34,6 +34,44 @@ int main(void)
     ngx_queue_init(&queue.active);
     queue.shpool = &slab;
     queue.max_size = 2;
+
+    /* The shared REFRESH limit spans workers and recovers abandoned credits. */
+    assert(NGX_CACHE_PURGE_REFRESH_PROBES == 16);
+    for (i = 0; i < 16; i++) {
+        ngx_cache_purge_slot = i;
+        queue.owners[i] = 1000 + i;
+        assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_OK);
+        assert(queue.probes[i] == 1 && !locked);
+    }
+    ngx_cache_purge_slot = 16;
+    queue.owners[16] = 1016;
+    assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_AGAIN);
+    assert(queue.probes[16] == 0 && !locked);
+    test_lock(&slab.mutex);
+    assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_AGAIN);
+    assert(queue.probes[16] == 0 && locked);
+    test_unlock(&slab.mutex);
+    ngx_cache_purge_slot = 0;
+    assert(ngx_http_cache_purge_probe_credit(&queue, 0) == NGX_OK);
+    assert(ngx_http_cache_purge_probe_credit(&queue, 0) == NGX_OK);
+    assert(queue.probes[0] == 0 && !locked); /* no underflow on repeated cleanup */
+    ngx_cache_purge_slot = 16;
+    assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_OK);
+    dead_pid = queue.owners[3];
+    ngx_cache_purge_slot = 17;
+    queue.owners[17] = 1017;
+    assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_OK);
+    assert(queue.probes[3] == 0 && queue.probes[17] == 1);
+    dead_pid = 0;
+    queue.owners[5] = 0;
+    ngx_cache_purge_slot = 18;
+    queue.owners[18] = 1018;
+    assert(ngx_http_cache_purge_probe_credit(&queue, 1) == NGX_OK);
+    assert(queue.probes[5] == 0 && queue.probes[18] == 1 && !locked);
+    memset(queue.probes, 0, sizeof(queue.probes));
+    memset(queue.owners, 0, sizeof(queue.owners));
+    ngx_cache_purge_slot = 0;
+
     queue.owners[0] = ngx_pid;
     queue.epochs[0] = 1;
     conf.queue = &queue;

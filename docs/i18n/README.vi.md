@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
-Mô-đun NGINX xóa bộ nhớ đệm `FastCGI`, `proxy`, `SCGI` và `uWSGI`. Phiên bản 4.0 giữ giao diện cũ, bổ sung chế độ vô hiệu hóa theo thế hệ được bật tường minh trước khi xóa tệp trì hoãn, cùng REFRESH có điều kiện với khối lượng xử lý giới hạn cho cache proxy.
+Mô-đun NGINX dùng để xóa mục trong bộ nhớ đệm `FastCGI`, `proxy`, `SCGI` và `uWSGI`. Trong v4, thế hệ khóa ngăn yêu cầu mới dùng mục cũ ngay cả khi tệp chưa bị xóa. REFRESH hỏi máy chủ gốc xem nội dung trong bộ nhớ đệm proxy đã thay đổi chưa. Cả hai tính năng đều cần cấu hình riêng. Cú pháp PURGE được giữ lại, nhưng phản hồi HTTP thay đổi; xem [chuyển đổi](#migration).
 
 ---
 
@@ -13,14 +13,15 @@ Mô-đun NGINX xóa bộ nhớ đệm `FastCGI`, `proxy`, `SCGI` và `uWSGI`. Ph
 ## Mục lục
 
 - [Tính năng](#features)
+- [Chọn cách xử lý phù hợp](#choosing-a-mode)
 - [Tương thích](#compatibility)
 - [Cài đặt](#installation)
-- [Mô hình thực thi](#execution-model)
-- [Chỉ thị](#directives)
 - [Xóa theo một phần khóa](#partial-key-purge)
 - [Vô hiệu hóa theo thế hệ](#generation-invalidation)
-- [REFRESH có điều kiện](#conditional-refresh)
+- [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
 - [Cấu hình mẫu](#sample-configurations)
+- [Chỉ thị](#directives)
+- [Mô hình thực thi](#execution-model)
 - [Điều chỉnh hiệu năng](#performance-tuning)
 - [Giám sát và gỡ lỗi](#monitoring-and-debugging)
 - [Khắc phục sự cố](#troubleshooting)
@@ -47,7 +48,22 @@ Mô-đun NGINX xóa bộ nhớ đệm `FastCGI`, `proxy`, `SCGI` và `uWSGI`. Ph
 - **Khử trùng lặp tác vụ đang chạy** — một thao tác có chỉ mục và tối đa một lượt chạy lại chờ cho yêu cầu đến trong lúc duyệt
 - **Trạng thái** — số liệu hàng đợi, xóa và HIT/MISS theo cache, đọc không khóa mutex dùng chung
 - **Khóa thế hệ** — vô hiệu hóa chính xác, theo tiền tố hoặc không gian tên mà không thực hiện I/O đĩa trong đường xử lý yêu cầu; bản ghi cũ hoàn tất muộn vẫn không truy cập được
-- **REFRESH có điều kiện** — hồ sơ HEAD tường minh, hạn mức thăm dò dùng chung, trang tiếp nối 32 mục
+- [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## Chọn cách xử lý phù hợp
+
+| Mục tiêu | Cấu hình | Ý nghĩa phản hồi |
+|---|---|---|
+| Xóa mục đã lỗi thời và chờ thao tác xóa | PURGE khi tắt hàng đợi nền | `200 purged` hoặc `200 no_match`; lỗi trả về 4xx/5xx |
+| Lên lịch dọn theo tiền tố hoặc toàn bộ bộ nhớ đệm | PURGE với `cache_purge_background_queue on` | `202 accepted`; mục cũ vẫn có thể được phục vụ trong lúc chờ |
+| Không cho yêu cầu mới dùng nội dung cũ, kể cả tệp được ghi muộn | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; dùng thế hệ khóa mới, xóa tệp sau |
+| Kiểm tra thay đổi tại máy chủ gốc | Thế hệ khóa + `proxy_cache_refresh` + hồ sơ nội bộ | `200` kèm kết quả từng mục và thông tin tiếp tục; không nạp sẵn nội dung |
+
+Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn tệp. Chỉ bật hàng đợi không ngăn được tác động của việc ghi muộn. Xem [ví dụ v4](#generation-and-refresh-example), [ví dụ PURGE](#sample-configurations) và [phản hồi HTTP](../HTTP_RESPONSES.md) (tiếng Anh).
 
 ---
 
@@ -96,53 +112,288 @@ make modules
 
 ---
 
-<a id="execution-model"></a>
+<a id="partial-key-purge"></a>
 
-## Mô hình thực thi
+## Xóa theo một phần khóa
 
-**Tác vụ** là một thao tác ký tự đại diện hoặc `purge_all`. **Lô** là số tác vụ worker xử lý trước khoảng nghỉ. **Lát** là bước duyệt tăng dần có giới hạn; một tác vụ có thể cần nhiều lát.
+Thêm `*` vào **khóa cache đã được tính giá trị** để khớp tiền tố không phân biệt hoa/thường. Khóa chính xác và Vary vẫn phân biệt hoa/thường. Tiền tố dọn dẹp vật lý tối đa 511 byte, không tính `*` cuối. Tiền tố dài hơn được ghi log một lần và trả `400 invalid_selector` mà không duyệt tệp.
 
-Với thế hệ, một lượt quét vật lý trên mỗi đường dẫn/không gian tên hợp nhất các vô hiệu hóa đã nhận. Trang REFRESH là thao tác HTTP riêng, không phải tác vụ hàng đợi xóa.
+Với `cache_purge_key`, so biểu thức logic, tối đa 8096 byte tính cả `*` cuối.
 
-| Yêu cầu và cấu hình | Duyệt tệp | Hoàn tất HTTP |
-|---|---|---|
-| Khóa chính xác kiểu cũ, có/không Vary | Worker yêu cầu; Vary thêm duyệt thư mục | Sau thao tác |
-| Ký tự đại diện hoặc `purge_all`, tắt hàng đợi | Worker yêu cầu, duyệt đồng bộ | Sau lượt duyệt |
-| Tác vụ nền, pool đã chọn | Mỗi worker một tác vụ pool tại một thời điểm | `202` sau tiếp nhận |
-| Tác vụ nền không có pool dùng được | Vòng lặp worker, lát tăng dần | `202` sau vào hàng đợi |
-| Hết dung lượng/cấp phát | Yêu cầu chờ tiếp nhận, không tự duyệt | `202` khi được nhận |
-| PURGE thế hệ, mọi dạng khóa | Quét không gian tên trì hoãn; không mở/xóa cache trong yêu cầu | `200 invalidated` sau công bố và tiếp nhận |
-| Endpoint REFRESH | Quét giới hạn và tối đa 32 HEAD tuần tự | JSON `200` với trường hoàn tất/tiếp nối |
+Với biểu thức kết thúc bằng `$uri`, yêu cầu này chọn tiền tố URI:
 
-Các hàng không có thế hệ mô tả hành vi cũ. Yêu cầu thế hệ chờ dung lượng trả `200`, không phải `202`, sau tiếp nhận.
-
-Mỗi lát dừng sau tối đa 64 lần lặp thư mục hoặc khi quan sát thấy 5 ms đã trôi qua, tính cả mục bỏ qua và cuối thư mục. Không giới hạn thời gian một syscall riêng lẻ.
-
-Để chuyển I/O nền sang luồng, build với `--with-threads` và khai báo pool lõi trong ngữ cảnh **main**, ngoài `http`:
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>` chọn pool tồn tại trong `http`, `server` hoặc `location`. Mặc định `default` được NGINX tạo với tham số chuẩn nếu chỉ tham chiếu mà chưa khai báo. Tên tùy chỉnh phải dùng `thread_pool`. Lựa chọn được kế thừa; yêu cầu được nhận đầu tiên chọn bên thực thi công việc hợp nhất. Mỗi worker có pool riêng. Pool đầy thì gửi lại sau 10 ms, giữ suất tiếp nhận và không chuyển sang duyệt đồng bộ. Không có luồng, Windows, chế độ một tiến trình hoặc pool của tác vụ cũ bị xóa khi reload sẽ dùng con trỏ duyệt từng bước.
+Dấu sao phải là byte cuối khóa đã tính, không chỉ cuối đường dẫn URI. Xét cả query string hoặc hậu tố biến trong `proxy_cache_key`. Khóa chỉ có `*` duyệt mọi mục hợp lệ.
 
-REFRESH dùng pool đã chọn cho một bộ quét bổ sung mỗi worker. Yêu cầu con HTTP bản địa chạy trong vòng lặp sự kiện; luồng I/O không truy cập trạng thái của chúng.
+---
 
-Mutex slab bảo vệ thay đổi cấu trúc hàng đợi/chỉ mục. Tiếp nhận và callback nền dùng trylock, thử lại bằng timer. Tác vụ chờ **và đang chạy** ở lại rbtree chuỗi của lõi theo đường dẫn; so khóa đầy đủ giải quyết va chạm hash. Chỉ mục có chi phí `O(log Q)` cho `Q` tác vụ chưa xong; tìm đường dẫn tuyến tính theo số đường dẫn đăng ký. Danh sách `ngx_queue_t` theo dõi chờ/hoạt động. Bản trùng đang chạy đầu tiên yêu cầu lặp lại, các bản sau hợp nhất vào đó. Lượt lặp vào cuối hàng đợi sau lượt hiện tại để không làm mất PURGE đến sau. PURGE liên tục có thể gây nhiều lượt nữa. Chỉ trả suất khi kết thúc cuối cùng. I/O và định dạng phản hồi ngoài khóa.
+<a id="generation-invalidation"></a>
 
-Rbtree chỉ khử trùng lặp dọn dẹp vật lý. Quy tắc thế hệ nằm trong trie byte giới hạn ở vùng SHM riêng. Lượt quét không gian tên nghiêm ngặt có danh tính chỉ mục khác tác vụ khóa cũ; quyết định REFRESH đi cùng đường dọn dẹp.
+## Vô hiệu hóa theo thế hệ
 
-Hàng đợi đầy hoặc cấp phát thất bại giữ HTTP chờ với timer 10 ms và xử lý ngắt kết nối của lõi. Yêu cầu/handler dọn dẹp ở worker sở hữu; SHM không có con trỏ yêu cầu. Không tắt đọc toàn kết nối HTTP/2 hay HTTP/3. Áp lực hàng đợi không sinh 429/503; PURGE ngắn đã đọc không bảo đảm TCP Zero Window. Chờ vẫn tốn bộ nhớ/kết nối: dùng timeout và chính sách tiếp nhận lõi theo ngân sách kết nối.
+Khóa logic xác định một đối tượng. Không gian tên nhóm các khóa dùng chung quy tắc vô hiệu hóa. Thế hệ là số phiên bản được thêm vào khóa bộ nhớ đệm NGINX. Sau PURGE, yêu cầu mới dùng phiên bản mới. GET bắt đầu trước đó vẫn có thể hoàn tất, nhưng tệp ghi muộn của nó không tạo HIT cho yêu cầu mới.
 
-Tác vụ đã nhận giữ khóa, pool và bảo vệ đường dẫn tạm qua reload thường. Bản trùng mới cập nhật bảo vệ tác vụ chờ hoặc lượt sau. Tắt nhận mới vẫn giữ công việc đã nhận. Worker dừng nhẹ nhàng hoàn tất lượt hiện tại, không nhận tác vụ khác. Thoát nhanh trả tác vụ tăng dần chưa xong về hàng đợi, không cố hoàn thành duyệt trong hook thoát. Việc đóng pool lõi quản lý vòng đời tác vụ luồng đã gửi.
+Trong không gian tên đã liên kết, PURGE công bố thế hệ mới và lên lịch quét thế hệ cũ đã khử trùng lặp trước khi trả `200` với `invalidated`. Đường tiếp nhận không mở/xóa tệp cache. Yêu cầu mới lần đầu tính khóa sau công bố không thể HIT thế hệ trước. Mỗi yêu cầu ghim thế hệ theo không gian tên/khóa logic, cả chuyển hướng nội bộ; phản hồi đang chạy có thể xong nhưng bản ghi muộn không thành HIT cho yêu cầu mới. Khớp chính xác phân biệt hoa thường; tiền tố bỏ phân biệt ASCII. `purge_all` đổi toàn không gian tên, kể cả đường khác cố ý chia sẻ. Dọn vật lý chỉ xếp cho đường đích; đường khác dùng hết hạn lõi hoặc purge sau.
 
-Epoch PID/slot nhận diện việc giao tác vụ. Mỗi giây, worker kiểm tra tối đa 64 bản ghi hoạt động mỗi lượt phục hồi, đưa lại công việc có chủ đã thoát vào hàng đợi. Đây là phục hồi phân công bỏ dở, không phải nhật ký giao dịch. Crash khi sửa danh sách/slab có thể hỏng trạng thái và cần restart; xóa ngay trước crash có thể thiếu trong chỉ số. Tác vụ chờ/lặp cần worker sống: rút hết hàng đợi trước dừng nếu cần hoàn tất. Hàng đợi không bền vững qua khởi động lại.
+Vô hiệu hóa được nhận không hứa thu hồi đĩa ngay. Bản ghi cũ muộn sau quét vẫn không truy cập được, sẽ bị xóa lần dọn sau hoặc hết hạn inactive lõi. Khi SHM thiếu, quy tắc gộp về nền mới của không gian tên: thêm khóa trở thành lạnh, không làm khóa vô hiệu hóa sống lại. Mỗi vô hiệu hóa sau thu hồi tối đa 64 nút trie đã tách. PURGE liên tiếp khóa phổ biến không làm cây tăng vô hạn. Chi phí theo độ dài khóa giới hạn và chỉ mục, không theo số tệp; không hứa O(1) thời gian thực hay tránh starvation khi quá tải. Tiếp nhận có thể chờ. Dùng `proxy_cache_lock` và tương đương để quản lý đợt GET sau vô hiệu hóa.
 
-Cấu trúc nội bộ không phải ABI nâng cấp. Chuyển build có cấu trúc khác cần restart đầy đủ, sau khi hoàn tất công việc cần giữ. Reload cùng build tái sử dụng vùng.
+<a id="conditional-refresh"></a>
 
-Xóa theo best effort. `202` xác nhận nhận việc, không phải đã xóa; lượt duyệt xong không phải snapshot nguyên tử. Yêu cầu đồng thời có thể tạo mục trong/sau lượt duyệt; lỗi được ghi log. Duyệt ký tự đại diện/toàn cache xóa tệp mà không cập nhật đồng bộ mọi nút lõi. Xóa chính xác/Vary vô hiệu hóa nút khớp.
+## Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)
 
-Lượt nền lỗi được thử lại sau 100 ms, 1 s và 10 s, tối đa ba lần. Tác vụ trì hoãn giữ suất tiếp nhận/khử trùng lặp nhưng cho tác vụ khác chạy. PURGE mới đặt lại cửa sổ. Hết thử thì bỏ tác vụ và ghi lỗi; xem `cleanup.exhausted`, sửa lưu trữ rồi thử lại. Vô hiệu hóa thế hệ vẫn có hiệu lực khi dọn vật lý lỗi. Tệp mất là race dự kiến; tệp sai định dạng bị bỏ qua, không thử mãi.
+Dùng REFRESH khi đối tượng đã có trong bộ nhớ đệm nhưng chưa rõ nguồn có thay đổi hay không, chẳng hạn sau khi nhập danh mục. Nếu biết nội dung đã lỗi thời, dùng PURGE. REFRESH gửi HEAD, không tải phần thân, và dùng ETag hoặc thời điểm sửa đổi đã lưu làm điều kiện HTTP. Hồ sơ là một location proxy nội bộ xác định máy chủ gốc, Host, các header và cách ánh xạ URI.
+
+REFRESH kiểm tra đối tượng còn cache trước khi hết TTL; không làm nóng trước hoặc tăng TTL với `304`. Bổ sung `proxy_cache_revalidate`, `proxy_cache_background_update` vốn xử lý truy cập bình thường tới đối tượng hết hạn. Nguồn bỏ qua validator và luôn trả `200` biến REFRESH thành vô hiệu hóa cộng HEAD. Chỉ mục hiện tại, hợp lệ, trên đường hash chuẩn là ứng viên. Thay tệp trong cùng thế hệ có thể bị vô hiệu hóa thận trọng; so thế hệ ngăn HEAD cũ vô hiệu hóa thế hệ PURGE mới hơn.
+
+| Kết quả nguồn nguyên gốc | Hành động / kết quả |
+|---|---|
+| `304` | Giữ; `kept` |
+| `200`, `404`, `410` | Vô hiệu hóa thế hệ có điều kiện, dọn trì hoãn; `invalidated` |
+| Trạng thái khác | Giữ; `upstream_status` |
+| Không có trạng thái / lỗi truyền tải | Giữ; `transport_error` |
+| Siêu dữ liệu Vary | Không HEAD; `skipped_vary` |
+| Ánh xạ/hồ sơ sai | Giữ; `skipped_profile` |
+| Thế hệ đã đổi trong lúc đó | Không vô hiệu hóa mới; `raced_replaced` |
+| Lỗi nội bộ vô hiệu hóa/cấp phát | Giữ; `invalidation_error` |
+| Chưa gửi/xong khi trang dừng | `undispatched`; con trỏ không vượt qua |
+
+Mỗi worker có tối đa một trang và một probe hoạt động; hạn mức chung 16 probe giữa worker. Trang khác chờ không cấp mảng ứng viên. Mỗi trang duyệt bằng con trỏ chung, giữ tối đa 32 ứng viên rồi gửi HEAD lõi tuần tự, giới hạn cả bộ nhớ lẫn số yêu cầu con chia sẻ pool chính. REFRESH giống nhau không khử trùng lặp, chỉ chia sẻ hạn mức song song. Quyết định vô hiệu hóa dùng hàng đợi PURGE chung đã khử trùng lặp.
+
+Bắt đầu không con trỏ, rồi gửi `X-Cache-Purge-Cursor: <next_cursor>` tới cùng endpoint với cùng bộ chọn/hồ sơ tới khi `complete` đúng. Con trỏ là tên tệp hex 32 ký tự cuối đã xử lý xong; header sai/trùng trả `400`. `scan_complete` nghĩa là liệt kê thư mục thành công; `complete` còn đòi hết trang khớp tiếp theo và hoàn tất mọi quyết định. `timed_out` báo giới hạn thời gian; lỗi quét trả về `500 scan_failed`. `undispatched` đếm ứng viên chưa xong; scan không đủ chỉ là cận dưới, không phải tổng cache. Nếu scan chưa xong, không chạy probe, kết quả rỗng và con trỏ đầu vào giữ nguyên. Chỉ công khai hash tệp và trạng thái upstream nguyên gốc, không khóa/thông tin xác thực.
+
+Mỗi trang quét lại thư mục để chọn hash tiếp: đổi I/O lặp lấy bộ nhớ giới hạn, tổng `O(files × pages)`. Phân trang nhất quán yếu khi thêm/xóa đồng thời; bắt đầu lại nếu cần ảnh đầy đủ ở thời điểm sau. Chọn bộ lọc/timeout phù hợp. Không thích hợp quét cache hoạt động rất lớn với tần suất cao.
+
+<a id="generation-and-refresh-example"></a>
+
+### Ví dụ thế hệ và REFRESH
+
+Đây là đoạn cấu hình cho main/http; giữ lại khối `events` hiện có. Sửa nguồn và đường dẫn cho phù hợp. Nếu không có `--with-threads`, bỏ `thread_pool` và `cache_purge_thread_pool` để dùng quét từng phần.
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+Trước hết hãy GET một đối tượng tồn tại và có thể lưu vào bộ nhớ đệm. Lặp lại đến khi có `X-Cache-Status: HIT`, rồi kiểm tra cùng đối tượng bằng REFRESH. Sau `kept`, GET tiếp theo vẫn HIT; sau `invalidated`, GET truy cập nguồn lại.
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Với tiền tố, bắt đầu không có con trỏ. Nếu `complete: false`, lặp lại với giá trị trả về trong `X-Cache-Purge-Cursor`, thay cho `<next_cursor>`. Giữ nguyên bộ chọn. Xử lý lỗi HTTP trước khi tiếp tục.
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Nếu biết đối tượng đã lỗi thời, dùng PURGE trực tiếp. Với thế hệ khóa trong ví dụ, `200 invalidated` ngăn yêu cầu mới dùng thế hệ cũ dù tệp vẫn còn.
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+Xem [HTTP và trường hợp biên](../REFRESH.md) (tiếng Anh). Lỗi quét trả về `500 scan_failed`, không phải trang tiếp tục có `scan_error: true`.
+
+<a id="sample-configurations"></a>
+
+## Cấu hình mẫu
+
+<a id="basic--inline-purge-method"></a>
+
+### Cơ bản — phương thức xóa trong location phục vụ
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Cơ bản — location xóa riêng
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Bật hàng đợi nền
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Xóa mọi mục
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Phản hồi JSON với ghi đè theo location
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Xóa nhận biết Vary
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Sau xóa khóa, mọi biến thể gzip/Vary ở đường dẫn khác cũng tự động bị xóa.
 
 ---
 
@@ -483,261 +734,53 @@ Giới hạn việc gửi scan/probe mới của trang REFRESH, cả chờ bộ 
 
 ---
 
-<a id="partial-key-purge"></a>
+<a id="execution-model"></a>
 
-## Xóa theo một phần khóa
+## Mô hình thực thi
 
-Thêm `*` vào **khóa cache đã được tính giá trị** để khớp tiền tố không phân biệt hoa/thường. Khóa chính xác và Vary vẫn phân biệt hoa/thường. Tiền tố dọn dẹp vật lý tối đa 511 byte, không tính `*` cuối. Tiền tố dài hơn được ghi log một lần và trả `400 invalid_selector` mà không duyệt tệp.
+**Tác vụ** là một thao tác ký tự đại diện hoặc `purge_all`. **Lô** là số tác vụ worker xử lý trước khoảng nghỉ. **Lát** là bước duyệt tăng dần có giới hạn; một tác vụ có thể cần nhiều lát.
 
-Với `cache_purge_key`, so biểu thức logic, tối đa 8096 byte tính cả `*` cuối.
+Với thế hệ, một lượt quét vật lý trên mỗi đường dẫn/không gian tên hợp nhất các vô hiệu hóa đã nhận. Trang REFRESH là thao tác HTTP riêng, không phải tác vụ hàng đợi xóa.
 
-Với biểu thức kết thúc bằng `$uri`, yêu cầu này chọn tiền tố URI:
+| Yêu cầu và cấu hình | Duyệt tệp | Hoàn tất HTTP |
+|---|---|---|
+| Khóa chính xác kiểu cũ, có/không Vary | Worker yêu cầu; Vary thêm duyệt thư mục | Sau thao tác |
+| Ký tự đại diện hoặc `purge_all`, tắt hàng đợi | Worker yêu cầu, duyệt đồng bộ | Sau lượt duyệt |
+| Tác vụ nền, pool đã chọn | Mỗi worker một tác vụ pool tại một thời điểm | `202` sau tiếp nhận |
+| Tác vụ nền không có pool dùng được | Vòng lặp worker, lát tăng dần | `202` sau vào hàng đợi |
+| Hết dung lượng/cấp phát | Yêu cầu chờ tiếp nhận, không tự duyệt | `202` khi được nhận |
+| PURGE thế hệ, mọi dạng khóa | Quét không gian tên trì hoãn; không mở/xóa cache trong yêu cầu | `200 invalidated` sau công bố và tiếp nhận |
+| Endpoint REFRESH | Quét giới hạn và tối đa 32 HEAD tuần tự | JSON `200` với trường hoàn tất/tiếp nối |
 
-```http
-PURGE /images/header*
-```
+Các hàng không có thế hệ mô tả hành vi cũ. Yêu cầu thế hệ chờ dung lượng trả `200`, không phải `202`, sau tiếp nhận.
 
-Dấu sao phải là byte cuối khóa đã tính, không chỉ cuối đường dẫn URI. Xét cả query string hoặc hậu tố biến trong `proxy_cache_key`. Khóa chỉ có `*` duyệt mọi mục hợp lệ.
+Mỗi lát dừng sau tối đa 64 lần lặp thư mục hoặc khi quan sát thấy 5 ms đã trôi qua, tính cả mục bỏ qua và cuối thư mục. Không giới hạn thời gian một syscall riêng lẻ.
 
----
-
-<a id="generation-invalidation"></a>
-
-## Vô hiệu hóa theo thế hệ
-
-Trong không gian tên đã liên kết, PURGE công bố thế hệ mới và lên lịch quét thế hệ cũ đã khử trùng lặp trước khi trả `200` với `invalidated`. Đường tiếp nhận không mở/xóa tệp cache. Yêu cầu mới lần đầu tính khóa sau công bố không thể HIT thế hệ trước. Mỗi yêu cầu ghim thế hệ theo không gian tên/khóa logic, cả chuyển hướng nội bộ; phản hồi đang chạy có thể xong nhưng bản ghi muộn không thành HIT cho yêu cầu mới. Khớp chính xác phân biệt hoa thường; tiền tố bỏ phân biệt ASCII. `purge_all` đổi toàn không gian tên, kể cả đường khác cố ý chia sẻ. Dọn vật lý chỉ xếp cho đường đích; đường khác dùng hết hạn lõi hoặc purge sau.
-
-Vô hiệu hóa được nhận không hứa thu hồi đĩa ngay. Bản ghi cũ muộn sau quét vẫn không truy cập được, sẽ bị xóa lần dọn sau hoặc hết hạn inactive lõi. Khi SHM thiếu, quy tắc gộp về nền mới của không gian tên: thêm khóa trở thành lạnh, không làm khóa vô hiệu hóa sống lại. Mỗi vô hiệu hóa sau thu hồi tối đa 64 nút trie đã tách. PURGE liên tiếp khóa phổ biến không làm cây tăng vô hạn. Chi phí theo độ dài khóa giới hạn và chỉ mục, không theo số tệp; không hứa O(1) thời gian thực hay tránh starvation khi quá tải. Tiếp nhận có thể chờ. Dùng `proxy_cache_lock` và tương đương để quản lý đợt GET sau vô hiệu hóa.
-
-<a id="conditional-refresh"></a>
-
-## REFRESH có điều kiện
-
-REFRESH kiểm tra đối tượng còn cache trước khi hết TTL; không làm nóng trước hoặc tăng TTL với `304`. Bổ sung `proxy_cache_revalidate`, `proxy_cache_background_update` vốn xử lý truy cập bình thường tới đối tượng hết hạn. Nguồn bỏ qua validator và luôn trả `200` biến REFRESH thành vô hiệu hóa cộng HEAD. Chỉ mục hiện tại, hợp lệ, trên đường hash chuẩn là ứng viên. Thay tệp trong cùng thế hệ có thể bị vô hiệu hóa thận trọng; so thế hệ ngăn HEAD cũ vô hiệu hóa thế hệ PURGE mới hơn.
-
-| Kết quả nguồn nguyên gốc | Hành động / kết quả |
-|---|---|
-| `304` | Giữ; `kept` |
-| `200`, `404`, `410` | Vô hiệu hóa thế hệ có điều kiện, dọn trì hoãn; `invalidated` |
-| Trạng thái khác | Giữ; `upstream_status` |
-| Không có trạng thái / lỗi truyền tải | Giữ; `transport_error` |
-| Siêu dữ liệu Vary | Không HEAD; `skipped_vary` |
-| Ánh xạ/hồ sơ sai | Giữ; `skipped_profile` |
-| Thế hệ đã đổi trong lúc đó | Không vô hiệu hóa mới; `raced_replaced` |
-| Lỗi nội bộ vô hiệu hóa/cấp phát | Giữ; `invalidation_error` |
-| Chưa gửi/xong khi trang dừng | `undispatched`; con trỏ không vượt qua |
-
-Mỗi worker có tối đa một trang và một probe hoạt động; hạn mức chung 16 probe giữa worker. Trang khác chờ không cấp mảng ứng viên. Mỗi trang duyệt bằng con trỏ chung, giữ tối đa 32 ứng viên rồi gửi HEAD lõi tuần tự, giới hạn cả bộ nhớ lẫn số yêu cầu con chia sẻ pool chính. REFRESH giống nhau không khử trùng lặp, chỉ chia sẻ hạn mức song song. Quyết định vô hiệu hóa dùng hàng đợi PURGE chung đã khử trùng lặp.
-
-Bắt đầu không con trỏ, rồi gửi `X-Cache-Purge-Cursor: <next_cursor>` tới cùng endpoint với cùng bộ chọn/hồ sơ tới khi `complete` đúng. Con trỏ là tên tệp hex 32 ký tự cuối đã xử lý xong; header sai/trùng trả `400`. `scan_complete` nghĩa là liệt kê thư mục thành công; `complete` còn đòi hết trang khớp tiếp theo và hoàn tất mọi quyết định. `timed_out`, `scan_error` phân biệt ngắt/lỗi. `undispatched` đếm ứng viên chưa xong; scan không đủ chỉ là cận dưới, không phải tổng cache. Nếu scan chưa xong, không chạy probe, kết quả rỗng và con trỏ đầu vào giữ nguyên. Chỉ công khai hash tệp và trạng thái upstream nguyên gốc, không khóa/thông tin xác thực.
-
-Mỗi trang quét lại thư mục để chọn hash tiếp: đổi I/O lặp lấy bộ nhớ giới hạn, tổng `O(files × pages)`. Phân trang nhất quán yếu khi thêm/xóa đồng thời; bắt đầu lại nếu cần ảnh đầy đủ ở thời điểm sau. Chọn bộ lọc/timeout phù hợp. Không thích hợp quét cache hoạt động rất lớn với tần suất cao.
-
-<a id="generation-and-refresh-example"></a>
-
-### Ví dụ thế hệ và REFRESH
+Để chuyển I/O nền sang luồng, build với `--with-threads` và khai báo pool lõi trong ngữ cảnh **main**, ngoài `http`:
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>` chọn pool tồn tại trong `http`, `server` hoặc `location`. Mặc định `default` được NGINX tạo với tham số chuẩn nếu chỉ tham chiếu mà chưa khai báo. Tên tùy chỉnh phải dùng `thread_pool`. Lựa chọn được kế thừa; yêu cầu được nhận đầu tiên chọn bên thực thi công việc hợp nhất. Mỗi worker có pool riêng. Pool đầy thì gửi lại sau 10 ms, giữ suất tiếp nhận và không chuyển sang duyệt đồng bộ. Không có luồng, Windows, chế độ một tiến trình hoặc pool của tác vụ cũ bị xóa khi reload sẽ dùng con trỏ duyệt từng bước.
 
-<a id="sample-configurations"></a>
+REFRESH dùng pool đã chọn cho một bộ quét bổ sung mỗi worker. Yêu cầu con HTTP bản địa chạy trong vòng lặp sự kiện; luồng I/O không truy cập trạng thái của chúng.
 
-## Cấu hình mẫu
+Mutex slab bảo vệ thay đổi cấu trúc hàng đợi/chỉ mục. Tiếp nhận và callback nền dùng trylock, thử lại bằng timer. Tác vụ chờ **và đang chạy** ở lại rbtree chuỗi của lõi theo đường dẫn; so khóa đầy đủ giải quyết va chạm hash. Chỉ mục có chi phí `O(log Q)` cho `Q` tác vụ chưa xong; tìm đường dẫn tuyến tính theo số đường dẫn đăng ký. Danh sách `ngx_queue_t` theo dõi chờ/hoạt động. Bản trùng đang chạy đầu tiên yêu cầu lặp lại, các bản sau hợp nhất vào đó. Lượt lặp vào cuối hàng đợi sau lượt hiện tại để không làm mất PURGE đến sau. PURGE liên tục có thể gây nhiều lượt nữa. Chỉ trả suất khi kết thúc cuối cùng. I/O và định dạng phản hồi ngoài khóa.
 
-<a id="basic--inline-purge-method"></a>
+Rbtree chỉ khử trùng lặp dọn dẹp vật lý. Quy tắc thế hệ nằm trong trie byte giới hạn ở vùng SHM riêng. Lượt quét không gian tên nghiêm ngặt có danh tính chỉ mục khác tác vụ khóa cũ; quyết định REFRESH đi cùng đường dọn dẹp.
 
-### Cơ bản — phương thức xóa trong location phục vụ
+Hàng đợi đầy hoặc cấp phát thất bại giữ HTTP chờ với timer 10 ms và xử lý ngắt kết nối của lõi. Yêu cầu/handler dọn dẹp ở worker sở hữu; SHM không có con trỏ yêu cầu. Không tắt đọc toàn kết nối HTTP/2 hay HTTP/3. Áp lực hàng đợi không sinh 429/503; PURGE ngắn đã đọc không bảo đảm TCP Zero Window. Chờ vẫn tốn bộ nhớ/kết nối: dùng timeout và chính sách tiếp nhận lõi theo ngân sách kết nối.
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+Tác vụ đã nhận giữ khóa, pool và bảo vệ đường dẫn tạm qua reload thường. Bản trùng mới cập nhật bảo vệ tác vụ chờ hoặc lượt sau. Tắt nhận mới vẫn giữ công việc đã nhận. Worker dừng nhẹ nhàng hoàn tất lượt hiện tại, không nhận tác vụ khác. Thoát nhanh trả tác vụ tăng dần chưa xong về hàng đợi, không cố hoàn thành duyệt trong hook thoát. Việc đóng pool lõi quản lý vòng đời tác vụ luồng đã gửi.
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+Epoch PID/slot nhận diện việc giao tác vụ. Mỗi giây, worker kiểm tra tối đa 64 bản ghi hoạt động mỗi lượt phục hồi, đưa lại công việc có chủ đã thoát vào hàng đợi. Đây là phục hồi phân công bỏ dở, không phải nhật ký giao dịch. Crash khi sửa danh sách/slab có thể hỏng trạng thái và cần restart; xóa ngay trước crash có thể thiếu trong chỉ số. Tác vụ chờ/lặp cần worker sống: rút hết hàng đợi trước dừng nếu cần hoàn tất. Hàng đợi không bền vững qua khởi động lại.
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
+Cấu trúc nội bộ không phải ABI nâng cấp. Chuyển build có cấu trúc khác cần restart đầy đủ, sau khi hoàn tất công việc cần giữ. Reload cùng build tái sử dụng vùng.
 
-<a id="basic--separate-purge-location"></a>
+Xóa theo best effort. `202` xác nhận nhận việc, không phải đã xóa; lượt duyệt xong không phải snapshot nguyên tử. Yêu cầu đồng thời có thể tạo mục trong/sau lượt duyệt; lỗi được ghi log. Duyệt ký tự đại diện/toàn cache xóa tệp mà không cập nhật đồng bộ mọi nút lõi. Xóa chính xác/Vary vô hiệu hóa nút khớp.
 
-### Cơ bản — location xóa riêng
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### Bật hàng đợi nền
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### Xóa mọi mục
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### Phản hồi JSON với ghi đè theo location
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Xóa nhận biết Vary
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-Sau xóa khóa, mọi biến thể gzip/Vary ở đường dẫn khác cũng tự động bị xóa.
+Lượt nền lỗi được thử lại sau 100 ms, 1 s và 10 s, tối đa ba lần. Tác vụ trì hoãn giữ suất tiếp nhận/khử trùng lặp nhưng cho tác vụ khác chạy. PURGE mới đặt lại cửa sổ. Hết thử thì bỏ tác vụ và ghi lỗi; xem `cleanup.exhausted`, sửa lưu trữ rồi thử lại. Vô hiệu hóa thế hệ vẫn có hiệu lực khi dọn vật lý lỗi. Tệp mất là race dự kiến; tệp sai định dạng bị bỏ qua, không thử mãi.
 
 ---
 
@@ -875,6 +918,8 @@ Xem [kiểm tra log](../../t/TESTING.md#logging-contracts) để biết chẩn �
 <a id="testing"></a>
 
 ## Kiểm thử
+
+[Bản đồ phạm vi kiểm thử](../TEST_COVERAGE.md) (tiếng Anh) nêu các trường hợp đã kiểm tra và phần còn thiếu.
 
 Build và chạy toàn bộ trong Docker:
 

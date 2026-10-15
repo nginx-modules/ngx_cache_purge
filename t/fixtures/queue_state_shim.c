@@ -5,6 +5,7 @@ ngx_uint_t ngx_exiting;
 sig_atomic_t ngx_terminate, ngx_quit;
 static unsigned locked, live, fail_alloc, yield_walk, dead_owner, scan_errors;
 static ngx_uint_t ngx_cache_purge_slot;
+static ngx_pid_t dead_pid;
 ngx_uint_t ngx_cacheline_size = 64;
 ngx_pid_t ngx_pid = 100;
 #if (NGX_THREADS)
@@ -37,6 +38,7 @@ static void test_unlock(ngx_shmtx_t *mutex)
 }
 static ngx_uint_t test_trylock(ngx_shmtx_t *mutex)
 {
+    if (locked) { return 0; }
     test_lock(mutex);
     return 1;
 }
@@ -121,7 +123,7 @@ static void test_timer(ngx_event_t *event, ngx_msec_t delay)
 #endif
 
 static ngx_uint_t ngx_http_cache_purge_process_alive(ngx_pid_t pid)
-{ (void) pid; assert(locked); return !dead_owner; }
+{ assert(locked); return !dead_owner && pid != dead_pid; }
 static void ngx_http_cache_purge_walk_close(ngx_http_cache_purge_cursor_t *cursor)
 { cursor->top = NULL; }
 #if (NGX_THREADS)

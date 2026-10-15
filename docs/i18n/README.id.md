@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
-Modul NGINX untuk menghapus cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`. Versi 4.0 mempertahankan antarmuka lama serta menambahkan invalidasi generasi yang diaktifkan secara eksplisit sebelum penghapusan fisik tertunda, dan REFRESH bersyarat dengan pekerjaan terbatas untuk cache proxy.
+Modul NGINX untuk menghapus entri cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`. Pada v4, generasi kunci mencegah permintaan baru memakai entri lama sebelum berkasnya dihapus. REFRESH memeriksa ke server asal apakah isi cache proxy telah berubah. Kedua fitur perlu dikonfigurasi secara eksplisit. Sintaks PURGE tetap tersedia, tetapi respons HTTP berubah; lihat [migrasi](#migration).
 
 ---
 
@@ -13,14 +13,15 @@ Modul NGINX untuk menghapus cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`. Versi
 ## Daftar isi
 
 - [Fitur](#features)
+- [Pilih perilaku yang diperlukan](#choosing-a-mode)
 - [Kompatibilitas](#compatibility)
 - [Instalasi](#installation)
-- [Model eksekusi](#execution-model)
-- [Direktif](#directives)
 - [Penghapusan berdasarkan sebagian kunci](#partial-key-purge)
 - [Invalidasi generasi](#generation-invalidation)
-- [REFRESH bersyarat](#conditional-refresh)
+- [Memeriksa cache ke server asal (REFRESH)](#conditional-refresh)
 - [Contoh konfigurasi](#sample-configurations)
+- [Direktif](#directives)
+- [Model eksekusi](#execution-model)
 - [Penyetelan kinerja](#performance-tuning)
 - [Pemantauan dan debugging](#monitoring-and-debugging)
 - [Pemecahan masalah](#troubleshooting)
@@ -47,7 +48,22 @@ Modul NGINX untuk menghapus cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`. Versi
 - **Deduplikasi tugas aktif** — satu operasi terindeks dan paling banyak satu pengulangan tertunda untuk purge yang masuk saat penelusuran
 - **Status** — metrik antrean, penghapusan, dan HIT/MISS per cache tanpa mengambil mutex antrean saat membaca
 - **Kunci generasi** — invalidasi tepat, prefiks, atau namespace tanpa I/O disk pada jalur permintaan; penulisan lama yang terlambat tetap tak terjangkau
-- **REFRESH bersyarat** — profil HEAD eksplisit, anggaran probe bersama, halaman lanjutan 32 entri
+- [Memeriksa cache ke server asal (REFRESH)](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## Pilih perilaku yang diperlukan
+
+| Tujuan | Konfigurasi | Arti respons |
+|---|---|---|
+| Menghapus entri usang dan menunggu upaya penghapusan | PURGE tanpa antrean latar belakang | `200 purged` atau `200 no_match`; 4xx/5xx jika gagal |
+| Menjadwalkan pembersihan berdasarkan prefiks atau seluruh cache | PURGE dengan `cache_purge_background_queue on` | `202 accepted`; entri lama masih dapat disajikan selama menunggu |
+| Mencegah permintaan baru memakai konten lama, termasuk hasil penulisan terlambat | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; generasi kunci baru, berkas dihapus kemudian |
+| Memeriksa perubahan di server asal | Generasi + `proxy_cache_refresh` + profil internal | `200` dengan hasil per entri dan kelanjutan; tidak mengisi cache lebih dahulu |
+
+Mekanisme ini dapat digabungkan: pergantian generasi juga menjadwalkan pembersihan. Antrean saja tidak melindungi dari penulisan terlambat. Lihat [contoh v4](#generation-and-refresh-example), [contoh PURGE](#sample-configurations), dan [respons HTTP](../HTTP_RESPONSES.md) (bahasa Inggris).
 
 ---
 
@@ -96,53 +112,288 @@ make modules
 
 ---
 
-<a id="execution-model"></a>
+<a id="partial-key-purge"></a>
 
-## Model eksekusi
+## Penghapusan berdasarkan sebagian kunci
 
-**Tugas** adalah satu operasi wildcard atau `purge_all`. **Batch** adalah jumlah tugas per worker sebelum jeda. **Langkah** adalah satu bagian penelusuran inkremental yang dibatasi; satu tugas dapat memerlukan banyak langkah.
+Tambahkan `*` pada **kunci cache yang sudah dievaluasi** untuk mencocokkan prefiks tanpa membedakan huruf besar/kecil. Kunci tepat dan Vary tetap peka huruf besar/kecil. Prefiks pembersihan fisik maksimal 511 byte, tidak termasuk `*` terakhir. Prefiks yang lebih panjang dicatat sekali dan menghasilkan `400 invalid_selector` tanpa menelusuri berkas.
 
-Dengan generasi, satu penyapuan fisik per jalur/namespace menggabungkan seluruh invalidasi yang diterima. Halaman REFRESH adalah operasi HTTP terpisah, bukan tugas antrean purge.
+Dengan `cache_purge_key`, pencocokan memakai ekspresi logis dan menerima hingga 8096 byte, termasuk `*` akhir.
 
-| Permintaan dan konfigurasi | Penelusuran file | Penyelesaian HTTP |
-|---|---|---|
-| Kunci tepat lama, dengan/tanpa Vary | Worker permintaan; Vary menambah penelusuran | Setelah operasi |
-| Wildcard atau `purge_all`, antrean mati | Worker permintaan, sinkron | Setelah penelusuran |
-| Tugas latar, pool terpilih | Satu tugas pool per worker pada satu waktu | `202` setelah penerimaan |
-| Tugas latar tanpa pool yang dapat digunakan | Event loop worker, langkah inkremental | `202` setelah masuk antrean |
-| Kapasitas/alokasi habis | Permintaan menunggu penerimaan tanpa penelusuran sendiri | `202` setelah diterima |
-| PURGE generasi, bentuk kunci apa pun | Penyapuan namespace tertunda; tanpa membuka/menghapus cache dalam permintaan | `200 invalidated` setelah publikasi dan penerimaan |
-| Endpoint REFRESH | Pemindaian terbatas dan hingga 32 HEAD berurutan | JSON `200` dengan kolom penyelesaian/lanjutan |
+Untuk ekspresi yang berakhir `$uri`, permintaan ini memilih prefiks URI:
 
-Baris tanpa generasi menjelaskan perilaku lama. Permintaan generasi yang menunggu kapasitas mengembalikan `200`, bukan `202`, setelah diterima.
-
-Langkah berhenti setelah paling banyak 64 iterasi direktori atau mengamati 5 ms berlalu, termasuk entri terlewati dan akhir direktori. Ini tidak membatasi durasi satu syscall.
-
-Untuk memindahkan I/O latar ke thread, build dengan `--with-threads` dan deklarasikan pool inti dalam konteks **main**, di luar `http`:
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>` memilih pool yang ada dalam `http`, `server`, atau `location`. Bawaan `default` dibuat NGINX dengan parameter standar bila dirujuk tanpa deklarasi. Nama khusus wajib dideklarasikan lewat `thread_pool`. Pilihan diwariskan; permintaan pertama yang diterima menentukan eksekutor pekerjaan gabungan. Setiap worker memiliki pool sendiri. Pool penuh memicu pengiriman ulang setelah 10 ms dengan mempertahankan jatah penerimaan, tanpa beralih ke penelusuran sinkron. Tanpa thread, pada Windows, mode proses tunggal, atau jika reload menghapus pool tugas lama, kursor inkremental digunakan.
+Bintang harus menjadi byte terakhir kunci yang dievaluasi, bukan sekadar jalur URI. Perhitungkan query string atau akhiran variabel di `proxy_cache_key`. Kunci `*` saja menelusuri semua entri yang memenuhi syarat.
 
-REFRESH memakai pool terpilih untuk satu pemindai tambahan per worker. Subrequest HTTP native berjalan di event loop; thread I/O tidak mengakses statusnya.
+---
 
-Perubahan struktur antrean/indeks memakai mutex slab. Penerimaan dan callback latar memakai trylock serta pengulangan bertimer. Tugas tertunda **dan berjalan** tetap di rbtree string inti per jalur; perbandingan kunci lengkap mengatasi benturan hash. Biaya indeks `O(log Q)` untuk `Q` tugas belum selesai; pencarian jalur linear terhadap jumlah jalur terdaftar. Daftar `ngx_queue_t` melacak tugas tertunda/aktif. Duplikat aktif pertama meminta pengulangan, berikutnya bergabung. Pengulangan masuk ekor antrean setelah putaran kini agar PURGE berikutnya tidak hilang diam-diam. Purge terus-menerus dapat memicu putaran tambahan. Jatah baru dilepas pada penyelesaian final. I/O dan format respons di luar kunci.
+<a id="generation-invalidation"></a>
 
-Rbtree hanya mendeduplikasi pembersihan fisik. Aturan generasi berada dalam trie byte terbatas di SHM terpisah. Penyapuan namespace ketat mempunyai identitas indeks berbeda dari tugas kunci lama; keputusan REFRESH memakai jalur pembersihan yang sama.
+## Invalidasi generasi
 
-Antrean penuh atau kegagalan alokasi membuat HTTP menunggu dengan timer 10 ms dan penanganan putus koneksi inti. Permintaan/handler pembersihan tetap di worker pemilik; SHM tidak berisi pointer permintaan. Pembacaan seluruh koneksi HTTP/2 dan HTTP/3 tetap aktif. Tekanan antrean tidak menghasilkan 429/503; PURGE pendek yang telah dibaca tidak menjamin TCP Zero Window. Penantian tetap memakan memori/koneksi: gunakan timeout dan kebijakan penerimaan inti sesuai anggaran koneksi.
+Kunci logis mengidentifikasi objek. Namespace mengelompokkan kunci yang berbagi aturan pembatalan. Generasi adalah versi yang ditambahkan ke kunci cache NGINX. Setelah PURGE, permintaan baru memakai versi baru. GET yang dimulai sebelumnya boleh selesai, tetapi penulisan berkasnya yang terlambat tidak menjadi HIT untuk permintaan baru.
 
-Tugas diterima mempertahankan kunci, nama pool, dan perlindungan jalur temporer melewati reload biasa. Duplikat baru memperbarui perlindungan tugas tertunda atau putaran berikutnya. Menutup penerimaan baru mempertahankan pekerjaan lama. Worker yang berhenti secara anggun menyelesaikan putaran kini tanpa mengambil tugas baru. Keluar cepat mengembalikan tugas inkremental belum selesai ke antrean tanpa menuntaskan filesystem di hook keluar. Masa hidup tugas thread yang sudah dikirim dikelola penghentian pool inti.
+Pada namespace terikat, PURGE memublikasikan generasi baru dan menjadwalkan penyapuan generasi usang yang terdeduplikasi sebelum mengembalikan `200` berstatus `invalidated`. Jalur penerimaan tidak membuka/menghapus file cache. Permintaan baru yang pertama kali mengevaluasi kunci setelah publikasi tidak dapat HIT generasi sebelumnya. Permintaan mengunci generasi per namespace/kunci logis, termasuk pengalihan internal; respons yang sudah mulai boleh selesai tetapi tulisan terlambatnya tidak menjadi HIT bagi permintaan baru. Kecocokan tepat peka huruf, prefiks tidak peka huruf ASCII. `purge_all` mengubah seluruh namespace termasuk jalur lain yang sengaja berbagi. Pembersihan fisik dijadwalkan untuk jalur tujuan; jalur lain memakai expiry inti atau purge berikutnya.
 
-Epoch PID/slot mengidentifikasi penugasan. Setiap detik worker memeriksa paling banyak 64 catatan aktif per putaran pemulihan, lalu mengantrekan ulang tugas yang pemiliknya keluar. Ini memulihkan penugasan terlantar, bukan jurnal transaksional. Crash saat memperbarui daftar/slab dapat merusak status dan memerlukan restart; penghapusan tepat sebelum crash dapat hilang dari metrik. Tugas tertunda/pengulangan butuh worker aktif: kosongkan antrean sebelum berhenti jika penyelesaian penting. Antrean tidak persisten.
+Invalidasi diterima tidak menjamin ruang disk langsung kembali. Tulisan generasi lama setelah penyapuan tetap tak terjangkau, lalu dihapus oleh pembersihan berikutnya atau expiry inactive inti. Saat SHM tertekan, aturan dipadatkan ke baseline namespace baru: kunci tambahan menjadi dingin, bukan kunci terinvalidasi muncul lagi. Setiap invalidasi berikutnya mereklamasi paling banyak 64 node trie terlepas. PURGE berulang pada kunci populer tidak memperbesar pohon tanpa batas. Kompleksitas bergantung panjang kunci terbatas dan indeks tugas, bukan jumlah file; tidak menjanjikan waktu nyata O(1) atau bebas starvation saat overload. Penerimaan dapat menunggu. Gunakan `proxy_cache_lock` dan kontrol setara untuk menahan lonjakan GET setelah invalidasi.
 
-Struktur internal antrean bukan ABI peningkatan. Build dengan struktur berbeda memerlukan restart penuh setelah pekerjaan yang wajib selesai dituntaskan. Reload build yang sama memakai ulang zona.
+<a id="conditional-refresh"></a>
 
-Penghapusan bersifat best effort. `202` mengonfirmasi penerimaan, bukan penghapusan; putaran selesai bukan snapshot atomik. Permintaan bersamaan dapat membuat entri selama/setelah putaran, dan kesalahan file dicatat. Wildcard/purge penuh menghapus tanpa memperbarui setiap node native secara sinkron. Operasi tepat dan Vary menginvalidasi node yang cocok.
+## Memeriksa cache ke server asal (REFRESH)
 
-Putaran latar gagal diulang setelah 100 ms, 1 s, dan 10 s, maksimal tiga kali. Tugas tertunda tetap memiliki slot penerimaan/deduplikasi sambil membiarkan tugas lain berjalan. PURGE baru mengatur ulang jendela ini. Setelah habis, tugas dihentikan dengan log error; periksa `cleanup.exhausted` dan ulangi setelah memperbaiki penyimpanan. Invalidasi generasi tetap berlaku walau pembersihan fisik gagal. File hilang adalah race yang diharapkan; file rusak dilewati tanpa pengulangan tak berujung.
+Gunakan REFRESH jika objek sudah berada di cache tetapi Anda belum tahu apakah sumbernya berubah, misalnya setelah impor katalog. Jika konten sudah pasti usang, gunakan PURGE. REFRESH mengirim HEAD tanpa mengunduh isi respons, dengan ETag atau waktu modifikasi tersimpan sebagai kondisi HTTP. Profil adalah lokasi proxy internal yang menetapkan server asal, Host, header, dan pemetaan URI.
+
+REFRESH memvalidasi objek yang masih ada sebelum TTL habis; tidak memanaskan cache atau memperpanjang TTL pada `304`. Melengkapi `proxy_cache_revalidate` dan `proxy_cache_background_update` untuk lalu lintas biasa objek kedaluwarsa. Origin yang mengabaikan validator dan selalu mengirim `200` menjadikan REFRESH invalidasi plus HEAD tambahan. Kandidat hanya entri terkini, valid, dengan jalur hash kanonis. Penggantian fisik pada generasi sama dapat diinvalidasi secara konservatif; perbandingan generasi mencegah HEAD lama merusak generasi PURGE lebih baru.
+
+| Hasil origin mentah | Tindakan / hasil |
+|---|---|
+| `304` | Pertahankan; `kept` |
+| `200`, `404`, `410` | Invalidasi generasi bersyarat dan pembersihan tertunda; `invalidated` |
+| Status lain | Pertahankan; `upstream_status` |
+| Tanpa status / gagal transport | Pertahankan; `transport_error` |
+| Metadata Vary | Tanpa HEAD; `skipped_vary` |
+| Pemetaan/profil tidak valid | Pertahankan; `skipped_profile` |
+| Generasi sudah diganti | Tanpa invalidasi baru; `raced_replaced` |
+| Kegagalan internal invalidasi/alokasi | Pertahankan; `invalidation_error` |
+| Pekerjaan belum dikirim/selesai saat halaman berhenti | `undispatched`; kursor tidak melewatinya |
+
+Worker memiliki paling banyak satu halaman aktif dan satu probe; anggaran bersama membatasi total 16 probe antarworker. Halaman lain menunggu tanpa array kandidat. Setiap halaman memindai dengan kursor bersama, menyimpan maksimal 32 kandidat, lalu mengirim HEAD native berurutan. Ini membatasi memori dan subrequest yang berbagi pool utama. Permintaan REFRESH identik tidak dideduplikasi, tetapi berbagi batas konkurensi. Invalidasinya memakai antrean PURGE terdeduplikasi bersama.
+
+Mulai tanpa kursor, kemudian kirim `X-Cache-Purge-Cursor: <next_cursor>` ke endpoint sama dengan selektor/profil sama sampai `complete` benar. Kursor adalah nama file hex 32 karakter terakhir yang selesai; header invalid/duplikat menghasilkan `400`. `scan_complete` berarti enumerasi sukses; `complete` juga mensyaratkan tidak ada halaman berikutnya dan semua keputusan selesai. `timed_out` menandakan batas waktu; kegagalan pemindaian mengembalikan `500 scan_failed`. `undispatched` menghitung kandidat belum selesai; scan tidak lengkap hanya memberi batas bawah, bukan total cache. Jika scan belum lengkap, tidak ada probe, hasil kosong dan kursor masuk tidak berubah. Hasil menampilkan hash dan status upstream mentah, bukan kunci/kredensial.
+
+Setiap halaman memindai ulang untuk hash berikutnya: memori terbatas dibayar I/O berulang, `O(files × pages)` untuk seluruh operasi. Paginasi berkonsistensi lemah saat penambahan/penghapusan bersamaan; mulai ulang jika perlu snapshot lengkap sesudahnya. Pilih selektor/timeout sesuai kebutuhan. Antarmuka ini tidak cocok untuk memindai cache aktif sangat besar dengan frekuensi tinggi.
+
+<a id="generation-and-refresh-example"></a>
+
+### Contoh generasi dan REFRESH
+
+Fragmen ini untuk main/http; pertahankan blok `events` Anda. Sesuaikan sumber dan jalur. Tanpa `--with-threads`, hapus `thread_pool` dan `cache_purge_thread_pool` agar pemindaian berjalan bertahap.
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+Minta dahulu objek yang ada dan dapat disimpan di cache. Ulangi GET hingga muncul `X-Cache-Status: HIT`, lalu periksa objek yang sama dengan REFRESH. Setelah `kept`, GET berikutnya tetap HIT; setelah `invalidated`, GET kembali ke sumber.
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Untuk prefiks, mulai tanpa kursor. Jika `complete: false`, ulangi dengan nilai hasil pada `X-Cache-Purge-Cursor`, menggantikan `<next_cursor>`. Jangan ubah selektor. Atasi kesalahan HTTP sebelum melanjutkan.
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Jika objek sudah pasti usang, langsung gunakan PURGE. Dengan generasi pada contoh ini, `200 invalidated` mencegah permintaan baru memakai generasi lama meskipun berkasnya masih ada.
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+Lihat [HTTP dan kasus tepi](../REFRESH.md) (bahasa Inggris). Kegagalan pemindaian mengembalikan `500 scan_failed`, bukan halaman lanjutan dengan `scan_error: true`.
+
+<a id="sample-configurations"></a>
+
+## Contoh konfigurasi
+
+<a id="basic--inline-purge-method"></a>
+
+### Dasar — metode purge inline
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Dasar — location purge terpisah
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Antrean latar diaktifkan
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Menghapus semua entri
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Respons JSON dengan pengaturan per location
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Purge sadar Vary
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Setelah kunci dihapus, semua varian gzip/Vary pada jalur berbeda ikut dihapus otomatis.
 
 ---
 
@@ -483,261 +734,53 @@ Membatasi pengiriman scan/probe baru dalam halaman REFRESH, termasuk menunggu pe
 
 ---
 
-<a id="partial-key-purge"></a>
+<a id="execution-model"></a>
 
-## Penghapusan berdasarkan sebagian kunci
+## Model eksekusi
 
-Tambahkan `*` pada **kunci cache yang sudah dievaluasi** untuk mencocokkan prefiks tanpa membedakan huruf besar/kecil. Kunci tepat dan Vary tetap peka huruf besar/kecil. Prefiks pembersihan fisik maksimal 511 byte, tidak termasuk `*` terakhir. Prefiks yang lebih panjang dicatat sekali dan menghasilkan `400 invalid_selector` tanpa menelusuri berkas.
+**Tugas** adalah satu operasi wildcard atau `purge_all`. **Batch** adalah jumlah tugas per worker sebelum jeda. **Langkah** adalah satu bagian penelusuran inkremental yang dibatasi; satu tugas dapat memerlukan banyak langkah.
 
-Dengan `cache_purge_key`, pencocokan memakai ekspresi logis dan menerima hingga 8096 byte, termasuk `*` akhir.
+Dengan generasi, satu penyapuan fisik per jalur/namespace menggabungkan seluruh invalidasi yang diterima. Halaman REFRESH adalah operasi HTTP terpisah, bukan tugas antrean purge.
 
-Untuk ekspresi yang berakhir `$uri`, permintaan ini memilih prefiks URI:
+| Permintaan dan konfigurasi | Penelusuran file | Penyelesaian HTTP |
+|---|---|---|
+| Kunci tepat lama, dengan/tanpa Vary | Worker permintaan; Vary menambah penelusuran | Setelah operasi |
+| Wildcard atau `purge_all`, antrean mati | Worker permintaan, sinkron | Setelah penelusuran |
+| Tugas latar, pool terpilih | Satu tugas pool per worker pada satu waktu | `202` setelah penerimaan |
+| Tugas latar tanpa pool yang dapat digunakan | Event loop worker, langkah inkremental | `202` setelah masuk antrean |
+| Kapasitas/alokasi habis | Permintaan menunggu penerimaan tanpa penelusuran sendiri | `202` setelah diterima |
+| PURGE generasi, bentuk kunci apa pun | Penyapuan namespace tertunda; tanpa membuka/menghapus cache dalam permintaan | `200 invalidated` setelah publikasi dan penerimaan |
+| Endpoint REFRESH | Pemindaian terbatas dan hingga 32 HEAD berurutan | JSON `200` dengan kolom penyelesaian/lanjutan |
 
-```http
-PURGE /images/header*
-```
+Baris tanpa generasi menjelaskan perilaku lama. Permintaan generasi yang menunggu kapasitas mengembalikan `200`, bukan `202`, setelah diterima.
 
-Bintang harus menjadi byte terakhir kunci yang dievaluasi, bukan sekadar jalur URI. Perhitungkan query string atau akhiran variabel di `proxy_cache_key`. Kunci `*` saja menelusuri semua entri yang memenuhi syarat.
+Langkah berhenti setelah paling banyak 64 iterasi direktori atau mengamati 5 ms berlalu, termasuk entri terlewati dan akhir direktori. Ini tidak membatasi durasi satu syscall.
 
----
-
-<a id="generation-invalidation"></a>
-
-## Invalidasi generasi
-
-Pada namespace terikat, PURGE memublikasikan generasi baru dan menjadwalkan penyapuan generasi usang yang terdeduplikasi sebelum mengembalikan `200` berstatus `invalidated`. Jalur penerimaan tidak membuka/menghapus file cache. Permintaan baru yang pertama kali mengevaluasi kunci setelah publikasi tidak dapat HIT generasi sebelumnya. Permintaan mengunci generasi per namespace/kunci logis, termasuk pengalihan internal; respons yang sudah mulai boleh selesai tetapi tulisan terlambatnya tidak menjadi HIT bagi permintaan baru. Kecocokan tepat peka huruf, prefiks tidak peka huruf ASCII. `purge_all` mengubah seluruh namespace termasuk jalur lain yang sengaja berbagi. Pembersihan fisik dijadwalkan untuk jalur tujuan; jalur lain memakai expiry inti atau purge berikutnya.
-
-Invalidasi diterima tidak menjamin ruang disk langsung kembali. Tulisan generasi lama setelah penyapuan tetap tak terjangkau, lalu dihapus oleh pembersihan berikutnya atau expiry inactive inti. Saat SHM tertekan, aturan dipadatkan ke baseline namespace baru: kunci tambahan menjadi dingin, bukan kunci terinvalidasi muncul lagi. Setiap invalidasi berikutnya mereklamasi paling banyak 64 node trie terlepas. PURGE berulang pada kunci populer tidak memperbesar pohon tanpa batas. Kompleksitas bergantung panjang kunci terbatas dan indeks tugas, bukan jumlah file; tidak menjanjikan waktu nyata O(1) atau bebas starvation saat overload. Penerimaan dapat menunggu. Gunakan `proxy_cache_lock` dan kontrol setara untuk menahan lonjakan GET setelah invalidasi.
-
-<a id="conditional-refresh"></a>
-
-## REFRESH bersyarat
-
-REFRESH memvalidasi objek yang masih ada sebelum TTL habis; tidak memanaskan cache atau memperpanjang TTL pada `304`. Melengkapi `proxy_cache_revalidate` dan `proxy_cache_background_update` untuk lalu lintas biasa objek kedaluwarsa. Origin yang mengabaikan validator dan selalu mengirim `200` menjadikan REFRESH invalidasi plus HEAD tambahan. Kandidat hanya entri terkini, valid, dengan jalur hash kanonis. Penggantian fisik pada generasi sama dapat diinvalidasi secara konservatif; perbandingan generasi mencegah HEAD lama merusak generasi PURGE lebih baru.
-
-| Hasil origin mentah | Tindakan / hasil |
-|---|---|
-| `304` | Pertahankan; `kept` |
-| `200`, `404`, `410` | Invalidasi generasi bersyarat dan pembersihan tertunda; `invalidated` |
-| Status lain | Pertahankan; `upstream_status` |
-| Tanpa status / gagal transport | Pertahankan; `transport_error` |
-| Metadata Vary | Tanpa HEAD; `skipped_vary` |
-| Pemetaan/profil tidak valid | Pertahankan; `skipped_profile` |
-| Generasi sudah diganti | Tanpa invalidasi baru; `raced_replaced` |
-| Kegagalan internal invalidasi/alokasi | Pertahankan; `invalidation_error` |
-| Pekerjaan belum dikirim/selesai saat halaman berhenti | `undispatched`; kursor tidak melewatinya |
-
-Worker memiliki paling banyak satu halaman aktif dan satu probe; anggaran bersama membatasi total 16 probe antarworker. Halaman lain menunggu tanpa array kandidat. Setiap halaman memindai dengan kursor bersama, menyimpan maksimal 32 kandidat, lalu mengirim HEAD native berurutan. Ini membatasi memori dan subrequest yang berbagi pool utama. Permintaan REFRESH identik tidak dideduplikasi, tetapi berbagi batas konkurensi. Invalidasinya memakai antrean PURGE terdeduplikasi bersama.
-
-Mulai tanpa kursor, kemudian kirim `X-Cache-Purge-Cursor: <next_cursor>` ke endpoint sama dengan selektor/profil sama sampai `complete` benar. Kursor adalah nama file hex 32 karakter terakhir yang selesai; header invalid/duplikat menghasilkan `400`. `scan_complete` berarti enumerasi sukses; `complete` juga mensyaratkan tidak ada halaman berikutnya dan semua keputusan selesai. `timed_out`/`scan_error` membedakan interupsi/kegagalan. `undispatched` menghitung kandidat belum selesai; scan tidak lengkap hanya memberi batas bawah, bukan total cache. Jika scan belum lengkap, tidak ada probe, hasil kosong dan kursor masuk tidak berubah. Hasil menampilkan hash dan status upstream mentah, bukan kunci/kredensial.
-
-Setiap halaman memindai ulang untuk hash berikutnya: memori terbatas dibayar I/O berulang, `O(files × pages)` untuk seluruh operasi. Paginasi berkonsistensi lemah saat penambahan/penghapusan bersamaan; mulai ulang jika perlu snapshot lengkap sesudahnya. Pilih selektor/timeout sesuai kebutuhan. Antarmuka ini tidak cocok untuk memindai cache aktif sangat besar dengan frekuensi tinggi.
-
-<a id="generation-and-refresh-example"></a>
-
-### Contoh generasi dan REFRESH
+Untuk memindahkan I/O latar ke thread, build dengan `--with-threads` dan deklarasikan pool inti dalam konteks **main**, di luar `http`:
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>` memilih pool yang ada dalam `http`, `server`, atau `location`. Bawaan `default` dibuat NGINX dengan parameter standar bila dirujuk tanpa deklarasi. Nama khusus wajib dideklarasikan lewat `thread_pool`. Pilihan diwariskan; permintaan pertama yang diterima menentukan eksekutor pekerjaan gabungan. Setiap worker memiliki pool sendiri. Pool penuh memicu pengiriman ulang setelah 10 ms dengan mempertahankan jatah penerimaan, tanpa beralih ke penelusuran sinkron. Tanpa thread, pada Windows, mode proses tunggal, atau jika reload menghapus pool tugas lama, kursor inkremental digunakan.
 
-<a id="sample-configurations"></a>
+REFRESH memakai pool terpilih untuk satu pemindai tambahan per worker. Subrequest HTTP native berjalan di event loop; thread I/O tidak mengakses statusnya.
 
-## Contoh konfigurasi
+Perubahan struktur antrean/indeks memakai mutex slab. Penerimaan dan callback latar memakai trylock serta pengulangan bertimer. Tugas tertunda **dan berjalan** tetap di rbtree string inti per jalur; perbandingan kunci lengkap mengatasi benturan hash. Biaya indeks `O(log Q)` untuk `Q` tugas belum selesai; pencarian jalur linear terhadap jumlah jalur terdaftar. Daftar `ngx_queue_t` melacak tugas tertunda/aktif. Duplikat aktif pertama meminta pengulangan, berikutnya bergabung. Pengulangan masuk ekor antrean setelah putaran kini agar PURGE berikutnya tidak hilang diam-diam. Purge terus-menerus dapat memicu putaran tambahan. Jatah baru dilepas pada penyelesaian final. I/O dan format respons di luar kunci.
 
-<a id="basic--inline-purge-method"></a>
+Rbtree hanya mendeduplikasi pembersihan fisik. Aturan generasi berada dalam trie byte terbatas di SHM terpisah. Penyapuan namespace ketat mempunyai identitas indeks berbeda dari tugas kunci lama; keputusan REFRESH memakai jalur pembersihan yang sama.
 
-### Dasar — metode purge inline
+Antrean penuh atau kegagalan alokasi membuat HTTP menunggu dengan timer 10 ms dan penanganan putus koneksi inti. Permintaan/handler pembersihan tetap di worker pemilik; SHM tidak berisi pointer permintaan. Pembacaan seluruh koneksi HTTP/2 dan HTTP/3 tetap aktif. Tekanan antrean tidak menghasilkan 429/503; PURGE pendek yang telah dibaca tidak menjamin TCP Zero Window. Penantian tetap memakan memori/koneksi: gunakan timeout dan kebijakan penerimaan inti sesuai anggaran koneksi.
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+Tugas diterima mempertahankan kunci, nama pool, dan perlindungan jalur temporer melewati reload biasa. Duplikat baru memperbarui perlindungan tugas tertunda atau putaran berikutnya. Menutup penerimaan baru mempertahankan pekerjaan lama. Worker yang berhenti secara anggun menyelesaikan putaran kini tanpa mengambil tugas baru. Keluar cepat mengembalikan tugas inkremental belum selesai ke antrean tanpa menuntaskan filesystem di hook keluar. Masa hidup tugas thread yang sudah dikirim dikelola penghentian pool inti.
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+Epoch PID/slot mengidentifikasi penugasan. Setiap detik worker memeriksa paling banyak 64 catatan aktif per putaran pemulihan, lalu mengantrekan ulang tugas yang pemiliknya keluar. Ini memulihkan penugasan terlantar, bukan jurnal transaksional. Crash saat memperbarui daftar/slab dapat merusak status dan memerlukan restart; penghapusan tepat sebelum crash dapat hilang dari metrik. Tugas tertunda/pengulangan butuh worker aktif: kosongkan antrean sebelum berhenti jika penyelesaian penting. Antrean tidak persisten.
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
+Struktur internal antrean bukan ABI peningkatan. Build dengan struktur berbeda memerlukan restart penuh setelah pekerjaan yang wajib selesai dituntaskan. Reload build yang sama memakai ulang zona.
 
-<a id="basic--separate-purge-location"></a>
+Penghapusan bersifat best effort. `202` mengonfirmasi penerimaan, bukan penghapusan; putaran selesai bukan snapshot atomik. Permintaan bersamaan dapat membuat entri selama/setelah putaran, dan kesalahan file dicatat. Wildcard/purge penuh menghapus tanpa memperbarui setiap node native secara sinkron. Operasi tepat dan Vary menginvalidasi node yang cocok.
 
-### Dasar — location purge terpisah
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### Antrean latar diaktifkan
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### Menghapus semua entri
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### Respons JSON dengan pengaturan per location
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Purge sadar Vary
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-Setelah kunci dihapus, semua varian gzip/Vary pada jalur berbeda ikut dihapus otomatis.
+Putaran latar gagal diulang setelah 100 ms, 1 s, dan 10 s, maksimal tiga kali. Tugas tertunda tetap memiliki slot penerimaan/deduplikasi sambil membiarkan tugas lain berjalan. PURGE baru mengatur ulang jendela ini. Setelah habis, tugas dihentikan dengan log error; periksa `cleanup.exhausted` dan ulangi setelah memperbaiki penyimpanan. Invalidasi generasi tetap berlaku walau pembersihan fisik gagal. File hilang adalah race yang diharapkan; file rusak dilewati tanpa pengulangan tak berujung.
 
 ---
 
@@ -875,6 +918,8 @@ Lihat [pemeriksaan log](../../t/TESTING.md#logging-contracts) untuk diagnostik y
 <a id="testing"></a>
 
 ## Pengujian
+
+[Peta cakupan](../TEST_COVERAGE.md) (bahasa Inggris) membedakan kasus yang diuji dan kekurangan yang tersisa.
 
 Build dan jalankan seluruh suite dalam Docker:
 

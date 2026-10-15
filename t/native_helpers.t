@@ -234,7 +234,7 @@ subtest 'pending/running deduplication, admission, metrics and recovery' => sub 
                   qw(path_separator path_char path_min_length));
     $code .= join("\n", map { function($_) }
                   qw(path_equal path_length path_get age stats stat_add
-                     recover enqueue process_queue queue_status_snapshot));
+                     recover enqueue process_queue queue_status_snapshot probe_credit));
     $code .= fixture('queue_state_main');
     $code .= fixture('no_leak_check') if $ENV{TEST_NGINX_NO_LEAK_CHECK};
     write_file("$tmp/queue.c", $code);

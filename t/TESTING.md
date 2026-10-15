@@ -115,6 +115,10 @@ deletion; sanitizer and Valgrind results apply to the paths exercised.
 
 ## Native helper and runtime coverage
 
+For a feature-by-feature map, including missing end-to-end cases, see
+[what the v4 tests cover](../docs/TEST_COVERAGE.md). The suite has no measured
+line/branch coverage percentage; successful jobs do not imply complete coverage.
+
 Native fixtures compile extracted production helper bodies. Checks cover:
 
 - Guard-page path boundaries, separator/case models and 32-bit clock rollover.
@@ -155,11 +159,19 @@ header/body code agreement, method Allow headers and ignored legacy flags.
 Generation tests cover logical completion before deferred unlink, reload,
 persistent restart epochs and a controlled late writer. REFRESH tests cover
 304/200/404/410, origin and transport failures, escaped URI/query identity,
-literal Host validation, deadline results, a late probe racing with PURGE,
+profile isolation, deadline results, a late probe racing with PURGE,
 Vary rejection and continuation beyond a 32-entry page. A forked local origin
 uses explicit handshake files to order races. Linux runs it only in Docker;
 native macOS runs it in its dedicated platform job. Windows HTTP tests also
 cover generation invalidation, REFRESH and namespace reuse on reload.
+
+Profile tests use a confirmed cache HIT before testing a probe. A separate
+blocked-refill scenario checks that a completed empty scan does not stand in
+for profile validation. Unsafe-profile cases check forwarding, cache and error
+interception settings, method, internal location, Host, validator variables and
+representation headers. Rejection must preserve the cached HIT and send no HEAD
+to the controlled origin. These cases use independent servers rather than a
+reload shared with an earlier invalidation test.
 
 All production C units listed in `config` are compiled under strict
 debug/release and disabled cache/proxy/protocol guards. The strict matrix
@@ -368,3 +380,29 @@ condition-signal failure), process ownership recovery, graceful/fast-exit accoun
 alignment and byte counters above 32 bits. Status is an approximate snapshot and its
 fields must not be tested as an atomic cross-worker transaction. Named pool validation
 and log-phase HIT/MISS observation are included in `purge_runtime.t`.
+
+### Additional v4 regression cases
+
+`purge_runtime.t` also starts small local FastCGI, SCGI and uWSGI origins from
+`fixtures/gateway_origin.pl`. Each protocol fills a real NGINX cache and checks
+exact/prefix PURGE with generation keys enabled and disabled. No external app
+server is needed. REFRESH tests exercise malformed and duplicate cursors,
+redirected profiles, shared namespaces across cache paths, scan errors,
+client-header isolation, stored validators, origin errors and cancellation of
+a page with an active HEAD. The queue fixture exercises the production shared
+probe-credit function, including the 16-credit limit and abandoned owners.
+
+The disconnect case enables info logging to observe NGINX's disconnect event.
+The scan-fault case temporarily replaces its private cache root with a regular
+file, then restores it; this reliably produces ENOTDIR even as root. Only that
+expected path-specific diagnostic is exempted from the severe-log check.
+
+The missing-ETag scenarios expose a separate upstream defect in NGINX 1.31.6:
+`ngx_http_file_cache_set_header()` passes a NULL ETag pointer to `memcpy` with
+length zero. Under UBSan, each affected scenario records a visible TODO failure
+for that exact core source statement. The matcher derives its line from the
+configured NGINX source, requires the specific argument-2 nonnull diagnostic,
+and only applies in the two intentionally missing-ETag cases. All other core
+and module sanitizer diagnostics still fail the suite. This is an unresolved
+NGINX defect, not a clean UBSan result or a module fix. The behavioral assertions
+for date-only and absent validators still run normally.

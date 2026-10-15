@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
-用于清除 `FastCGI`、`proxy`、`SCGI` 和 `uWSGI` 缓存的 NGINX 模块。4.0 保留原有接口，新增需显式启用的世代失效机制：先使缓存不可访问，再延迟删除文件；并为代理缓存提供有界的条件式 REFRESH。
+用于删除 `FastCGI`、`proxy`、`SCGI` 和 `uWSGI` 缓存条目的 NGINX 模块。v4 的键世代机制可在文件删除前，阻止新请求使用旧条目。REFRESH 则向源站检查代理缓存的内容是否已变化。这两项功能都需要显式配置。原有 PURGE 语法仍可使用，但 HTTP 响应已有变化，详见[迁移说明](#migration)。
 
 ---
 
@@ -13,14 +13,15 @@
 ## 目录
 
 - [功能](#features)
+- [根据需求选择处理方式](#choosing-a-mode)
 - [兼容性](#compatibility)
 - [安装](#installation)
-- [执行模型](#execution-model)
-- [指令](#directives)
 - [部分键清理](#partial-key-purge)
 - [世代失效](#generation-invalidation)
-- [条件式 REFRESH](#conditional-refresh)
+- [向源站检查缓存内容（REFRESH）](#conditional-refresh)
 - [配置示例](#sample-configurations)
+- [指令](#directives)
+- [执行模型](#execution-model)
 - [性能调优](#performance-tuning)
 - [监控与调试](#monitoring-and-debugging)
 - [故障排查](#troubleshooting)
@@ -47,7 +48,22 @@
 - **运行中任务去重** — 遍历期间收到重复请求时，索引中保留一个任务，最多预约一次后续重跑
 - **状态监控** — 按缓存提供队列、删除和 HIT/MISS 指标，读取时不获取共享队列互斥锁
 - **世代键** — 对精确键、前缀和命名空间执行失效，无需在 PURGE 请求中进行磁盘 I/O；迟到的旧写入仍不可访问
-- **条件式 REFRESH** — 显式 HEAD 配置、共享探测额度及每页 32 项的续查机制
+- [向源站检查缓存内容（REFRESH）](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## 根据需求选择处理方式
+
+| 目标 | 配置 | 响应含义 |
+|---|---|---|
+| 删除已知过期的条目，并等待删除操作结束 | PURGE，关闭后台队列 | `200 purged` 或 `200 no_match`；错误返回 4xx/5xx |
+| 安排按前缀或全缓存清理 | PURGE，设置 `cache_purge_background_queue on` | `202 accepted`；等待清理期间仍可能返回旧条目 |
+| 防止新请求使用旧内容，包括延迟写入的文件 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`；新请求使用新世代的键，文件随后清理 |
+| 检查源站内容是否变化 | 键世代 + `proxy_cache_refresh` + 内部配置位置 | `200`，附带逐条结果和续页信息；不会预热缓存 |
+
+这些机制可以组合使用：切换世代也会安排文件清理。仅开启后台队列无法防止延迟写入带来的旧内容。参见 [v4 示例](#generation-and-refresh-example)、[普通 PURGE 示例](#sample-configurations)及 [HTTP 响应说明](../HTTP_RESPONSES.md)（英文）。
 
 ---
 
@@ -96,53 +112,288 @@ make modules
 
 ---
 
-<a id="execution-model"></a>
+<a id="partial-key-purge"></a>
 
-## 执行模型
+## 部分键清理
 
-一个**任务**是一次通配符或 `purge_all` 操作。一个**批次**是 worker 在限速暂停之前处理的任务数。一个**分片**是增量目录遍历中作业量有界的一步；一个任务可能需要许多分片。
+在**求值后的缓存键**末尾添加 `*`，按前缀匹配且不区分大小写。精确键和 Vary 匹配仍区分大小写。物理清理前缀最多 511 字节，不含末尾的 `*`。超长前缀只记录一次日志，并返回 `400 invalid_selector`，不遍历文件。
 
-启用世代键后，每个缓存路径与命名空间用一个物理扫描任务合并已接受的失效请求。REFRESH 页是独立 HTTP 操作，不属于 PURGE 队列任务。
+启用 `cache_purge_key` 时匹配逻辑表达式，长度上限为 8096 字节（含末尾 `*`）。
 
-| 请求和配置 | 文件遍历 | HTTP 完成时机 |
-|---|---|---|
-| 传统精确键，启用或未启用 Vary 匹配 | 请求 worker；Vary 增加一次目录遍历 | 操作结束后 |
-| 通配符或 `purge_all`，后台队列关闭 | 请求 worker 同步遍历 | 遍历结束后 |
-| 后台任务，使用所选线程池 | 每个 worker 同时最多一个线程池任务 | 接纳后返回 `202` |
-| 后台任务，无可用线程池 | worker 事件循环增量分片 | 入队后返回 `202` |
-| 队列容量或分配空间耗尽 | 请求等待接纳，不启动请求专属遍历 | 接纳后返回 `202` |
-| 世代 PURGE，任意键形式 | 延迟扫描命名空间；请求内不打开或删除缓存文件 | 发布失效状态并入队后返回 `200 invalidated` |
-| REFRESH 端点 | 有界扫描及最多 32 次串行 HEAD 探测 | 返回包含完成状态及续查字段的 `200` JSON |
+若键表达式以 `$uri` 结尾，以下请求可选择 URI 前缀：
 
-未使用世代键的行描述传统行为。因容量等待的世代请求在获准后返回 `200`，不是 `202`。
-
-一个增量分片最多执行 64 次目录迭代，或在观察到耗时达到 5 ms 时停止。跳过的条目与目录结束也计入预算。但该预算无法限制单次文件系统调用的耗时。
-
-要将后台文件操作移到线程中，请使用 `--with-threads` 构建，并在 `http` 外部的 **main** 上下文定义核心线程池：
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>` 可在 `http`、`server` 或 `location` 中选择命名线程池，默认值为 `default`。引用 `default` 却没有显式声明时，NGINX 会以其标准参数创建该池。其他名称必须通过核心 `thread_pool` 声明。选择规则会继承；合并任务的执行池由第一个被接纳的请求决定。每个 worker 有自己的核心线程池。池满时保留任务的接纳配额，并在 10 ms 后重试投递，不会因此启动同步遍历。未编译线程支持、Windows、单进程模式，或 reload 后旧任务的池已被移除时，使用增量游标执行。
+星号必须是求值后整个键的最后一个字节，而不仅仅是 URI 路径的末字节。请考虑 `proxy_cache_key` 的查询参数或变量后缀。键只有 `*` 时会遍历所有符合条件的条目。
 
-REFRESH 在所选线程池中为每个 worker 最多增加一个扫描任务。原生 HTTP 子请求在事件循环中运行，I/O 线程不访问它们的状态。
+---
 
-队列和索引的结构修改使用 slab 互斥锁。接纳与后台回调使用 trylock，忙时通过定时器重试。等待中**和运行中**的任务都保留在每个缓存路径的核心字符串 rbtree 中，通过完整键比较解决哈希冲突。该路径有 `Q` 个未完成任务时，索引操作为 `O(log Q)`；路径查找与已注册路径数量呈线性关系。等待与活动任务由原生 `ngx_queue_t` 链表管理。运行中操作的第一个重复请求预约一次重跑，后续重复请求合并到该预约。当前遍历结束后，重跑进入等待队列尾部，因此较晚的 PURGE 不会被默默丢弃。持续到来的新 PURGE 可能引发更多轮遍历。只有最终完成后才释放容量配额。文件操作与响应格式化在锁外执行。
+<a id="generation-invalidation"></a>
 
-rbtree 仅用于物理清理任务去重。世代规则存储在独立 SHM 区域的有界字节 trie 中。命名空间扫描与传统键任务具有不同索引标识；REFRESH 的失效决定也进入同一清理流程。
+## 世代失效
 
-队列已满或任务分配失败时，HTTP 请求通过 10 ms 重试定时器等待接纳，并使用核心的断连检测。请求及 cleanup 处理器保留在所属 worker，SHM 不保存请求指针。不会关闭 HTTP/2 或 HTTP/3 整条连接的读取。队列压力不会产生 429/503；已读入的短 PURGE 也不保证触发 TCP Zero Window。等待请求仍消耗内存与连接，请根据部署的连接预算使用核心超时和接纳策略。
+逻辑键用于标识对象；命名空间将共享失效规则的键分组。世代是加入 NGINX 缓存键的版本。PURGE 后，新请求使用新版本。此前已开始的 GET 可以完成，但它延迟写入的文件不会被新请求命中。
 
-已接纳任务在普通 reload 后保留键、池名称和临时路径保护设置。较新的重复请求会更新等待任务或下一次重跑的保护设置。禁止新的后台接纳不会丢弃已接纳工作。优雅退出的 worker 完成当前一轮后不再领取新任务。快速退出会将未完成的增量任务交回等待队列，不会在 exit hook 中完成整个文件遍历。已投递线程任务的生命周期由核心线程池销毁流程负责。
+绑定命名空间后，PURGE 先发布新世代并安排去重后的旧世代扫描，再返回 `200` 和 `invalidated`。准入路径不会打开或删除缓存文件。发布后首次计算键的新请求不能 HIT 旧世代。每个请求按命名空间／逻辑键固定世代，跨内部重定向保持；已开始的响应可完成，但迟到的缓存写入不能成为后续新请求的 HIT。精确匹配区分大小写，前缀忽略 ASCII 大小写；`purge_all` 修改整个命名空间，包括有意共享它的其他缓存路径。物理清理仅为目标路径排队，其他路径依赖核心过期清理或后续 PURGE。
 
-已分配任务由 PID 和槽位代次标识。worker 每秒执行一轮恢复，最多检查 64 条活动记录，并将所有者已退出的任务重新入队。这可恢复失去所有者的任务分配，但不是事务日志。在共享链表或 slab 修改期间崩溃，仍可能破坏状态并需要重启。崩溃前刚执行的删除可能不进入指标。待处理任务和重跑需要存活的 worker；若要求完成，应在停止前排空。队列不持久化。
+接受失效不意味着立即释放磁盘空间。扫描后才完成的旧写入仍不可访问，由后续清理或核心 inactive 过期机制回收。命名空间 SHM 紧张时，规则合并为新的命名空间基线：更多键变冷，而不是让已失效键重新出现。每次后续失效最多回收 64 个已脱离的 trie 节点。反复清理热点键不会无限扩展规则树。复杂度取决于有上限的键长和任务索引大小，而非缓存文件数量；不承诺过载时的墙钟 O(1) 或绝不饥饿。准入可能等待。失效后的 GET 惊群应使用核心 `proxy_cache_lock` 等缓存控制处理。
 
-内部队列布局不是升级 ABI。更换为不同布局的构建时，需要完整重启；必要时先完成已接纳工作。同一构建的普通 reload 会复用共享区。
+<a id="conditional-refresh"></a>
 
-删除采用尽力而为语义。`202` 表示已接纳，不代表删除完成；遍历结束也不是缓存的原子快照。并发请求可能在遍历期间或之后创建缓存，文件错误会写入日志。通配符与全缓存遍历会 unlink 文件，但不会同步更新每个核心缓存节点。精确键和 Vary 操作会使匹配节点失效。
+## 向源站检查缓存内容（REFRESH）
 
-后台扫描失败后分别等待 100 ms、1 秒和 10 秒，最多重试三次。延迟任务保留去重记录和队列额度，但不阻止其他任务执行。新 PURGE 会重置重试窗口。耗尽次数后记录错误并移除任务；检查 `cleanup.exhausted`，修复存储问题后重试。物理清理失败不会撤销世代失效。文件已消失视为正常竞争，格式无效的文件会跳过，不会无限重试。
+对象已缓存，但不确定源站内容是否变化时，可以使用 REFRESH，例如在导入商品目录之后。若已经确定内容失效，直接使用 PURGE。REFRESH 发送 HEAD，不下载响应体，并使用缓存中的 ETag 或修改时间作为 HTTP 校验条件。这里的 profile 是内部代理 location，用于指定源站、Host、请求头和 URI 映射。
+
+REFRESH 在 TTL 到期前验证仍缓存的对象，不预热，也不在 `304` 时延长 TTL。它补充核心 `proxy_cache_revalidate` 和 `proxy_cache_background_update`，后两者负责普通的过期对象流量。如果 origin 忽略验证器并始终返回 `200`，REFRESH 就相当于失效操作加一次 HEAD。候选项仅包括规范哈希路径中当前世代的有效文件。同一世代内物理替换的对象可能被保守地失效；世代比较可防止旧 HEAD 使后续 PURGE 的新世代失效。
+
+| origin 原始结果 | 操作／结果 |
+|---|---|
+| `304` | 保留；`kept` |
+| `200`、`404`、`410` | 条件式世代失效并延迟清理；`invalidated` |
+| 其他状态 | 保留；`upstream_status` |
+| 无 origin 状态／传输故障 | 保留；`transport_error` |
+| Vary 元数据 | 不发送 HEAD；`skipped_vary` |
+| 无效映射或配置档 | 保留；`skipped_profile` |
+| 世代已被替换 | 不再次失效；`raced_replaced` |
+| 内部失效／分配失败 | 保留；`invalidation_error` |
+| 页停止前未分派／未完成 | `undispatched`；游标不会越过该项 |
+
+每个 worker 最多执行一个 REFRESH 页及一个探测，共享额度限制所有 worker 合计最多 16 个探测。其他页请求等待时不分配候选数组。每页通过通用游标扫描目录，保留最多 32 个候选项，再串行执行核心 HEAD 子请求。这同时限制候选内存和共享主请求池的子请求数量。相同 REFRESH HTTP 请求本身不去重，但共享并发限制；其失效操作进入统一的去重 PURGE 队列。
+
+首次请求不带游标，然后用相同端点、逻辑选择器和配置档发送 `X-Cache-Purge-Cursor: <next_cursor>`，直到 `complete` 为 true。游标是最后完成的 32 位十六进制文件名；无效或重复游标头返回 `400`。`scan_complete` 表示目录枚举成功完成；`complete` 还表示没有后续匹配页且已完成所选决定。`timed_out` 表示达到时间限制；扫描失败返回 `500 scan_failed`。`undispatched` 是已选中但未完成的数量；扫描不完整时仅为下界，并非缓存总数。若扫描不完整，则不发起探测，结果为空，原样返回输入游标。结果只公开文件哈希和原始 upstream 状态，不返回键或凭据。
+
+每页重新扫描目录以选择下一批哈希，用重复 I/O 换取有界内存：完整操作为 `O(文件数 × 页数)`。并发增删时分页仅具有弱一致性；若需要之后时刻的完整检查，应从头重新开始。请据此选择过滤条件和超时。此管理接口不适合高频反复全量扫描超大型活动缓存。
+
+<a id="generation-and-refresh-example"></a>
+
+### 世代与 REFRESH 示例
+
+这是 main/http 配置片段，请保留已有的 `events` 块，并替换源站地址和路径。未使用 `--with-threads` 编译时，删除 `thread_pool` 和 `cache_purge_thread_pool`，即可使用分步扫描。
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+先 GET 一个存在且可缓存的对象。重复请求，直到出现 `X-Cache-Status: HIT`，再用 REFRESH 检查同一对象。结果为 `kept` 时，下次 GET 仍可命中；为 `invalidated` 时，下次 GET 会重新访问源站。
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+按前缀检查时，首次请求不带游标。若 `complete: false`，将返回值填入 `X-Cache-Purge-Cursor`，替换下面的 `<next_cursor>`，并保持选择条件不变。遇到 HTTP 错误时先处理原因，再继续。
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+已确定对象失效时，直接使用 PURGE。本例启用了键世代，因此 `200 invalidated` 表示新请求无法命中旧世代，即使旧文件尚未删除。
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+参见 [HTTP 与边界情况](../REFRESH.md)（英文）。扫描失败返回 `500 scan_failed`，而不是包含 `scan_error: true` 的续页响应。
+
+<a id="sample-configurations"></a>
+
+## 配置示例
+
+<a id="basic--inline-purge-method"></a>
+
+### 基础 — 同一 location 的 PURGE 方法
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### 基础 — 独立清理 location
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### 启用后台队列
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### 清理全部条目
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### JSON 响应及 location 级覆盖
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary 感知清理
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+清理一个键后，存储在其他文件路径的 gzip 和 Vary 变体也会自动删除。
 
 ---
 
@@ -483,261 +734,53 @@ Range:   1ms .. 1h
 
 ---
 
-<a id="partial-key-purge"></a>
+<a id="execution-model"></a>
 
-## 部分键清理
+## 执行模型
 
-在**求值后的缓存键**末尾添加 `*`，按前缀匹配且不区分大小写。精确键和 Vary 匹配仍区分大小写。物理清理前缀最多 511 字节，不含末尾的 `*`。超长前缀只记录一次日志，并返回 `400 invalid_selector`，不遍历文件。
+一个**任务**是一次通配符或 `purge_all` 操作。一个**批次**是 worker 在限速暂停之前处理的任务数。一个**分片**是增量目录遍历中作业量有界的一步；一个任务可能需要许多分片。
 
-启用 `cache_purge_key` 时匹配逻辑表达式，长度上限为 8096 字节（含末尾 `*`）。
+启用世代键后，每个缓存路径与命名空间用一个物理扫描任务合并已接受的失效请求。REFRESH 页是独立 HTTP 操作，不属于 PURGE 队列任务。
 
-若键表达式以 `$uri` 结尾，以下请求可选择 URI 前缀：
+| 请求和配置 | 文件遍历 | HTTP 完成时机 |
+|---|---|---|
+| 传统精确键，启用或未启用 Vary 匹配 | 请求 worker；Vary 增加一次目录遍历 | 操作结束后 |
+| 通配符或 `purge_all`，后台队列关闭 | 请求 worker 同步遍历 | 遍历结束后 |
+| 后台任务，使用所选线程池 | 每个 worker 同时最多一个线程池任务 | 接纳后返回 `202` |
+| 后台任务，无可用线程池 | worker 事件循环增量分片 | 入队后返回 `202` |
+| 队列容量或分配空间耗尽 | 请求等待接纳，不启动请求专属遍历 | 接纳后返回 `202` |
+| 世代 PURGE，任意键形式 | 延迟扫描命名空间；请求内不打开或删除缓存文件 | 发布失效状态并入队后返回 `200 invalidated` |
+| REFRESH 端点 | 有界扫描及最多 32 次串行 HEAD 探测 | 返回包含完成状态及续查字段的 `200` JSON |
 
-```http
-PURGE /images/header*
-```
+未使用世代键的行描述传统行为。因容量等待的世代请求在获准后返回 `200`，不是 `202`。
 
-星号必须是求值后整个键的最后一个字节，而不仅仅是 URI 路径的末字节。请考虑 `proxy_cache_key` 的查询参数或变量后缀。键只有 `*` 时会遍历所有符合条件的条目。
+一个增量分片最多执行 64 次目录迭代，或在观察到耗时达到 5 ms 时停止。跳过的条目与目录结束也计入预算。但该预算无法限制单次文件系统调用的耗时。
 
----
-
-<a id="generation-invalidation"></a>
-
-## 世代失效
-
-绑定命名空间后，PURGE 先发布新世代并安排去重后的旧世代扫描，再返回 `200` 和 `invalidated`。准入路径不会打开或删除缓存文件。发布后首次计算键的新请求不能 HIT 旧世代。每个请求按命名空间／逻辑键固定世代，跨内部重定向保持；已开始的响应可完成，但迟到的缓存写入不能成为后续新请求的 HIT。精确匹配区分大小写，前缀忽略 ASCII 大小写；`purge_all` 修改整个命名空间，包括有意共享它的其他缓存路径。物理清理仅为目标路径排队，其他路径依赖核心过期清理或后续 PURGE。
-
-接受失效不意味着立即释放磁盘空间。扫描后才完成的旧写入仍不可访问，由后续清理或核心 inactive 过期机制回收。命名空间 SHM 紧张时，规则合并为新的命名空间基线：更多键变冷，而不是让已失效键重新出现。每次后续失效最多回收 64 个已脱离的 trie 节点。反复清理热点键不会无限扩展规则树。复杂度取决于有上限的键长和任务索引大小，而非缓存文件数量；不承诺过载时的墙钟 O(1) 或绝不饥饿。准入可能等待。失效后的 GET 惊群应使用核心 `proxy_cache_lock` 等缓存控制处理。
-
-<a id="conditional-refresh"></a>
-
-## 条件式 REFRESH
-
-REFRESH 在 TTL 到期前验证仍缓存的对象，不预热，也不在 `304` 时延长 TTL。它补充核心 `proxy_cache_revalidate` 和 `proxy_cache_background_update`，后两者负责普通的过期对象流量。如果 origin 忽略验证器并始终返回 `200`，REFRESH 就相当于失效操作加一次 HEAD。候选项仅包括规范哈希路径中当前世代的有效文件。同一世代内物理替换的对象可能被保守地失效；世代比较可防止旧 HEAD 使后续 PURGE 的新世代失效。
-
-| origin 原始结果 | 操作／结果 |
-|---|---|
-| `304` | 保留；`kept` |
-| `200`、`404`、`410` | 条件式世代失效并延迟清理；`invalidated` |
-| 其他状态 | 保留；`upstream_status` |
-| 无 origin 状态／传输故障 | 保留；`transport_error` |
-| Vary 元数据 | 不发送 HEAD；`skipped_vary` |
-| 无效映射或配置档 | 保留；`skipped_profile` |
-| 世代已被替换 | 不再次失效；`raced_replaced` |
-| 内部失效／分配失败 | 保留；`invalidation_error` |
-| 页停止前未分派／未完成 | `undispatched`；游标不会越过该项 |
-
-每个 worker 最多执行一个 REFRESH 页及一个探测，共享额度限制所有 worker 合计最多 16 个探测。其他页请求等待时不分配候选数组。每页通过通用游标扫描目录，保留最多 32 个候选项，再串行执行核心 HEAD 子请求。这同时限制候选内存和共享主请求池的子请求数量。相同 REFRESH HTTP 请求本身不去重，但共享并发限制；其失效操作进入统一的去重 PURGE 队列。
-
-首次请求不带游标，然后用相同端点、逻辑选择器和配置档发送 `X-Cache-Purge-Cursor: <next_cursor>`，直到 `complete` 为 true。游标是最后完成的 32 位十六进制文件名；无效或重复游标头返回 `400`。`scan_complete` 表示目录枚举成功完成；`complete` 还表示没有后续匹配页且已完成所选决定。`timed_out` 和 `scan_error` 区分中断与失败。`undispatched` 是已选中但未完成的数量；扫描不完整时仅为下界，并非缓存总数。若扫描不完整，则不发起探测，结果为空，原样返回输入游标。结果只公开文件哈希和原始 upstream 状态，不返回键或凭据。
-
-每页重新扫描目录以选择下一批哈希，用重复 I/O 换取有界内存：完整操作为 `O(文件数 × 页数)`。并发增删时分页仅具有弱一致性；若需要之后时刻的完整检查，应从头重新开始。请据此选择过滤条件和超时。此管理接口不适合高频反复全量扫描超大型活动缓存。
-
-<a id="generation-and-refresh-example"></a>
-
-### 世代与 REFRESH 示例
+要将后台文件操作移到线程中，请使用 `--with-threads` 构建，并在 `http` 外部的 **main** 上下文定义核心线程池：
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>` 可在 `http`、`server` 或 `location` 中选择命名线程池，默认值为 `default`。引用 `default` 却没有显式声明时，NGINX 会以其标准参数创建该池。其他名称必须通过核心 `thread_pool` 声明。选择规则会继承；合并任务的执行池由第一个被接纳的请求决定。每个 worker 有自己的核心线程池。池满时保留任务的接纳配额，并在 10 ms 后重试投递，不会因此启动同步遍历。未编译线程支持、Windows、单进程模式，或 reload 后旧任务的池已被移除时，使用增量游标执行。
 
-<a id="sample-configurations"></a>
+REFRESH 在所选线程池中为每个 worker 最多增加一个扫描任务。原生 HTTP 子请求在事件循环中运行，I/O 线程不访问它们的状态。
 
-## 配置示例
+队列和索引的结构修改使用 slab 互斥锁。接纳与后台回调使用 trylock，忙时通过定时器重试。等待中**和运行中**的任务都保留在每个缓存路径的核心字符串 rbtree 中，通过完整键比较解决哈希冲突。该路径有 `Q` 个未完成任务时，索引操作为 `O(log Q)`；路径查找与已注册路径数量呈线性关系。等待与活动任务由原生 `ngx_queue_t` 链表管理。运行中操作的第一个重复请求预约一次重跑，后续重复请求合并到该预约。当前遍历结束后，重跑进入等待队列尾部，因此较晚的 PURGE 不会被默默丢弃。持续到来的新 PURGE 可能引发更多轮遍历。只有最终完成后才释放容量配额。文件操作与响应格式化在锁外执行。
 
-<a id="basic--inline-purge-method"></a>
+rbtree 仅用于物理清理任务去重。世代规则存储在独立 SHM 区域的有界字节 trie 中。命名空间扫描与传统键任务具有不同索引标识；REFRESH 的失效决定也进入同一清理流程。
 
-### 基础 — 同一 location 的 PURGE 方法
+队列已满或任务分配失败时，HTTP 请求通过 10 ms 重试定时器等待接纳，并使用核心的断连检测。请求及 cleanup 处理器保留在所属 worker，SHM 不保存请求指针。不会关闭 HTTP/2 或 HTTP/3 整条连接的读取。队列压力不会产生 429/503；已读入的短 PURGE 也不保证触发 TCP Zero Window。等待请求仍消耗内存与连接，请根据部署的连接预算使用核心超时和接纳策略。
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+已接纳任务在普通 reload 后保留键、池名称和临时路径保护设置。较新的重复请求会更新等待任务或下一次重跑的保护设置。禁止新的后台接纳不会丢弃已接纳工作。优雅退出的 worker 完成当前一轮后不再领取新任务。快速退出会将未完成的增量任务交回等待队列，不会在 exit hook 中完成整个文件遍历。已投递线程任务的生命周期由核心线程池销毁流程负责。
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+已分配任务由 PID 和槽位代次标识。worker 每秒执行一轮恢复，最多检查 64 条活动记录，并将所有者已退出的任务重新入队。这可恢复失去所有者的任务分配，但不是事务日志。在共享链表或 slab 修改期间崩溃，仍可能破坏状态并需要重启。崩溃前刚执行的删除可能不进入指标。待处理任务和重跑需要存活的 worker；若要求完成，应在停止前排空。队列不持久化。
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
+内部队列布局不是升级 ABI。更换为不同布局的构建时，需要完整重启；必要时先完成已接纳工作。同一构建的普通 reload 会复用共享区。
 
-<a id="basic--separate-purge-location"></a>
+删除采用尽力而为语义。`202` 表示已接纳，不代表删除完成；遍历结束也不是缓存的原子快照。并发请求可能在遍历期间或之后创建缓存，文件错误会写入日志。通配符与全缓存遍历会 unlink 文件，但不会同步更新每个核心缓存节点。精确键和 Vary 操作会使匹配节点失效。
 
-### 基础 — 独立清理 location
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### 启用后台队列
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### 清理全部条目
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### JSON 响应及 location 级覆盖
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Vary 感知清理
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-清理一个键后，存储在其他文件路径的 gzip 和 Vary 变体也会自动删除。
+后台扫描失败后分别等待 100 ms、1 秒和 10 秒，最多重试三次。延迟任务保留去重记录和队列额度，但不阻止其他任务执行。新 PURGE 会重置重试窗口。耗尽次数后记录错误并移除任务；检查 `cleanup.exhausted`，修复存储问题后重试。物理清理失败不会撤销世代失效。文件已消失视为正常竞争，格式无效的文件会跳过，不会无限重试。
 
 ---
 
@@ -875,6 +918,8 @@ tail -f /var/log/nginx/error.log | grep 'ngx_cache_purge:'
 <a id="testing"></a>
 
 ## 测试
+
+[测试覆盖说明](../TEST_COVERAGE.md)（英文）列出了已验证的行为与尚未覆盖的情况。
 
 在 Docker 中构建并运行全部套件：
 

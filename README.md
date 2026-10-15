@@ -2,21 +2,22 @@
 
 [English](README.md) · [简体中文](docs/i18n/README.zh-CN.md) · [日本語](docs/i18n/README.ja.md) · [한국어](docs/i18n/README.ko.md) · [Português (Brasil)](docs/i18n/README.pt-BR.md) · [Deutsch](docs/i18n/README.de.md) · [Español](docs/i18n/README.es.md) · [Français](docs/i18n/README.fr.md) · [Türkçe](docs/i18n/README.tr.md) · [Polski](docs/i18n/README.pl.md) · [Bahasa Indonesia](docs/i18n/README.id.md) · [Tiếng Việt](docs/i18n/README.vi.md) · [Українська](docs/i18n/README.uk.md) · [فارسی](docs/i18n/README.fa.md) · [Русский](docs/i18n/README.ru.md)
 
-An NGINX module for `FastCGI`, `proxy`, `SCGI` and `uWSGI` cache purging. Version 4.0 retains the purge configuration syntax, standardizes HTTP results and adds opt-in generation invalidation before deferred unlink, plus bounded conditional REFRESH for proxy caches.
+An NGINX module for removing entries from `FastCGI`, `proxy`, `SCGI` and `uWSGI` caches. In v4, generation keys can stop new requests from using old entries before their files are deleted. REFRESH can ask a proxy origin whether cached content has changed. Both features require explicit configuration. Existing PURGE syntax remains available, but HTTP responses change; see [migration](#migration).
 
 ---
 
 ## Contents
 
 - [Features](#features)
+- [Choose the behavior you need](#choosing-a-mode)
 - [Compatibility](#compatibility)
 - [Installation](#installation)
-- [Execution model](#execution-model)
-- [Directives](#directives)
 - [Partial key purge](#partial-key-purge)
-- [Generation invalidation](#generation-invalidation)
-- [Conditional REFRESH](#conditional-refresh)
+- [Generation keys](#generation-invalidation)
+- [Check cached content against the origin (REFRESH)](#conditional-refresh)
 - [Sample configurations](#sample-configurations)
+- [Directives](#directives)
+- [Execution model](#execution-model)
 - [Performance tuning](#performance-tuning)
 - [Monitoring and debugging](#monitoring-and-debugging)
 - [Troubleshooting](#troubleshooting)
@@ -48,7 +49,22 @@ An NGINX module for `FastCGI`, `proxy`, `SCGI` and `uWSGI` cache purging. Versio
 - **Status** — per-cache queue, deletion and HIT/MISS metrics, read without
   taking the shared queue mutex
 - **Generation keys** — exact, prefix and namespace invalidation without request-bound disk I/O; late old writes remain unreachable
-- **Conditional REFRESH** — explicit HEAD profile, shared probe budget and 32-entry continuation pages
+- [Check cached content against the origin (REFRESH)](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## Choose the behavior you need
+
+| Your goal | Configuration | What the response means |
+|---|---|---|
+| Delete known stale entries and wait for the deletion attempt | PURGE with the background queue off | `200 purged` or `200 no_match`; errors use 4xx/5xx |
+| Schedule a large prefix or full-cache cleanup | PURGE with `cache_purge_background_queue on` | `202 accepted`; files may still exist and be served while cleanup is pending |
+| Stop new requests from hitting old content, including late writes | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; new requests use a new key generation; disk cleanup follows |
+| Check whether cached proxy content changed at the origin | Generation keys + `proxy_cache_refresh` + an internal profile | `200` with per-entry results and continuation; it does not prewarm the cache |
+
+These settings combine: generation invalidation also schedules cleanup. The background-queue switch alone does not protect against late writes. Read [the generation example](#generation-and-refresh-example) for the v4 setup, [sample configurations](#sample-configurations) for ordinary PURGE, and [HTTP results](docs/HTTP_RESPONSES.md) before writing a client.
 
 ---
 
@@ -110,100 +126,347 @@ make modules
 
 ---
 
-## Execution model
+## Partial key purge
 
-A **task** is one wildcard or `purge_all` operation. A **batch** is the number
-of tasks a worker processes before a throttle pause. A **slice** is one
-bounded step of an incremental directory walk; a task may need many slices.
+Append `*` to the **expanded cache key** for a case-insensitive prefix match. Exact-key and Vary matching remain case-sensitive. A physical prefix may contain up to 511 bytes, excluding the trailing `*`. A longer prefix is logged once and returns `400 invalid_selector` without walking files.
 
-With generation keys, one physical sweep per cache path and namespace coalesces all accepted invalidations. REFRESH pages are separate HTTP operations, not purge queue tasks.
+With `cache_purge_key`, matching uses the logical expression and accepts at most 8096 bytes including a trailing `*`.
 
-| Request and configuration | File traversal | HTTP completion |
-|---|---|---|
-| Legacy exact key, with or without Vary matching | Request worker; Vary adds a directory walk | After the operation |
-| Wildcard or `purge_all`, background queue off | Request worker, synchronous walk | After the walk |
-| Background task, selected pool | One pool task per worker at a time | `202` after admission |
-| Background task, no usable thread pool | Worker event loop, incremental slices | `202` after enqueueing |
-| Queue capacity/allocation exhausted | Request waits for admission; no request-bound walk | `202` once admitted |
-| Generation PURGE, any key shape | Deferred namespace sweep; no request-bound cache open/unlink | `200 invalidated` after publication and admission |
-| REFRESH endpoint | Bounded scan and up to 32 serial HEAD probes | `200` JSON with completion and continuation fields |
+For a key expression ending in `$uri`, this request selects a URI prefix:
 
-Rows without generation keys describe legacy behavior. A generation request waiting for capacity returns `200` after admission, not `202`.
-
-An incremental slice stops after at most 64 directory iterations or after
-observing 5 ms of elapsed time. These budgets include skipped entries and
-directory endings. They cannot bound a single filesystem syscall.
-
-To move background file operations into threads, build with `--with-threads`
-and define a core pool in the **main** context, outside `http`:
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>` selects an existing named pool in `http`,
-`server` or `location`. Its default is `default`; NGINX creates that pool with
-its standard defaults when it is referenced but not declared explicitly.
-Custom pool names must be declared with core `thread_pool`. Pool selection is
-inherited; the first accepted request selects the executor for coalesced work.
-Each worker has its own core pools. Pool saturation retries submission after
-10 ms and retains the task's admission credit; it never starts a synchronous
-walk because the selected pool is full. Without compiled thread support,
-on Windows, in single-process mode, or when an old task's named pool has
-been removed by reload, execution uses the incremental cursor.
+The asterisk must be the last byte of the evaluated key, not merely the last
+byte of the URI path. Account for any query-string or variable suffix in
+`proxy_cache_key`. A key consisting only of `*` walks every eligible entry.
 
-REFRESH uses the selected pool for one additional scanner per worker. Native HTTP subrequests run in the event loop; their state is never accessed by the I/O thread.
+---
 
-The queue and index use a slab mutex for structural edits. Admission and
-background callbacks use trylock and retry through timers. Pending **and
-running** tasks stay in a core string rbtree per cache path; comparisons of
-complete keys resolve hash collisions. Index operations are `O(log Q)` for
-`Q` outstanding tasks on that path; cache-path lookup is linear in the number
-of registered paths. Native `ngx_queue_t` lists track pending and active work.
-The first duplicate of a running operation requests a replay; further
-requests coalesce into that replay. The replay goes to the pending tail after
-the current pass, so a later purge is not silently discarded. Continuous
-new purges may cause further passes. The queue credit is released only after
-final completion. Filesystem work and response formatting run outside the lock.
+<a id="generation-invalidation"></a>
 
-The rbtree only deduplicates physical cleanup tasks. Generation rules live in bounded byte tries in a separate SHM zone. A strict namespace sweep has a different index identity from a legacy key task; REFRESH decisions join that same cleanup path.
+## Stop serving old entries with generation keys
 
-A full queue or failed task allocation leaves the HTTP request waiting for
-admission with a 10 ms retry timer and core disconnect handling. Requests and
-cleanup handlers stay in their owning worker; SHM never contains request
-pointers. HTTP/2 and HTTP/3 connection-wide reading is not disabled. No
-429/503 is generated for queue pressure, and a short already-read PURGE is
-not guaranteed to produce a TCP Zero Window. Outstanding requests still cost
-request memory and connections; use core timeouts and admission policies for
-the deployment's connection budget.
+Use generation keys when an old response must not become a cache HIT again
+after PURGE. This matters when a request started fetching from the origin before
+the purge and finishes writing its cache file afterwards.
 
-Accepted tasks retain their keys, pool names and temporary-path settings
-across ordinary reloads. A newer duplicate updates the protection settings
-for a pending task or its next replay. Disabling new background admission
-retains accepted work. A gracefully exiting worker finishes its current pass
-and takes no new task. Fast exit returns an unfinished incremental task to
-the pending queue without completing its filesystem walk in the exit hook.
-Core thread-pool teardown owns the lifetime of submitted thread tasks.
+A **logical key** identifies the object, for example `origin.test/objects/item`.
+A **namespace** groups keys that share invalidation rules. The module adds a
+version, called a **generation**, to form the native NGINX cache key exposed as
+`$cache_purge_key`. Use that variable as the entire cache key; do not construct
+its internal format yourself.
 
-PID/slot epochs identify assigned tasks. Workers check at most 64 active
-records per recovery pass, at one-second intervals, and requeue work whose
-owner exited. This recovers abandoned assignments; it is not a transactional
-journal. A crash during a shared-list or slab update can still corrupt state
-and require a restart. Deletions performed immediately before a crash may be
-absent from metrics. Pending work and replays need a running worker: drain
-before stopping when completion matters. The queue is not durable.
+For example:
 
-Internal queue layouts are not an upgrade ABI. Deploy this build with a full
-restart when replacing a build with a different layout, draining accepted
-work first if it must complete. Ordinary reloads of the same build reuse the zone.
+1. A GET starts while the key uses generation 7.
+2. PURGE advances the generation and returns `200 invalidated`.
+3. New requests that first evaluate their key now use the newer generation.
+   The old GET may still finish, but its late cache write cannot become a HIT
+   for those new requests. Their first GET fetches from the origin again.
 
-Deletion is best effort. A `202` confirms acceptance, not completed deletion;
-a completed walk is not an atomic cache snapshot. Concurrent requests may
-create cache entries during or after the walk, and file errors are logged.
-Wildcard and full-cache walks unlink files without synchronously updating
-every native cache node. Exact and Vary operations invalidate matched nodes.
+The request keeps its generation for each namespace/logical-key pair, including
+internal redirects. Exact keys are case-sensitive; trailing-`*` prefixes ignore
+ASCII case. `purge_all` invalidates the namespace. Sharing a namespace across
+cache paths shares this logical effect; cleanup is queued only for the addressed
+path. Other paths reclaim files through later purges or normal NGINX expiry.
 
-Failed background passes retry after 100 ms, 1 s and 10 s, at most three times. Delayed tasks keep their deduplication/admission slot but allow other tasks to run. A fresh PURGE resets this retry window. After exhaustion the task is retired and an error is logged; inspect `cleanup.exhausted` and retry after fixing storage. Generation invalidation remains effective even if physical cleanup fails. Missing files are expected races; malformed files are skipped, not endlessly retried.
+The response follows publication and cleanup admission. It does not wait for
+disk space to be reclaimed. A full queue can delay admission; this is not a
+fixed-latency operation. Use core cache-lock settings to limit simultaneous GETs
+refilling a newly invalidated object.
+
+Ordinary reloads preserve generation state. Keep the namespace's persistent
+epoch directory for as long as its cache may exist: its marker files prevent a
+full restart from reusing an old key version. Power-loss/fsync durability is not
+promised. If namespace shared memory fills, the module invalidates a broader
+set of keys rather than allowing old entries to return. Later invalidations
+reclaim at most 64 detached trie nodes per call. Repeated purges of one hot key
+do not grow the rule tree indefinitely; work depends on bounded key length and
+queue size rather than a preliminary scan of all cache files.
+
+<a id="conditional-refresh"></a>
+
+## Check cached content against the origin (REFRESH)
+
+Use REFRESH when an object is already cached but you do not know whether the
+origin has changed. For example, after a catalog import you can check cached
+product pages and keep the ones the origin reports as unchanged. If you already
+know an object must be discarded, use PURGE directly.
+
+REFRESH sends a **HEAD request** to the origin: it asks for headers without
+downloading the response body. It sends the cached ETag in `If-None-Match` and
+the cached last-modification time in `If-Modified-Since`, when available.
+These are HTTP conditional requests; the word does not describe a separate
+REFRESH mode or an NGINX `if` directive.
+
+The **profile** is an internal proxy location defining the origin, Host,
+request headers and URI mapping. It must identify the same representation that
+was cached. A logical key `origin.test/objects/item?lang=en` with profile prefix
+`origin.test` becomes origin URI `/objects/item?lang=en`. Client-supplied Host,
+cookies or credentials must not change what the probe checks.
+
+| Origin response or entry state | What happens |
+|---|---|
+| `304` | Keep the current entry: `kept`. Its TTL is not extended. |
+| `200`, `404`, `410` | Invalidate the current generation: `invalidated`. The next ordinary GET refills the cache if the origin response is cacheable. |
+| Another status | Keep the entry: `upstream_status`. Inspect `upstream_status` for the origin's code. |
+| No origin response | Keep the entry: `transport_error`. |
+| Vary metadata | Skip the probe: `skipped_vary`; the original request headers are not available. |
+| Invalid profile or key-to-URI mapping | Keep the entry: `skipped_profile`. Check profile diagnostics and the URI mapping. |
+| Another PURGE changed the generation meanwhile | Leave that newer generation alone: `raced_replaced`. |
+| Invalidation/allocation failure | Keep the entry: `invalidation_error`. |
+| Selected work did not finish | Count it in `undispatched`; continuation does not move past it. |
+
+REFRESH does not download a replacement or prewarm an empty cache. A successful
+scan with no current matching files returns an empty `results` array. If the
+origin always answers `200`, even for unchanged content, REFRESH invalidates
+those entries too. Core `proxy_cache_revalidate` and `proxy_cache_background_update`
+continue to handle ordinary requests for expired content.
+
+### Reading and continuing a REFRESH response
+
+1. Send REFRESH with the logical key or a prefix ending in `*`, without a cursor.
+2. Inspect both `results` and `complete`. HTTP `200` alone does not mean that
+   every origin check succeeded. One page holds at most 32 candidates.
+3. If `complete` is false, send the same selector and profile with
+   `X-Cache-Purge-Cursor` set to the returned `next_cursor`.
+
+`scan_complete` means directory enumeration finished; `complete` also requires
+all selected work to finish and no further matching page. `timed_out` and
+`undispatched` explain unfinished work in a `200` response. A failed scan
+returns a separate `500 scan_failed` problem response. An interrupted scan
+sends no probes and returns the input cursor unchanged; repeating it without
+addressing the time/storage limit can make no progress. Invalid or duplicate
+cursor headers return `400`. Treat the 32-hex cursor as an opaque continuation
+value. Responses expose file hashes, not cache keys or credentials.
+
+Each worker handles one page and one HEAD at a time; the shared budget permits
+at most 16 concurrent HEADs. Identical REFRESH requests are not combined.
+Their invalidations do share the normal cleanup queue. The configured timeout
+stops new work; an active HEAD still uses the core proxy timeouts. Each page
+rescans the directory, so a full operation costs `O(files × pages)` I/O. Changes
+during scanning can affect which entries are seen; this is not an atomic
+snapshot and is unsuitable for frequent scans of a very large busy cache.
+A file replaced within the same generation may be conservatively invalidated;
+the generation check protects a later PURGE generation from a stale probe.
+
+<a id="generation-and-refresh-example"></a>
+
+### Generation and REFRESH example
+
+This is a fragment for the main/http configuration; keep your existing `events` block. Replace the origin and filesystem paths. The `thread_pool` declaration requires a build with `--with-threads`; without it, remove that declaration and `cache_purge_thread_pool` to use incremental scanning.
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+First request an existing, cacheable object. Repeat the GET until `X-Cache-Status: HIT` confirms that its cache file is ready. Then check the same object with REFRESH. A `kept` result leaves the next GET as a HIT; `invalidated` makes it fetch from the origin again.
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+For a prefix, start without a cursor. If `complete` is false, repeat this request with the returned value in `X-Cache-Purge-Cursor`; replace `<next_cursor>` below. Keep the selector unchanged. Stop on an HTTP error and investigate it before continuing.
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+When you already know the object is obsolete, use PURGE directly. This example uses generation keys, so `200 invalidated` means new requests cannot hit the old generation; physical file deletion may still be pending.
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+See [HTTP standards and edge cases](docs/REFRESH.md) for the limits of this administrative check. A scan failure returns `500 scan_failed`, not a continuation page with `scan_error: true`.
+
+## Sample configurations
+
+### Basic — inline purge method
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match — no matching cache entry
+# 403 — client IP not in the allowed list
+```
+
+### Basic — separate purge location
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+### Background queue enabled
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+### Purge all entries
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+### JSON responses with per-location override
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+### Vary-aware purge
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+After purging a key, all gzip and Vary variants stored at different filesystem
+paths are also removed automatically.
 
 ---
 
@@ -538,7 +801,11 @@ Default: none
 Context: http
 ```
 
-Declares a generation namespace before locations bind it. Names are 1–32 ASCII letters, digits, `_` or `-`; SHM size must be at least eight native pages. Use a dedicated persistent state directory outside cache and temporary roots. The core creates a persistent exclusive marker to allocate a restart epoch. Retain these tiny marker files for as long as the corresponding cache may exist; deleting state while retaining cache can allow stale epoch reuse. No power-loss/fsync durability is promised. An ordinary reload preserves the epoch and rules; changing size/path or removing a namespace requires a full restart. Namespace SHM and the task queue have separate sizes.
+Groups logical keys that share invalidation rules. Declare the namespace before using it in `cache_purge_key`. Its name must contain 1–32 ASCII letters, digits, `_` or `-`. The shared-memory size must be at least eight system memory pages; this allocation is separate from the cleanup queue.
+
+The state directory stores small marker files that distinguish full restarts. Keep it outside cache and temporary directories, and retain it for as long as the cache may exist. Creating a marker exclusively prevents reuse of an existing restart identifier. Deleting these markers while keeping cache files can make stale versions reachable again. No fsync/power-loss durability is promised.
+
+An ordinary reload retains the namespace state. Changing its size or path, or removing the namespace, requires a full restart.
 
 ### `cache_purge_key`
 
@@ -568,9 +835,13 @@ Default: none
 Context: location
 ```
 
-Maps one known representation to a literal internal proxy location. Removing the exact, case-sensitive prefix from the logical key must leave an origin URI beginning with `/`; query strings and escapes are retained. The module never guesses a host or searches a key for `://`. The target must have `internal`, cache off, request headers/body forwarding off, method HEAD, literal nonempty Host and literal representation headers. The two conditional headers must use exactly `$cache_purge_refresh_etag` and `$cache_purge_refresh_last_modified`. `$cache_purge_refresh_uri` supplies the mapped URI to `proxy_pass`. These three pure variables are meaningful only in probes. Target checks run in preaccess, including internal redirects. The administrator must ensure the mapping identifies the same origin representation as the cache key; Vary entries are skipped because native metadata does not retain their original request headers.
+Defines where HEAD probes go and how a logical cache key becomes an origin URI. The first argument is a literal internal proxy location. The second is the exact, case-sensitive prefix to remove from the logical key. The remainder must begin with `/`; query strings and escapes are retained. For example, prefix `origin.test` maps `origin.test/objects/item?lang=en` to `/objects/item?lang=en`.
 
-Set `proxy_intercept_errors off` in the probe location; inherited interception is rejected so an origin error cannot be rewritten into an invalidating success.
+The profile must check the same representation as the cached GET. Set `internal`, `proxy_cache off`, `proxy_intercept_errors off`, `proxy_pass_request_headers off`, `proxy_pass_request_body off` and `proxy_method HEAD`. Use a nonempty literal `Host` and literal representation headers. A client-controlled language, cookie or credential must not change what is being checked.
+
+Set `If-None-Match` to exactly `$cache_purge_refresh_etag` and `If-Modified-Since` to exactly `$cache_purge_refresh_last_modified`. Use `$cache_purge_refresh_uri` in `proxy_pass` for the mapped URI. These variables provide probe data and are only meaningful in probe subrequests.
+
+The module validates the actual target before access checks, including after internal redirects. It does not infer a host from a key or search for `://`. The administrator remains responsible for correct mapping. Vary entries are skipped because their original request headers are unavailable.
 
 ### `cache_purge_refresh_timeout`
 
@@ -581,246 +852,114 @@ Context: http, server, location
 Range:   1ms .. 1h
 ```
 
-Limits new scan/probe dispatch for a REFRESH page, including waiting for its worker scanner. Expiry stops new work and marks the response incomplete. An already-running HEAD finishes under core `proxy_connect_timeout`, `proxy_send_timeout` and `proxy_read_timeout`; configure those explicitly. This is not a hard response deadline and cannot interrupt a filesystem syscall. Disconnect and graceful shutdown stop further dispatch and retain an active thread's storage until native completion.
+Sets how long a page may keep starting new scan/probe work, including time spent waiting for its worker's scanner. On expiry, the page stops dispatching and reports incomplete work.
+
+An active HEAD still finishes under `proxy_connect_timeout`, `proxy_send_timeout` and `proxy_read_timeout`; set those explicitly in the profile. This directive is not a hard response deadline and cannot interrupt a filesystem syscall.
+
+Client disconnect and graceful shutdown stop further dispatch. If an I/O thread is still running, its storage remains allocated until NGINX reports completion.
 
 ---
 
-## Partial key purge
+## Execution model
 
-Append `*` to the **expanded cache key** for a case-insensitive prefix match. Exact-key and Vary matching remain case-sensitive. A physical prefix may contain up to 511 bytes, excluding the trailing `*`. A longer prefix is logged once and returns `400 invalid_selector` without walking files.
+In this section, **invalidation** means making an old cache key unusable;
+**cleanup** means deleting its files. **Admission** means reserving a queue
+slot for pending or active cleanup. **SHM** is memory shared by NGINX workers;
+a **worker** is a process serving requests. A namespace sweep is a directory
+walk that removes files made obsolete by generation rules.
 
-With `cache_purge_key`, matching uses the logical expression and accepts at most 8096 bytes including a trailing `*`.
+A **task** is one wildcard or `purge_all` operation. A **batch** is the number
+of tasks a worker processes before a throttle pause. A **slice** is one
+bounded step of an incremental directory walk; a task may need many slices.
 
-For a key expression ending in `$uri`, this request selects a URI prefix:
+With generation keys, one physical sweep per cache path and namespace coalesces all accepted invalidations. REFRESH pages are separate HTTP operations, not purge queue tasks.
 
-```http
-PURGE /images/header*
-```
+| Request and configuration | File traversal | HTTP completion |
+|---|---|---|
+| Legacy exact key, with or without Vary matching | Request worker; Vary adds a directory walk | After the operation |
+| Wildcard or `purge_all`, background queue off | Request worker, synchronous walk | After the walk |
+| Background task, selected pool | One pool task per worker at a time | `202` after admission |
+| Background task, no usable thread pool | Worker event loop, incremental slices | `202` after enqueueing |
+| Queue capacity/allocation exhausted | Request waits for admission; no request-bound walk | `202` once admitted |
+| Generation PURGE, any key shape | Deferred namespace sweep; no request-bound cache open/unlink | `200 invalidated` after publication and admission |
+| REFRESH endpoint | Bounded scan and up to 32 serial HEAD probes | `200` JSON with completion and continuation fields |
 
-The asterisk must be the last byte of the evaluated key, not merely the last
-byte of the URI path. Account for any query-string or variable suffix in
-`proxy_cache_key`. A key consisting only of `*` walks every eligible entry.
+Rows without generation keys describe legacy behavior. A generation request waiting for capacity returns `200` after admission, not `202`.
 
----
+An incremental slice stops after at most 64 directory iterations or after
+observing 5 ms of elapsed time. These budgets include skipped entries and
+directory endings. They cannot bound a single filesystem syscall.
 
-## Generation invalidation
-
-In a bound namespace, PURGE publishes a new generation and schedules a deduplicated stale-generation sweep before returning `200` with status `invalidated`. No cache-file open or unlink runs in that admission path. New requests that first evaluate the key after publication cannot hit the previous generation. A request pins its generation for each namespace/logical key, including internal redirects; an already-started response may finish, but its late cache write cannot become a hit for subsequent new requests. Exact matches are case-sensitive, prefixes are ASCII case-insensitive, and `purge_all` changes the whole namespace, including other cache paths that deliberately share it. Physical cleanup is queued for the addressed path; other paths use their core expiry or a subsequent purge.
-
-An accepted invalidation does not promise immediate disk space reclamation. A late old write after a sweep is still unreachable and is removed by later cleanup or core inactive expiry. Under namespace SHM pressure the rules collapse to a new namespace baseline: additional keys become cold rather than invalidated keys reappearing. Reclamation processes at most 64 detached trie nodes per later invalidation. Repeated hot-key purges do not grow the rule tree indefinitely. Complexity depends on bounded key length and task-index size, not the number of cache files; a wall-clock O(1) or starvation-free guarantee under overload is not claimed. Queue admission may wait. After invalidation, use core `proxy_cache_lock` and equivalent cache controls to govern GET stampedes.
-
-## Conditional REFRESH
-
-REFRESH validates still-cached objects before their TTL expires; it neither prewarms them nor extends TTL on `304`. It complements core `proxy_cache_revalidate` and `proxy_cache_background_update`, which handle ordinary expired-object traffic. An origin that ignores validators and always sends `200` turns REFRESH into invalidation plus an extra HEAD. Only current, valid, canonical hash-path entries are candidates. A physical replacement in the same generation may be conservatively invalidated; generation comparison prevents an old HEAD from invalidating a later PURGE generation.
-
-| Raw origin outcome | Action / result |
-|---|---|
-| `304` | Keep; `kept` |
-| `200`, `404`, `410` | Conditional generation invalidation and deferred cleanup; `invalidated` |
-| Other status | Keep; `upstream_status` |
-| No origin status / transport failure | Keep; `transport_error` |
-| Vary metadata | No HEAD; `skipped_vary` |
-| Invalid mapping or profile | Keep; `skipped_profile` |
-| Generation replaced meanwhile | No new invalidation; `raced_replaced` |
-| Internal invalidation/allocation failure | Keep; `invalidation_error` |
-| Work not dispatched/completed before the page stops | `undispatched`; cursor does not pass it |
-
-One worker owns at most one active REFRESH page and one probe at a time; a shared budget allows at most 16 probes across workers. Other page requests wait without allocating a candidate array. Each page scans the directory with the common cursor, retains at most 32 candidates and then dispatches serial core HEAD subrequests. This bounds both candidate memory and the number of subrequests sharing a main-request pool. Identical REFRESH HTTP requests are not deduplicated; they share the concurrency limit. Their invalidations use the common deduplicated purge queue.
-
-Start without a cursor, then send `X-Cache-Purge-Cursor: <next_cursor>` to the same endpoint with the same logical selector/profile until `complete` is true. The cursor is the last completed 32-hex filename; invalid or duplicate cursor headers return `400`. `scan_complete` means directory enumeration finished successfully; `complete` also means no further matching page and all selected decisions finished. `timed_out` and `scan_error` distinguish interruption/failure. `undispatched` counts selected entries not finished; an incomplete scan is only a lower bound, never a total cache count. If scanning is incomplete, no probes run, results are empty and the input cursor is returned unchanged. Results expose file hashes and raw upstream statuses, not keys or credentials.
-
-Each page rescans the directory to select the next hashes, trading bounded memory for repeated I/O: `O(files × pages)` for a full operation. Pagination is weakly consistent under concurrent insertions/removals; restart from the beginning if a complete later snapshot is required. Choose selectors and timeouts accordingly. This administrative interface is unsuitable for repeatedly scanning very large live caches at high frequency.
-
-### Generation and REFRESH example
+To move background file operations into threads, build with `--with-threads`
+and define a core pool in the **main** context, outside `http`:
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>` selects an existing named pool in `http`,
+`server` or `location`. Its default is `default`; NGINX creates that pool with
+its standard defaults when it is referenced but not declared explicitly.
+Custom pool names must be declared with core `thread_pool`. Pool selection is
+inherited; the first accepted request selects the executor for coalesced work.
+Each worker has its own core pools. Pool saturation retries submission after
+10 ms and retains the task's admission credit; it never starts a synchronous
+walk because the selected pool is full. Without compiled thread support,
+on Windows, in single-process mode, or when an old task's named pool has
+been removed by reload, execution uses the incremental cursor.
 
-## Sample configurations
+REFRESH uses the selected pool for one additional scanner per worker. Native HTTP subrequests run in the event loop; their state is never accessed by the I/O thread.
 
-### Basic — inline purge method
+The queue and index use a slab mutex for structural edits. Admission and
+background callbacks use trylock and retry through timers. Pending **and
+running** tasks stay in a core string rbtree per cache path; comparisons of
+complete keys resolve hash collisions. Index operations are `O(log Q)` for
+`Q` outstanding tasks on that path; cache-path lookup is linear in the number
+of registered paths. Native `ngx_queue_t` lists track pending and active work.
+The first duplicate of a running operation requests a replay; further
+requests coalesce into that replay. The replay goes to the pending tail after
+the current pass, so a later purge is not silently discarded. Continuous
+new purges may cause further passes. The queue credit is released only after
+final completion. Filesystem work and response formatting run outside the lock.
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+The rbtree only deduplicates physical cleanup tasks. Generation rules live in bounded byte tries in a separate SHM zone. A strict namespace sweep has a different index identity from a legacy key task; REFRESH decisions join that same cleanup path.
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+A full queue or failed task allocation leaves the HTTP request waiting for
+admission with a 10 ms retry timer and core disconnect handling. Requests and
+cleanup handlers stay in their owning worker; SHM never contains request
+pointers. HTTP/2 and HTTP/3 connection-wide reading is not disabled. No
+429/503 is generated for queue pressure, and a short already-read PURGE is
+not guaranteed to produce a TCP Zero Window. Outstanding requests still cost
+request memory and connections; use core timeouts and admission policies for
+the deployment's connection budget.
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match — no matching cache entry
-# 403 — client IP not in the allowed list
-```
+Accepted tasks retain their keys, pool names and temporary-path settings
+across ordinary reloads. A newer duplicate updates the protection settings
+for a pending task or its next replay. Disabling new background admission
+retains accepted work. A gracefully exiting worker finishes its current pass
+and takes no new task. Fast exit returns an unfinished incremental task to
+the pending queue without completing its filesystem walk in the exit hook.
+Core thread-pool teardown owns the lifetime of submitted thread tasks.
 
-### Basic — separate purge location
+PID/slot epochs identify assigned tasks. Workers check at most 64 active
+records per recovery pass, at one-second intervals, and requeue work whose
+owner exited. This recovers abandoned assignments; it is not a transactional
+journal. A crash during a shared-list or slab update can still corrupt state
+and require a restart. Deletions performed immediately before a crash may be
+absent from metrics. Pending work and replays need a running worker: drain
+before stopping when completion matters. The queue is not durable.
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+Internal queue layouts are not an upgrade ABI. Deploy this build with a full
+restart when replacing a build with a different layout, draining accepted
+work first if it must complete. Ordinary reloads of the same build reuse the zone.
 
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
+Deletion is best effort. A `202` confirms acceptance, not completed deletion;
+a completed walk is not an atomic cache snapshot. Concurrent requests may
+create cache entries during or after the walk, and file errors are logged.
+Wildcard and full-cache walks unlink files without synchronously updating
+every native cache node. Exact and Vary operations invalidate matched nodes.
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-### Background queue enabled
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-### Purge all entries
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-### JSON responses with per-location override
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-### Vary-aware purge
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-After purging a key, all gzip and Vary variants stored at different filesystem
-paths are also removed automatically.
+Failed background passes retry after 100 ms, 1 s and 10 s, at most three times. Delayed tasks keep their deduplication/admission slot but allow other tasks to run. A fresh PURGE resets this retry window. After exhaustion the task is retired and an error is logged; inspect `cleanup.exhausted` and retry after fixing storage. Generation invalidation remains effective even if physical cleanup fails. Missing files are expected races; malformed files are skipped, not endlessly retried.
 
 ---
 
@@ -985,6 +1124,8 @@ See [logging checks](t/TESTING.md#logging-contracts) for tested diagnostics.
 ---
 
 ## Testing
+
+The [coverage map](docs/TEST_COVERAGE.md) separates tested behavior from remaining gaps; passing CI is not a claim of complete coverage.
 
 Build and run the complete suite in Docker:
 

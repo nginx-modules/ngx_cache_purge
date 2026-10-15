@@ -22,6 +22,7 @@ my $base = tempdir('purge-runtime-XXXXXX', TMPDIR => 1, CLEANUP => 1);
 my $http = HTTP::Tiny->new(timeout => 3, keep_alive => 0, no_proxy => '127.0.0.1');
 my @servers;
 my $layout;
+require(dirname(abs_path(__FILE__)) . '/fixtures/gateway_origin.pl');
 
 sub cache_header_layout {
     return $layout if $layout;
@@ -72,6 +73,8 @@ sub config {
     my $background = $s->{background} ? 'on' : 'off';
     my $legacy = exists $s->{legacy} ? "cache_purge_legacy_status $s->{legacy};" : '';
     my $response = $s->{default_response} ? '' : 'cache_purge_response_type json;';
+    my $extra_locations = $s->{extra_locations} || '';
+    my $log_level = $s->{log_level} || 'notice';
     my $count = $s->{workers} || $workers;
     my $pool = $s->{threads} ? 'thread_pool cleanup threads=2 max_queue=1;' : '';
     my $selection = $s->{threads} ? 'cache_purge_thread_pool cleanup;' : '';
@@ -116,6 +119,33 @@ sub config {
             proxy_pass http://127.0.0.1:$origin_port/origin\$cache_purge_refresh_uri;
         }
 REFRESH
+    my ($gateway_http, $gateway_location) = ('', '');
+    if (my $g = $s->{gateway}) {
+        my $length_param = $g eq 'scgi' ? 'scgi_param SCGI "1";'
+            : "${g}_param CONTENT_LENGTH \"0\";";
+        $gateway_http = "${g}_cache_path $s->{root}/gateway-cache levels=1:2 keys_zone=gw:2m inactive=1h;\n"
+            . "${g}_temp_path $s->{root}/gateway-temp;";
+        $gateway_location = <<"GATEWAY";
+        location /gateway/ {
+            proxy_cache_purge off;
+            ${g}_cache gw;
+            ${g}_cache_key $key;
+            ${g}_cache_valid 200 1h;
+            ${g}_param REQUEST_METHOD \$request_method;
+            ${g}_param REQUEST_URI \$request_uri;
+            $length_param
+            ${g}_pass 127.0.0.1:$origin_port;
+            ${g}_cache_purge PURGE from 127.0.0.1;
+            add_header X-Cache \$upstream_cache_status always;
+        }
+GATEWAY
+    }
+    if (my $replace = $s->{probe_replace}) {
+        my ($from, $to) = @$replace;
+        my $changed = $refresh =~ s/\Q$from\E/$to/g;
+        die "profile fixture must replace exactly one directive: $from"
+            unless $changed == 1;
+    }
     my $responses = join "\n", map {
         "location /response/$_ { proxy_cache a; "
         . 'proxy_cache_key $http_x_purge_key; '
@@ -128,12 +158,13 @@ daemon off;
 worker_processes $count;
 $pool
 pid $s->{root}/nginx.pid;
-error_log $s->{root}/error.log notice;
+error_log $s->{root}/error.log $log_level;
 events { worker_connections 1024; accept_mutex off; }
 http {
     access_log off;
     $selection
     $namespace
+    $gateway_http
     client_body_temp_path $s->{root}/client-temp;
     proxy_temp_path $s->{temp};
     proxy_cache_path $s->{cache} levels=1:2 keys_zone=a:2m inactive=1h;
@@ -150,6 +181,8 @@ http {
         root $s->{root};
         $responses
         $refresh
+        $gateway_location
+        $extra_locations
         proxy_cache_purge PURGE from 127.0.0.1;
         location /health { proxy_cache_purge off; }
         location /origin/ {
@@ -268,13 +301,23 @@ sub start_origin {
             if ($child) { close $client; next; }
             close $listener;
             $client->autoflush(1);
+            if ($s->{gateway}) {
+                gateway_respond($client, $s->{gateway});
+                close $client;
+                POSIX::_exit(0);
+            }
             my $request = '';
             while (my $line = <$client>) {
                 $request .= $line;
                 last if $line eq "\r\n";
             }
             my $head = $request =~ /^HEAD /;
+            write_file("$s->{root}/head-request-$$", $request) if $head;
             my $version = read_file("$s->{root}/version");
+            my $etag = -f "$s->{root}/no-etag" ? ''
+                : (-f "$s->{root}/weak-etag" ? 'W/' : '') . qq{"v$version"};
+            my $modified = -f "$s->{root}/last-modified"
+                ? 'Wed, 21 Oct 2015 07:28:00 GMT' : '';
             my $kind = $head ? 'head' : 'get';
             if (-f "$s->{root}/$kind-block") {
                 write_file("$s->{root}/$kind-started", $request);
@@ -283,13 +326,19 @@ sub start_origin {
             }
             my $status = $head && -f "$s->{root}/head-status"
                          ? read_file("$s->{root}/head-status")
-                         : $head && $request =~ /If-None-Match: "v\Q$version\E"/i
+                         : $head && (($etag && $request =~ /If-None-Match: (?:W\/)?"v\Q$version\E"/i)
+                            || (!$etag && $modified
+                                && $request =~ /If-Modified-Since: \Q$modified\E/i))
                            ? 304 : 200;
             if ($status) {
                 my $body = "object version $version\n";
                 my $vary = -f "$s->{root}/vary" ? "Vary: Accept-Encoding\r\n" : '';
+                my $location = $head && $status >= 300 && $status < 400 && $status != 304
+                    ? "Location: /origin/redirect-target\r\n" : '';
                 print {$client} "HTTP/1.1 $status Test\r\nConnection: close\r\n"
-                    . "ETag: \"v$version\"\r\nCache-Control: max-age=3600\r\n$vary"
+                    . ($etag ? "ETag: $etag\r\n" : '')
+                    . ($modified ? "Last-Modified: $modified\r\n" : '')
+                    . "Cache-Control: max-age=3600\r\n$vary$location"
                     . 'Content-Length: ' . length($body) . "\r\n\r\n"
                     . ($head ? '' : $body);
             }
@@ -388,8 +437,27 @@ sub stop_server {
     my $log = read_file("$s->{root}/error.log");
     unlike($log, qr/exited on signal/, 'no worker crash');
     my $report = read_file("$s->{root}/process.log");
+    if ($s->{empty_etag} && $ENV{TEST_NGINX_SANITIZE}) {
+        # Some NGINX versions call memcpy(h->etag, NULL, 0) when an origin
+        # omits ETag. Keep this upstream defect visible as a narrow TODO.
+        # Match the exact source statement/line and UBSan category, never
+        # suppress other core locations or any module diagnostic.
+        my $source = read_file("$ENV{NGINX_SOURCE}/src/http/ngx_http_file_cache.c");
+        if ($source =~ /^(.*?)(^[ \t]*ngx_memcpy\(h->etag, c->etag\.data, c->etag\.len\);)/ms) {
+            my $prefix = $1;
+            my $line = 1 + ($prefix =~ tr/\n/\n/);
+            my $known = qr{^.*?src/http/ngx_http_file_cache\.c:\Q$line\E:\d+: runtime error: null pointer passed as argument 2, which is declared to never be null\r?\n}m;
+            my $occurrences = ($report =~ s/$known//g) + ($log =~ s/$known//g);
+            if ($occurrences) {
+                TODO: {
+                    local $TODO = 'upstream NGINX copies an absent ETag with a NULL source and zero length';
+                    fail('NGINX core empty-ETag storage is free of nonnull UB');
+                }
+            }
+        }
+    }
     unlike($report . $log, qr/AddressSanitizer|runtime error:/,
-           'no sanitizer report');
+           'no unexpected sanitizer report');
     my @severe = grep { /\[(?:crit|alert|emerg)\]/ } split /\n/, $log;
     @severe = grep {
         !/\[crit\].*stat\(\) "\Q$s->{cache}\E\/.*" failed \(2: No such file or directory\)/
@@ -399,6 +467,11 @@ sub stop_server {
     }
     if ($s->{resize_rejected}) {
         @severe = grep { !/\[emerg\].*cache_purge_queue_size changes/ } @severe;
+    }
+    if ($s->{scan_root_fault}) {
+        @severe = grep {
+            !/\[crit\].*ngx_cache_purge: .* "\Q$s->{cache}\E" failed \(\d+: Not a directory\)/
+        } @severe;
     }
     is_deeply(\@severe, [], 'no unexpected severe diagnostic');
 
@@ -523,8 +596,8 @@ sub cached_entries {
 }
 
 sub refresh {
-    my ($s, $key, $cursor) = @_;
-    my %headers = ('X-Refresh-Key' => $key);
+    my ($s, $key, $cursor, $extra_headers) = @_;
+    my %headers = (%{ $extra_headers || {} }, 'X-Refresh-Key' => $key);
     $headers{'X-Cache-Purge-Cursor'} = $cursor if defined $cursor;
     my $r = request($s, '/refresh', 'REFRESH', \%headers);
     is($r->{status}, 200, 'REFRESH returns its explicit result document');
@@ -621,12 +694,87 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     stop_server($s);
 };
 
+subtest 'FastCGI SCGI and uWSGI use real native caches with generation keys' => sub {
+    for my $protocol (qw(fastcgi scgi uwsgi)) {
+        for my $strict (0, 1) {
+            my $s = start_server("gateway-$protocol-$strict", workers => 1,
+                                 gateway => $protocol, strict => $strict,
+                                 controlled_origin => 1, background => 0);
+            for my $key (qw(first second)) {
+                my $r = request($s, "/gateway/$key");
+                is($r->{status}, 200, "$protocol: real upstream responds");
+                is($r->{content}, "$protocol origin content\n", "$protocol: protocol body decoded");
+                await(sub { (request($s, "/gateway/$key")->{headers}{'x-cache'} || '') eq 'HIT' },
+                      "$protocol: native cache did not warm");
+            }
+            my $r = request($s, '/gateway/first', 'PURGE');
+            is($r->{status}, 200, "$protocol: exact PURGE completed");
+            is($r->{headers}{'cache-purge-code'}, $strict ? 'invalidated' : 'purged',
+               "$protocol: exact result matches configured behavior");
+            is(request($s, '/gateway/first')->{headers}{'x-cache'}, 'MISS',
+               "$protocol: exact purge makes old entry unreachable");
+            is(request($s, '/gateway/second')->{headers}{'x-cache'}, 'HIT',
+               "$protocol: exact purge preserves other key");
+            $r = request($s, '/gateway/*', 'PURGE');
+            is($r->{status}, 200, "$protocol: prefix PURGE completed");
+            is($r->{headers}{'cache-purge-code'}, $strict ? 'invalidated' : 'purged',
+               "$protocol: prefix result matches configured behavior");
+            is(request($s, '/gateway/second')->{headers}{'x-cache'}, 'MISS',
+               "$protocol: prefix applies to native protocol cache");
+            stop_server($s);
+        }
+    }
+};
+
+subtest 'unreadable scan roots return an explicit HTTP problem' => sub {
+    for my $strict (0, 1) {
+        my $s = start_server("scan-fault-$strict", workers => 1, strict => $strict,
+                             background => 0, scan_root_fault => 1);
+        warm($s);
+        # ENOTDIR works even when the CI worker is root; chmod does not.
+        rename $s->{cache}, "$s->{cache}.saved" or die $!;
+        write_file($s->{cache}, 'not a cache directory');
+        my $r = $strict
+            ? request($s, '/refresh', 'REFRESH', { 'X-Refresh-Key' => '/cache/*' })
+            : request($s, '/cache/*', 'PURGE');
+        unlink $s->{cache} or die $!;
+        rename "$s->{cache}.saved", $s->{cache} or die $!;
+        is($r->{status}, 500, 'scan failure is not reported as success');
+        is($r->{headers}{'cache-purge-code'}, 'scan_failed', 'specific scan error header');
+        is($r->{headers}{'content-type'}, 'application/problem+json', 'scan error uses problem JSON');
+        my $body = decode_json($r->{content});
+        is($body->{code}, 'scan_failed', 'body and header agree');
+        is($body->{status}, 500, 'problem status agrees with HTTP');
+        unlike($r->{content}, qr/\Q$s->{cache}\E/, 'response does not disclose the cache path');
+        like(read_file("$s->{root}/error.log"),
+             qr/ngx_cache_purge: .* "\Q$s->{cache}\E" failed \(\d+: Not a directory\)/,
+             'server log identifies the failed filesystem operation');
+        is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT', 'failed scan preserves the entry');
+        stop_server($s);
+    }
+};
+
 subtest 'REFRESH conditional decisions and bounded continuation' => sub {
     my $s = start_server('refresh', strict => 1);
     warm($s);
     is(request($s, '/cache/warm', 'REFRESH')->{status}, 405,
        'legacy PURGE capability does not accept REFRESH');
-    is(request($s, '/refresh', 'PURGE')->{status}, 405, 'new endpoint restricts its method');
+    for my $method (qw(GET HEAD POST PURGE OPTIONS)) {
+        my $wrong = request($s, '/refresh', $method);
+        is($wrong->{status}, 405, "$method: REFRESH endpoint restricts its method");
+        is($wrong->{headers}{'allow'}, 'REFRESH', "$method: Allow identifies the implemented method");
+        is($wrong->{headers}{'cache-purge-code'}, 'method_not_allowed', "$method: stable error code");
+        is($wrong->{headers}{'cache-control'}, 'no-store', "$method: error is not cacheable");
+        if ($method eq 'HEAD') {
+            # HTTP::Tiny omits content for HEAD itself; inspect the wire too.
+            my (undef, $body) = split /\r\n\r\n/,
+                finish_request(pending_request($s, '/refresh', 'HEAD')), 2;
+            is($body // '', '', 'HEAD omits the error body on the wire');
+        } else {
+            is(decode_json($wrong->{content})->{status}, 405, 'problem status agrees with HTTP');
+        }
+    }
+    is(request($s, '/probe')->{status}, 404, 'internal profile is inaccessible externally');
     my $r = refresh($s, '/cache/warm');
     ok($r->{scan_complete} && $r->{complete} && !$r->{timed_out}, 'single-entry scan completed');
     is($r->{results}[0]{upstream_status}, 304, 'raw conditional origin status');
@@ -661,6 +809,114 @@ subtest 'REFRESH conditional decisions and bounded continuation' => sub {
     stop_server($s);
 };
 
+subtest 'REFRESH rejects malformed cursors before probing or invalidating' => sub {
+    my $s = start_server('cursor-input', workers => 1, strict => 1,
+                         controlled_origin => 1);
+    warm($s);
+    write_file("$s->{root}/head-block", '');
+    write_file("$s->{root}/head-release", '');
+    my @cases = (
+        ['empty', "X-Cache-Purge-Cursor: \r\n"],
+        ['short', 'X-Cache-Purge-Cursor: ' . ('0' x 31) . "\r\n"],
+        ['long', 'X-Cache-Purge-Cursor: ' . ('0' x 33) . "\r\n"],
+        ['nonhex', 'X-Cache-Purge-Cursor: ' . ('z' x 32) . "\r\n"],
+        ['duplicate', 'X-Cache-Purge-Cursor: ' . ('0' x 32) . "\r\n"
+            . 'x-cache-purge-cursor: ' . ('0' x 32) . "\r\n"],
+    );
+    for my $case (@cases) {
+        my ($name, $headers) = @$case;
+        my $socket = IO::Socket::INET->new(PeerAddr => '127.0.0.1',
+                             PeerPort => $s->{port}, Timeout => 5) or die $!;
+        $socket->autoflush(1);
+        print {$socket} "REFRESH /refresh HTTP/1.0\r\nHost: localhost\r\n"
+            . "X-Refresh-Key: /cache/warm\r\n$headers\r\n";
+        my ($head, $json) = split /\r\n\r\n/, finish_request($socket), 2;
+        like($head, qr{^HTTP/1\.[01] 400 }, "$name: malformed cursor returns 400");
+        like($head, qr/\r\nCache-Purge-Code: invalid_cursor\r?$/mi,
+             "$name: stable error header");
+        like($head, qr{\r\nContent-Type: application/problem\+json\r?$}mi,
+             "$name: problem response remains available on REFRESH");
+        my $body = decode_json($json);
+        is($body->{code}, 'invalid_cursor', "$name: body agrees with header");
+        is($body->{status}, 400, "$name: problem status agrees with HTTP");
+        ok(!-e "$s->{root}/head-started", "$name: no origin HEAD");
+        is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+           "$name: current generation is unchanged");
+    }
+    my $r = refresh($s, '/cache/warm', 'F' x 32);
+    ok($r->{complete}, 'uppercase hexadecimal cursor is accepted');
+    is_deeply($r->{results}, [], 'end cursor does not restart the scan');
+    is(status($s)->{cache}{logical}{invalidations}, 0, 'cursor errors never invalidate');
+    stop_server($s);
+};
+
+subtest 'REFRESH uses stored validators and does not rewrite metadata on 304' => sub {
+    for my $kind (qw(weak date both none)) {
+        my $s = start_server("validators-$kind", workers => 1, strict => 1,
+                             controlled_origin => 1,
+                             empty_etag => $kind eq 'date' || $kind eq 'none');
+        write_file("$s->{root}/weak-etag", '') if $kind eq 'weak';
+        write_file("$s->{root}/no-etag", '') if $kind eq 'date' || $kind eq 'none';
+        write_file("$s->{root}/last-modified", '') if $kind eq 'date' || $kind eq 'both';
+        warm($s);
+        my ($entry) = cached_entries($s);
+        write_file("$s->{root}/head-block", '');
+        write_file("$s->{root}/head-release", '');
+        my $r = refresh($s, '/cache/warm');
+        my $head = read_file("$s->{root}/head-started");
+        if ($kind eq 'weak') {
+            like($head, qr/\r\nIf-None-Match: W\/"v1"\r\n/i, 'weak entity tag is preserved');
+        } elsif ($kind eq 'date' || $kind eq 'both') {
+            like($head, qr/\r\nIf-Modified-Since: Wed, 21 Oct 2015 07:28:00 GMT\r\n/i,
+                 'cached Last-Modified becomes a valid HTTP-date condition');
+            like($head, qr/\r\nIf-None-Match: "v1"\r\n/i, 'both cached validators are sent')
+                if $kind eq 'both';
+        }
+        unlike($head, qr/\r\nIf-None-Match:/i, 'missing entity tag is omitted')
+            if $kind eq 'date' || $kind eq 'none';
+        if ($kind eq 'none') {
+            unlike($head, qr/\r\nIf-Modified-Since:/i, 'missing modification time is omitted');
+            is($r->{results}[0]{result}, 'invalidated', 'unconditional 200 invalidates conservatively');
+            is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'no-validator outcome is visible');
+        } else {
+            is($r->{results}[0]{result}, 'kept', 'matching validator keeps current generation');
+            is(read_file($entry->[0]), $entry->[2], '304 preserves file metadata, TTL and content');
+            is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT', '304 retains a usable entry');
+        }
+        stop_server($s);
+    }
+};
+
+subtest 'one namespace invalidates logical keys across cache paths' => sub {
+    my $s = start_server('shared-namespace', workers => 1, strict => 1,
+                         throttle => '60s', extra_locations => q{
+        location = /cache-b/warm {
+            cache_purge_key objects /cache/warm;
+            proxy_cache b;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_valid 200 1h;
+            proxy_pass http://127.0.0.1:$server_port/origin/warm;
+            add_header X-Cache $upstream_cache_status always;
+        }
+    });
+    warm($s);
+    await(sub { (request($s, '/cache-b/warm')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'second path did not warm');
+    my @old_b;
+    find(sub { push @old_b, $File::Find::name if -f $_ && /^[0-9a-f]{32}$/ },
+         abs_path($s->{cache_b}));
+    is(scalar @old_b, 1, 'second path has one native cache file');
+    is(request($s, '/cache/warm', 'PURGE')->{status}, 200, 'first path publishes invalidation');
+    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'first path uses new generation');
+    is(request($s, '/cache-b/warm')->{headers}{'x-cache'}, 'MISS', 'second path shares new generation');
+    ok(@old_b == 1 && -e $old_b[0], 'logical invalidation does not require unlink in second path');
+    is(status($s, '/status-b')->{cache}{pending}{total}, 0,
+       'PURGE only schedules physical cleanup for its addressed path');
+    await(sub { (request($s, '/cache-b/warm')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'second path did not refill');
+    stop_server($s);
+};
+
 subtest 'late writers and late REFRESH cannot invalidate replacement generations' => sub {
     my $s = start_server('races', strict => 1, controlled_origin => 1);
     write_file("$s->{root}/get-block", '');
@@ -680,7 +936,8 @@ subtest 'late writers and late REFRESH cannot invalidate replacement generations
     my $probe = pending_request($s, '/refresh', 'REFRESH', '/cache/late');
     await(sub { -f "$s->{root}/head-started" }, 'conditional probe did not reach origin');
     is(request($s, '/cache/late', 'PURGE')->{status}, 200, 'PURGE races with an active HEAD');
-    request($s, '/cache/late');
+    await(sub { (request($s, '/cache/late')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'concurrent replacement did not become a HIT');
     write_file("$s->{root}/head-release", '');
     my (undef, $body) = split /\r\n\r\n/, finish_request($probe), 2;
     is(decode_json($body)->{results}[0]{result}, 'raced_replaced', 'old HEAD cannot invalidate a replacement');
@@ -688,36 +945,44 @@ subtest 'late writers and late REFRESH cannot invalidate replacement generations
     stop_server($s);
 };
 
-subtest 'REFRESH failure policy, profile isolation, URI identity and deadlines' => sub {
+subtest 'REFRESH failure policy, URI identity and deadlines' => sub {
     my $s = start_server('probe-errors', strict => 1, controlled_origin => 1,
                          logical_key => '$request_uri');
     my $key = '/cache/query?part=a%2Fb&other=1';
     await(sub { (request($s, $key)->{headers}{'x-cache'} || '') eq 'HIT' }, 'query key did not warm');
     write_file("$s->{root}/head-block", '');
     write_file("$s->{root}/head-release", '');
-    my $r = refresh($s, $key);
+    my $r = refresh($s, $key, undef, {
+        'Authorization' => 'Bearer client-secret', 'Cookie' => 'session=client-secret',
+        'If-None-Match' => '"client-tag"', 'If-Modified-Since' => 'client-date',
+        'Accept-Language' => 'client-language', 'Range' => 'bytes=0-1',
+    });
     is($r->{results}[0]{result}, 'kept', 'query representation receives a conditional 304');
     my $head = read_file("$s->{root}/head-started");
     like($head, qr{^HEAD /origin/query\?part=a%2Fb&other=1 HTTP/}, 'escaped URI and query survive the explicit mapping');
     like($head, qr/\r\nHost: origin\.test\r\n/i, 'literal profile Host is used');
     unlike($head, qr/\r\n(?:Authorization|Cookie):/i, 'administrative credentials are not forwarded');
-    for my $status (500, 0, 410) {
+    unlike($head, qr/client-secret|client-tag|client-date|client-language|\r\nRange:/i,
+           'client headers cannot replace cached validators or select another representation');
+    like($head, qr/\r\nIf-None-Match: "v1"\r\n/i, 'probe uses the cached entity tag');
+    for my $status (301, 302, 303, 307, 308, 401, 403, 412, 429, 500, 503, 0, 410) {
         write_file("$s->{root}/head-status", "$status");
+        my @before = glob "$s->{root}/head-request-*";
         $r = refresh($s, $key);
+        my @after = glob "$s->{root}/head-request-*";
+        is(scalar @after, 1 + @before, 'redirect Location does not trigger another origin request')
+            if $status >= 300 && $status < 400;
         is($r->{results}[0]{upstream_status}, $status, 'raw origin status remains distinct from local errors');
         is($r->{results}[0]{result}, $status == 410 ? 'invalidated'
                                    : $status ? 'upstream_status' : 'transport_error',
            'explicit result for origin or transport failure');
+        is(request($s, $key)->{headers}{'x-cache'}, 'HIT',
+           'redirect or origin failure preserves the cached entry') unless $status == 410;
     }
-    request($s, $key);
-    $s->{profile_host} = '$http_host';
-    reload_server($s);
-    $r = refresh($s, $key);
-    is($r->{results}[0]{result}, 'skipped_profile', 'client-controlled Host profile is rejected');
-    like(read_file("$s->{root}/error.log"),
-         qr/\[error\].*ngx_cache_purge: REFRESH profile "[^"]+" rejected: header "Host" must have a literal value/,
-         'REFRESH diagnostic identifies the profile and the rejected header');
-    $s->{profile_host} = 'origin.test';
+    # The 410 decision invalidated the entry. A completed GET is not a cache
+    # publication barrier: wait for an actual HIT before testing another probe.
+    await(sub { (request($s, $key)->{headers}{'x-cache'} || '') eq 'HIT' },
+          'entry did not refill after 410');
     $s->{refresh_timeout} = '20ms';
     reload_server($s);
     unlink "$s->{root}/head-release" or die $!;
@@ -736,6 +1001,109 @@ subtest 'REFRESH failure policy, profile isolation, URI identity and deadlines' 
     is($r->{results}[0]{result}, 'skipped_vary', 'single-representation profile never guesses a Vary request');
     is(request($s, '/cache/vary')->{headers}{'x-cache'}, 'HIT', 'skipped Vary entry is preserved');
     stop_server($s);
+};
+
+subtest 'REFRESH profile validation waits for a real cache candidate' => sub {
+    my $s = start_server('profile-refill', workers => 1, strict => 1,
+                         controlled_origin => 1, profile_host => '$http_host');
+    my $key = '/cache/warm';
+    warm($s);
+    is(request($s, $key, 'PURGE')->{status}, 200, 'old generation invalidated');
+    write_file("$s->{root}/get-block", '');
+    my $get = pending_request($s, $key, 'GET');
+    await(sub { -f "$s->{root}/get-started" }, 'refill did not reach origin');
+    write_file("$s->{root}/head-block", '');
+    write_file("$s->{root}/head-release", '');
+    my $r = refresh($s, $key);
+    ok($r->{scan_complete} && $r->{complete}, 'empty current generation is a complete scan');
+    is_deeply($r->{results}, [], 'in-flight refill is not yet a REFRESH candidate');
+    ok(!-e "$s->{root}/head-started", 'no HEAD without a current candidate');
+
+    write_file("$s->{root}/get-release", '');
+    like(finish_request($get), qr/object version 1/, 'refill response completed');
+    await(sub { (request($s, $key)->{headers}{'x-cache'} || '') eq 'HIT' },
+          'refill did not become a cache HIT');
+    $r = refresh($s, $key);
+    is(scalar @{$r->{results}}, 1, 'profile check has one current cache candidate');
+    is($r->{results}[0]{result}, 'skipped_profile', 'client-controlled Host profile is rejected');
+    like(read_file("$s->{root}/error.log"),
+         qr/\[error\].*ngx_cache_purge: REFRESH profile "[^"]+" rejected: header "Host" must have a literal value/,
+         'REFRESH diagnostic identifies the profile and rejected header');
+    ok(!-e "$s->{root}/head-started", 'rejected Host never reaches the origin');
+    is(request($s, $key)->{headers}{'x-cache'}, 'HIT', 'rejected profile preserves the cached entry');
+    stop_server($s);
+};
+
+subtest 'disconnect cancels a REFRESH page and releases its worker' => sub {
+    my $s = start_server('refresh-disconnect', workers => 1, strict => 1,
+                         controlled_origin => 1, log_level => 'info');
+    for my $key (qw(first second third)) {
+        await(sub { (request($s, "/cache/$key")->{headers}{'x-cache'} || '') eq 'HIT' },
+              'disconnect fixture did not warm');
+    }
+    write_file("$s->{root}/head-block", '');
+    my $client = pending_request($s, '/refresh', 'REFRESH', '/cache/*');
+    await(sub { -e "$s->{root}/head-started" }, 'REFRESH did not start its first probe');
+    close $client;
+    # Observe cancellation while the origin is still blocked, then let its
+    # socket finish before a new page claims the scanner.
+    await(sub {
+        read_file("$s->{root}/error.log") =~ /client prematurely closed connection/;
+    }, 'REFRESH client disconnect was not observed');
+    write_file("$s->{root}/head-release", '');
+    my $r = refresh($s, '/cache/first');
+    ok($r->{complete}, 'next page can claim the worker after disconnect');
+    is($r->{results}[0]{result}, 'kept', 'next page can obtain and release a probe credit');
+    my @heads = glob "$s->{root}/head-request-*";
+    is(scalar @heads, 2, 'cancelled page sent only its already-started HEAD');
+    is(status($s)->{cache}{logical}{invalidations}, 0, 'disconnect causes no invalidation');
+    for my $key (qw(first second third)) {
+        is(request($s, "/cache/$key")->{headers}{'x-cache'}, 'HIT', 'entry survives cancelled page');
+    }
+    stop_server($s);
+};
+
+subtest 'REFRESH unsafe profiles cannot send origin probes' => sub {
+    my @cases = (
+        ['public', 'internal;', '# no internal restriction', 'location must be internal'],
+        ['headers', 'proxy_pass_request_headers off;', 'proxy_pass_request_headers on;',
+         '"proxy_pass_request_headers" must be off'],
+        ['body', 'proxy_pass_request_body off;', 'proxy_pass_request_body on;',
+         '"proxy_pass_request_body" must be off'],
+        ['intercept', 'proxy_cache off;', 'proxy_cache off; proxy_intercept_errors on;',
+         '"proxy_intercept_errors" must be off'],
+        ['cache', 'proxy_cache off;', 'proxy_cache a;', '"proxy_cache" must be off'],
+        ['method', 'proxy_method HEAD;', 'proxy_method GET;', '"proxy_method" must be HEAD'],
+        ['host', 'proxy_set_header Host origin.test;', 'proxy_set_header Host "";',
+         'a non-empty literal "Host" header is required'],
+        ['etag', 'proxy_set_header If-None-Match $cache_purge_refresh_etag;',
+         'proxy_set_header If-None-Match "";', '"If-None-Match" must be $cache_purge_refresh_etag'],
+        ['modified', 'proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;',
+         'proxy_set_header If-Modified-Since "";',
+         '"If-Modified-Since" must be $cache_purge_refresh_last_modified'],
+        ['representation', 'proxy_set_header Host origin.test;',
+         'proxy_set_header Host origin.test; proxy_set_header Accept-Language $http_accept_language;',
+         'header "Accept-Language" must have a literal value'],
+        ['redirect', 'internal;', 'internal; try_files /missing-probe-fixture /probe-redirect;',
+         'internal redirect changed the profile URI'],
+    );
+    for my $case (@cases) {
+        my ($name, $from, $to, $reason) = @$case;
+        my $s = start_server("profile-$name", workers => 1, strict => 1,
+                             controlled_origin => 1, probe_replace => [$from, $to],
+                             extra_locations => 'location = /probe-redirect { internal; }');
+        warm($s);
+        write_file("$s->{root}/head-block", '');
+        write_file("$s->{root}/head-release", '');
+        my $r = refresh($s, '/cache/warm');
+        is(scalar @{$r->{results}}, 1, "$name: a current candidate was checked");
+        is($r->{results}[0]{result}, 'skipped_profile', "$name: unsafe profile rejected");
+        ok(!-e "$s->{root}/head-started", "$name: no origin HEAD was sent");
+        is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT', "$name: entry remains usable");
+        like(read_file("$s->{root}/error.log"), qr/\[error\].*ngx_cache_purge: REFRESH profile .*\Q$reason\E/,
+             "$name: actionable diagnostic");
+        stop_server($s);
+    }
 };
 
 subtest 'PR72: every walk skips descendant links and accepts a linked root' => sub {

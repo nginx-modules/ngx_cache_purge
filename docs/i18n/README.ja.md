@@ -4,7 +4,7 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
-`FastCGI`、`proxy`、`SCGI`、`uWSGI` キャッシュを削除する NGINX モジュールです。4.0 は従来のインターフェースを維持し、明示的に有効化する世代による無効化と遅延削除、およびプロキシキャッシュ向けの件数を制限した条件付き REFRESH を追加します。
+`FastCGI`、`proxy`、`SCGI`、`uWSGI` のキャッシュエントリを削除する NGINX モジュールです。v4 のキー世代管理では、ファイルの削除前に、新しいリクエストから古いエントリを利用できなくします。REFRESH は、プロキシキャッシュの内容が変わったかをオリジンサーバーに確認します。いずれも明示的な設定が必要です。PURGE の構文は引き続き使えますが、HTTP レスポンスは変更されています。[移行](#migration)を参照してください。
 
 ---
 
@@ -13,14 +13,15 @@
 ## 目次
 
 - [機能](#features)
+- [目的に応じた動作の選び方](#choosing-a-mode)
 - [互換性](#compatibility)
 - [インストール](#installation)
-- [実行モデル](#execution-model)
-- [ディレクティブ](#directives)
 - [キーの部分一致による PURGE](#partial-key-purge)
 - [世代による無効化](#generation-invalidation)
-- [条件付き REFRESH](#conditional-refresh)
+- [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
 - [設定例](#sample-configurations)
+- [ディレクティブ](#directives)
+- [実行モデル](#execution-model)
 - [性能調整](#performance-tuning)
 - [監視とデバッグ](#monitoring-and-debugging)
 - [トラブルシューティング](#troubleshooting)
@@ -47,7 +48,22 @@
 - **実行中タスクの重複排除** — 走査中に同じ PURGE を受けても、インデックス上の操作は 1 件で、次回の再走査は最大 1 件だけ予約
 - **ステータス** — キャッシュごとのキュー、削除、HIT/MISS メトリクスを、共有キューの mutex を取得せずに参照
 - **世代付きキー** — PURGE リクエスト内でディスク I/O を行わず、完全一致・プレフィックス・名前空間を無効化。古い書き込みが遅れて完了しても新規要求からは参照されません
-- **条件付き REFRESH** — 明示的な HEAD プロファイル、共有の同時実行上限、32 件単位の継続ページ
+- [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
+
+---
+
+<a id="choosing-a-mode"></a>
+
+## 目的に応じた動作の選び方
+
+| 目的 | 設定 | レスポンスの意味 |
+|---|---|---|
+| 古いと分かっているエントリを削除し、削除処理を待つ | バックグラウンドキューを無効にして PURGE | `200 purged` または `200 no_match`。エラーは 4xx/5xx |
+| プレフィックス単位または全体の削除を予約する | PURGE と `cache_purge_background_queue on` | `202 accepted`。待機中は古いエントリが返る可能性がある |
+| 遅れて書き込まれたものも含め、古い内容を新しいリクエストで使わせない | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`。新しいキー世代を使用し、ファイルは後で削除 |
+| オリジンの変更を確認する | キー世代 + `proxy_cache_refresh` + 内部プロファイル | エントリごとの結果と継続情報を含む `200`。事前読み込みは行わない |
+
+これらは組み合わせて使えます。世代の切り替えでも削除処理が予約されます。キューだけでは遅延書き込みによる古い内容の再利用を防げません。[v4 の例](#generation-and-refresh-example)、[PURGE の例](#sample-configurations)、[HTTP レスポンス](../HTTP_RESPONSES.md)（英語）を参照してください。
 
 ---
 
@@ -96,53 +112,288 @@ make modules
 
 ---
 
-<a id="execution-model"></a>
+<a id="partial-key-purge"></a>
 
-## 実行モデル
+## キーの部分一致による PURGE
 
-**タスク**は 1 件のワイルドカード操作または `purge_all` 操作です。**バッチ**は、ワーカーが休止するまでに処理するタスク数です。**スライス**は、段階的なディレクトリ走査の作業量を制限した 1 ステップです。1 タスクに多数のスライスが必要な場合があります。
+**評価後のキャッシュキー**に `*` を付けると、大文字小文字を区別せず前方一致します。完全一致キーと Vary は引き続き大文字小文字を区別します。物理削除のプレフィックスは末尾の `*` を除き 511 バイトまでです。超過すると一度ログを記録し、ファイルを走査せず `400 invalid_selector` を返します。
 
-世代付きキーでは、キャッシュパスと名前空間ごとの一つの物理走査に無効化要求を集約します。REFRESH ページは独立した HTTP 操作で、PURGE キューのタスクではありません。
+`cache_purge_key` では論理式を照合し、末尾の `*` を含めて最大 8096 バイトを受け付けます。
 
-| リクエストと設定 | ファイル走査 | HTTP 応答の完了 |
-|---|---|---|
-| 従来の完全一致キー（Vary 照合の有無を問わない） | リクエストワーカー。Vary は追加のディレクトリ走査を実施 | 操作終了後 |
-| ワイルドカードまたは `purge_all`、バックグラウンドキュー無効 | リクエストワーカーで同期走査 | 走査終了後 |
-| 選択したプールによるバックグラウンドタスク | 各ワーカーにつき同時に最大 1 プールタスク | 受け付け後に `202` |
-| 利用可能なスレッドプールがないバックグラウンドタスク | ワーカーのイベントループで段階的に走査 | キュー登録後に `202` |
-| キュー容量またはメモリ割り当ての不足 | 受け付けを待機。リクエスト専用の走査は実行しない | 受け付け後に `202` |
-| 世代による PURGE、すべてのキー形式 | 名前空間の遅延走査。要求内でキャッシュを open/unlink しない | 公開と受付後に `200 invalidated` |
-| REFRESH エンドポイント | 有界走査と最大 32 回の直列 HEAD | 完了・継続情報を含む `200` JSON |
+キー式が `$uri` で終わる場合、次のリクエストで URI の接頭辞を選択できます。
 
-世代付きキー以外の行は従来の動作です。容量待機中の世代要求は、受付後に `202` ではなく `200` を返します。
-
-1 スライスは、ディレクトリの反復が最大 64 回に達するか、経過時間 5 ms を確認した時点で終了します。スキップしたエントリとディレクトリ終端も予算に含みます。ただし、単一のファイルシステムシステムコールの所要時間は制限できません。
-
-バックグラウンドのファイル操作をスレッドで実行するには、`--with-threads` でビルドし、`http` の外側の **main** コンテキストにコアのプールを定義します。
-
-```nginx
-thread_pool default threads=2;
+```http
+PURGE /images/header*
 ```
 
-`cache_purge_thread_pool <name>` は `http`、`server`、`location` で名前付きプールを選択します。既定は `default` です。このプールが参照されても明示的な宣言がなければ、NGINX が標準設定で作成します。独自の名前はコアの `thread_pool` で宣言する必要があります。設定は継承され、重複してまとめられたタスクでは最初に受け付けたリクエストがプールを決めます。各ワーカーは独自のコアプールを持ちます。プールが満杯の場合はタスクの容量枠を保持し、10 ms 後に投入を再試行します。満杯を理由に同期走査を開始しません。スレッド非対応ビルド、Windows、単一プロセスモード、または reload で以前のタスクのプールが削除された場合は、段階実行のカーソルを使います。
+アスタリスクは URI パスだけでなく、評価済みキー全体の最後のバイトである必要があります。`proxy_cache_key` のクエリ文字列や変数の接尾辞に注意してください。キーが `*` のみなら、削除対象になり得る全エントリを走査します。
 
-REFRESH は選択したプールに worker ごとに最大一つの追加スキャナーを投入します。HTTP サブリクエストはイベントループで実行され、I/O スレッドからその状態にはアクセスしません。
+---
 
-キューとインデックスの構造変更には slab mutex を使います。受け付け処理とバックグラウンドコールバックは trylock を使用し、取得できなければタイマーで再試行します。待機中**および実行中**のタスクをキャッシュパスごとのコア文字列 rbtree に保持し、ハッシュ衝突はキー全体の比較で解決します。対象パスの未完了タスク数を `Q` とすると、インデックス操作は `O(log Q)` です。キャッシュパスの検索は登録パス数に対して線形です。待機中と実行中の管理にはネイティブ `ngx_queue_t` リストを使います。実行中操作に最初の重複が来ると再走査を予約し、その後の重複は同じ予約にまとめます。現在の走査後に再走査をキュー末尾へ入れるため、後続 PURGE を黙って捨てません。新しい PURGE が継続すると、さらに再走査する場合があります。最終完了時にのみ容量枠を解放します。ファイル操作と応答生成はロックの外で行います。
+<a id="generation-invalidation"></a>
 
-rbtree は物理削除タスクの重複排除専用です。世代ルールは別の SHM 領域の有界なバイトトライに保持します。名前空間走査と従来のキー別タスクは異なる索引識別子を使い、REFRESH の無効化も共通の削除処理へ合流します。
+## 世代による無効化
 
-キューが満杯、またはタスクのメモリ確保に失敗した場合、HTTP リクエストは 10 ms の再試行タイマーとコアの切断検出を使って受け付けを待ちます。リクエストと cleanup ハンドラーは所属ワーカーに保持し、SHM にリクエストポインターを保存しません。HTTP/2 と HTTP/3 で接続全体の読み取りを止めません。キュー負荷による 429/503 は返さず、読み取り済みの短い PURGE で TCP Zero Window が発生する保証もありません。待機リクエストは依然としてメモリと接続を消費するため、配備環境の接続予算に合わせてコアのタイムアウトと受け付け方針を設定してください。
+論理キーはオブジェクトを識別し、名前空間は同じ無効化ルールを使うキーをまとめます。世代とは NGINX のキャッシュキーに付加するバージョンです。PURGE 後の新しいリクエストは新しいバージョンを使います。先に始まった GET は完了できますが、その遅い書き込みは新しいリクエストの HIT にはなりません。
 
-受け付けたタスクは、通常の reload 後もキー、プール名、一時パスの保護設定を保持します。新しい重複は、待機中タスクまたは次回の再走査の保護設定を更新します。新規バックグラウンド受け付けを無効にしても、受け付け済みの作業は失われません。graceful 終了中のワーカーは現在の走査を終え、新しいタスクを引き受けません。高速終了時は未完了の段階実行タスクを待機キューに戻し、exit hook で走査を完遂しません。投入済みのスレッドタスクの寿命は、コアのプール終了処理が管理します。
+設定済みの名前空間では、PURGE は新世代を公開し、古い世代を削除する重複排除済みの走査を予約してから `200` と `invalidated` を返します。受付経路でキャッシュファイルの open/unlink は行いません。公開後に初めてキーを評価する新規要求は旧世代を HIT できません。要求ごとに名前空間／論理キーの世代を固定し、内部リダイレクトをまたいで保持します。開始済みの応答は完了できますが、その遅れた書き込みを後続の新規要求が HIT することはありません。完全一致は大小文字を区別し、プレフィックスは ASCII の大小文字を無視します。`purge_all` は名前空間全体を変更し、意図的に共有している他のキャッシュパスにも影響します。物理削除は指定パスに予約し、他のパスは core の失効処理または後続の PURGE に任せます。
 
-割り当て済みタスクは PID とスロットの世代番号で識別します。ワーカーは 1 秒間隔の回復処理で最大 64 件の実行中レコードを確認し、所有者が終了した作業を再登録します。これは所有者を失った割り当ての回復であり、トランザクションジャーナルではありません。共有リストや slab の変更中にクラッシュすると、状態破損により再起動が必要になる可能性があります。クラッシュ直前の削除はメトリクスに残らない場合があります。待機作業と再走査には実行中ワーカーが必要です。完了が必要なら停止前にキューを空にしてください。キューは永続化されません。
+失効を受け付けても、ディスク容量が即時に解放されるとは限りません。走査後に旧世代の書き込みが完了しても参照不能であり、後続の削除や core の inactive 期限で回収されます。名前空間 SHM が不足するとルールを新しい名前空間ベースラインに集約し、追加のキーを cold にします。失効済みキーを復活させることはありません。後続の無効化ごとに、切り離した trie ノードを最大 64 個回収します。同一ホットキーの反復 PURGE で木が無制限に成長することはありません。計算量はキャッシュファイル数ではなく、上限のあるキー長とタスク索引サイズに依存します。過負荷時の実時間 O(1) や starvation 回避を保証せず、受付は待機し得ます。無効化後の GET 集中には core の `proxy_cache_lock` などを利用してください。
 
-キューの内部レイアウトはアップグレード ABI ではありません。異なるレイアウトのビルドへ交換するときは、必要な作業を先に完了させてから完全に再起動してください。同じビルドの通常 reload はゾーンを再利用します。
+<a id="conditional-refresh"></a>
 
-削除はベストエフォートです。`202` は受け付けを示し、削除完了を示しません。走査完了もキャッシュのアトミックなスナップショットではありません。同時リクエストは走査中や走査後に新しいエントリを作成でき、ファイルエラーはログに記録されます。ワイルドカードと全件走査は、すべてのネイティブキャッシュノードを同期更新せずに unlink します。完全一致と Vary 操作では一致したノードを無効化します。
+## オリジンにキャッシュ内容を確認する（REFRESH）
 
-バックグラウンド処理の失敗時は 100 ms、1 秒、10 秒後に最大 3 回再試行します。待機中も重複排除と受付枠を保持しますが、他のタスクは進行できます。新たな PURGE は再試行回数をリセットします。上限後はエラーを記録してタスクを終了するため、`cleanup.exhausted` を確認し、ストレージを修復して再度 PURGE してください。物理削除が失敗しても世代の無効化は有効です。消失済みファイルは通常の競合として扱い、不正なファイルは再試行せずスキップします。
+キャッシュ済みの内容がオリジンで変わったか分からない場合に REFRESH を使います。商品カタログの取り込み後などが該当します。古いことが分かっていれば PURGE を使います。REFRESH は本文を取得せず HEAD を送り、保存済みの ETag や更新日時を HTTP の検証条件に使います。プロファイルは、オリジン、Host、ヘッダー、URI の対応関係を定める内部プロキシ location です。
+
+REFRESH は TTL 前のキャッシュを検証します。事前読み込みは行わず、`304` でも TTL を延長しません。通常の期限切れ処理を行う core の `proxy_cache_revalidate` と `proxy_cache_background_update` を補完します。origin が validator を無視して常に `200` を返す場合、無効化に HEAD の負荷を追加する動作になります。候補は正規ハッシュパスにある、現世代の有効なファイルだけです。同一世代での物理的な置換は保守的に無効化される場合がありますが、世代比較により古い HEAD が後続 PURGE の新世代を無効化することは防ぎます。
+
+| origin の実際の結果 | 動作／結果 |
+|---|---|
+| `304` | 保持。`kept` |
+| `200`、`404`、`410` | 世代を条件付きで無効化し遅延削除。`invalidated` |
+| その他のステータス | 保持。`upstream_status` |
+| origin ステータスなし／転送エラー | 保持。`transport_error` |
+| Vary メタデータ | HEAD なし。`skipped_vary` |
+| 無効なマッピング／プロファイル | 保持。`skipped_profile` |
+| 世代が既に置換済み | 新規無効化なし。`raced_replaced` |
+| 内部の無効化／割り当て失敗 | 保持。`invalidation_error` |
+| ページ停止までに未開始／未完了 | `undispatched`。カーソルはその項目を越えない |
+
+worker ごとに実行中の REFRESH ページは一つ、同時プローブは一つで、全 worker 合計の共有上限は 16 プローブです。他の要求は候補配列を確保せず待機します。各ページは共通カーソルでディレクトリを走査し、最大 32 候補を保持してから core の HEAD サブリクエストを直列実行します。これにより候補メモリとメイン要求プールを共有するサブリクエスト数を制限します。同一の REFRESH HTTP 要求自体は重複排除せず、同時実行上限を共有します。無効化は共通の重複排除済み PURGE キューへ送ります。
+
+カーソルなしで開始し、`complete` が true になるまで同じエンドポイント・論理セレクター・プロファイルに `X-Cache-Purge-Cursor: <next_cursor>` を送ります。カーソルは処理済みの最後の 32 桁 hex ファイル名です。不正または重複したカーソルヘッダーには `400` を返します。`scan_complete` は列挙の正常終了、`complete` はさらに次の該当ページがなく全選択項目の判断が完了したことを示します。`timed_out` は時間制限を示し、走査失敗は `500 scan_failed` を返します。`undispatched` は選択済みで未完了の件数で、走査が不完全なら下限にすぎずキャッシュ総数ではありません。走査未完了時はプローブを行わず、結果は空で入力カーソルを返します。結果にはハッシュと実際の upstream ステータスのみを含み、キーや認証情報は返しません。
+
+各ページは次のハッシュを選ぶために再走査します。メモリを制限する代わりに I/O を繰り返し、全体では `O(ファイル数 × ページ数)` です。同時追加・削除がある場合のページ継続は弱い整合性のみを持ち、後時点の全体確認が必要なら最初からやり直してください。セレクターと期限を適切に設定してください。非常に大きな稼働中キャッシュを高頻度に全走査する用途には向きません。
+
+<a id="generation-and-refresh-example"></a>
+
+### 世代と REFRESH の設定例
+
+main/http に組み込む設定断片です。既存の `events` ブロックを残し、オリジンとパスを変更してください。`--with-threads` なしのビルドでは `thread_pool` と `cache_purge_thread_pool` を削除し、段階的な走査を使います。
+
+```nginx
+thread_pool purge_io threads=2 max_queue=32;
+http {
+    upstream origin { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
+    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
+    cache_purge_thread_pool purge_io;
+    cache_purge_response_type json;
+
+    server {
+        listen 8080;
+        location /objects/ {
+            cache_purge_key objects "origin.test$request_uri";
+            proxy_cache objects;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host origin.test;
+            proxy_pass http://origin;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+        location = /admin/refresh {
+            allow 127.0.0.1; deny all;
+            cache_purge_key objects $http_x_cache_key;
+            proxy_cache_refresh objects $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe origin.test;
+            cache_purge_refresh_timeout 10s;
+        }
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host origin.test;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+            proxy_pass http://origin$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+まず存在するキャッシュ可能なオブジェクトを GET し、`X-Cache-Status: HIT` が出るまで繰り返します。その後、同じオブジェクトを REFRESH で確認します。`kept` なら次の GET も HIT、`invalidated` なら再びオリジンへ問い合わせます。
+
+```sh
+curl -i 'http://127.0.0.1:8080/objects/item'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+プレフィックスではカーソルなしで開始します。`complete: false` なら、返された値を `X-Cache-Purge-Cursor` に設定し、下の `<next_cursor>` を置き換えて繰り返します。選択条件は変えず、HTTP エラーの原因を解決してから続行してください。
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+古いことが分かっている場合は PURGE を使います。この例のキー世代管理では、`200 invalidated` 後に新しいリクエストが古い世代を HIT することはありません。古いファイルは残っている場合があります。
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
+```
+
+[HTTP と境界ケース](../REFRESH.md)（英語）を参照してください。走査失敗は `500 scan_failed` であり、`scan_error: true` の継続ページではありません。
+
+<a id="sample-configurations"></a>
+
+## 設定例
+
+<a id="basic--inline-purge-method"></a>
+
+### 基本 — 同一 location で PURGE
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/images/logo.png
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### 基本 — 専用 PURGE location
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location / {
+            proxy_pass      http://backend;
+            proxy_cache     main;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### バックグラウンドキューの有効化
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### 全エントリの削除
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        location /content {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -X PURGE http://localhost/content/anything
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### location ごとに上書きする JSON 応答
+
+```nginx
+http {
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        cache_purge_response_type json;   # default for all locations in this server
+        location / {
+            proxy_pass        http://backend;
+            proxy_cache       main;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary 対応の PURGE
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+キーを削除すると、別のファイルパスにある gzip と Vary のバリアントも自動で削除します。
 
 ---
 
@@ -483,261 +734,53 @@ worker のスキャナー待機も含め、REFRESH ページの新規走査／�
 
 ---
 
-<a id="partial-key-purge"></a>
+<a id="execution-model"></a>
 
-## キーの部分一致による PURGE
+## 実行モデル
 
-**評価後のキャッシュキー**に `*` を付けると、大文字小文字を区別せず前方一致します。完全一致キーと Vary は引き続き大文字小文字を区別します。物理削除のプレフィックスは末尾の `*` を除き 511 バイトまでです。超過すると一度ログを記録し、ファイルを走査せず `400 invalid_selector` を返します。
+**タスク**は 1 件のワイルドカード操作または `purge_all` 操作です。**バッチ**は、ワーカーが休止するまでに処理するタスク数です。**スライス**は、段階的なディレクトリ走査の作業量を制限した 1 ステップです。1 タスクに多数のスライスが必要な場合があります。
 
-`cache_purge_key` では論理式を照合し、末尾の `*` を含めて最大 8096 バイトを受け付けます。
+世代付きキーでは、キャッシュパスと名前空間ごとの一つの物理走査に無効化要求を集約します。REFRESH ページは独立した HTTP 操作で、PURGE キューのタスクではありません。
 
-キー式が `$uri` で終わる場合、次のリクエストで URI の接頭辞を選択できます。
+| リクエストと設定 | ファイル走査 | HTTP 応答の完了 |
+|---|---|---|
+| 従来の完全一致キー（Vary 照合の有無を問わない） | リクエストワーカー。Vary は追加のディレクトリ走査を実施 | 操作終了後 |
+| ワイルドカードまたは `purge_all`、バックグラウンドキュー無効 | リクエストワーカーで同期走査 | 走査終了後 |
+| 選択したプールによるバックグラウンドタスク | 各ワーカーにつき同時に最大 1 プールタスク | 受け付け後に `202` |
+| 利用可能なスレッドプールがないバックグラウンドタスク | ワーカーのイベントループで段階的に走査 | キュー登録後に `202` |
+| キュー容量またはメモリ割り当ての不足 | 受け付けを待機。リクエスト専用の走査は実行しない | 受け付け後に `202` |
+| 世代による PURGE、すべてのキー形式 | 名前空間の遅延走査。要求内でキャッシュを open/unlink しない | 公開と受付後に `200 invalidated` |
+| REFRESH エンドポイント | 有界走査と最大 32 回の直列 HEAD | 完了・継続情報を含む `200` JSON |
 
-```http
-PURGE /images/header*
-```
+世代付きキー以外の行は従来の動作です。容量待機中の世代要求は、受付後に `202` ではなく `200` を返します。
 
-アスタリスクは URI パスだけでなく、評価済みキー全体の最後のバイトである必要があります。`proxy_cache_key` のクエリ文字列や変数の接尾辞に注意してください。キーが `*` のみなら、削除対象になり得る全エントリを走査します。
+1 スライスは、ディレクトリの反復が最大 64 回に達するか、経過時間 5 ms を確認した時点で終了します。スキップしたエントリとディレクトリ終端も予算に含みます。ただし、単一のファイルシステムシステムコールの所要時間は制限できません。
 
----
-
-<a id="generation-invalidation"></a>
-
-## 世代による無効化
-
-設定済みの名前空間では、PURGE は新世代を公開し、古い世代を削除する重複排除済みの走査を予約してから `200` と `invalidated` を返します。受付経路でキャッシュファイルの open/unlink は行いません。公開後に初めてキーを評価する新規要求は旧世代を HIT できません。要求ごとに名前空間／論理キーの世代を固定し、内部リダイレクトをまたいで保持します。開始済みの応答は完了できますが、その遅れた書き込みを後続の新規要求が HIT することはありません。完全一致は大小文字を区別し、プレフィックスは ASCII の大小文字を無視します。`purge_all` は名前空間全体を変更し、意図的に共有している他のキャッシュパスにも影響します。物理削除は指定パスに予約し、他のパスは core の失効処理または後続の PURGE に任せます。
-
-失効を受け付けても、ディスク容量が即時に解放されるとは限りません。走査後に旧世代の書き込みが完了しても参照不能であり、後続の削除や core の inactive 期限で回収されます。名前空間 SHM が不足するとルールを新しい名前空間ベースラインに集約し、追加のキーを cold にします。失効済みキーを復活させることはありません。後続の無効化ごとに、切り離した trie ノードを最大 64 個回収します。同一ホットキーの反復 PURGE で木が無制限に成長することはありません。計算量はキャッシュファイル数ではなく、上限のあるキー長とタスク索引サイズに依存します。過負荷時の実時間 O(1) や starvation 回避を保証せず、受付は待機し得ます。無効化後の GET 集中には core の `proxy_cache_lock` などを利用してください。
-
-<a id="conditional-refresh"></a>
-
-## 条件付き REFRESH
-
-REFRESH は TTL 前のキャッシュを検証します。事前読み込みは行わず、`304` でも TTL を延長しません。通常の期限切れ処理を行う core の `proxy_cache_revalidate` と `proxy_cache_background_update` を補完します。origin が validator を無視して常に `200` を返す場合、無効化に HEAD の負荷を追加する動作になります。候補は正規ハッシュパスにある、現世代の有効なファイルだけです。同一世代での物理的な置換は保守的に無効化される場合がありますが、世代比較により古い HEAD が後続 PURGE の新世代を無効化することは防ぎます。
-
-| origin の実際の結果 | 動作／結果 |
-|---|---|
-| `304` | 保持。`kept` |
-| `200`、`404`、`410` | 世代を条件付きで無効化し遅延削除。`invalidated` |
-| その他のステータス | 保持。`upstream_status` |
-| origin ステータスなし／転送エラー | 保持。`transport_error` |
-| Vary メタデータ | HEAD なし。`skipped_vary` |
-| 無効なマッピング／プロファイル | 保持。`skipped_profile` |
-| 世代が既に置換済み | 新規無効化なし。`raced_replaced` |
-| 内部の無効化／割り当て失敗 | 保持。`invalidation_error` |
-| ページ停止までに未開始／未完了 | `undispatched`。カーソルはその項目を越えない |
-
-worker ごとに実行中の REFRESH ページは一つ、同時プローブは一つで、全 worker 合計の共有上限は 16 プローブです。他の要求は候補配列を確保せず待機します。各ページは共通カーソルでディレクトリを走査し、最大 32 候補を保持してから core の HEAD サブリクエストを直列実行します。これにより候補メモリとメイン要求プールを共有するサブリクエスト数を制限します。同一の REFRESH HTTP 要求自体は重複排除せず、同時実行上限を共有します。無効化は共通の重複排除済み PURGE キューへ送ります。
-
-カーソルなしで開始し、`complete` が true になるまで同じエンドポイント・論理セレクター・プロファイルに `X-Cache-Purge-Cursor: <next_cursor>` を送ります。カーソルは処理済みの最後の 32 桁 hex ファイル名です。不正または重複したカーソルヘッダーには `400` を返します。`scan_complete` は列挙の正常終了、`complete` はさらに次の該当ページがなく全選択項目の判断が完了したことを示します。`timed_out` と `scan_error` で中断と失敗を区別します。`undispatched` は選択済みで未完了の件数で、走査が不完全なら下限にすぎずキャッシュ総数ではありません。走査未完了時はプローブを行わず、結果は空で入力カーソルを返します。結果にはハッシュと実際の upstream ステータスのみを含み、キーや認証情報は返しません。
-
-各ページは次のハッシュを選ぶために再走査します。メモリを制限する代わりに I/O を繰り返し、全体では `O(ファイル数 × ページ数)` です。同時追加・削除がある場合のページ継続は弱い整合性のみを持ち、後時点の全体確認が必要なら最初からやり直してください。セレクターと期限を適切に設定してください。非常に大きな稼働中キャッシュを高頻度に全走査する用途には向きません。
-
-<a id="generation-and-refresh-example"></a>
-
-### 世代と REFRESH の設定例
+バックグラウンドのファイル操作をスレッドで実行するには、`--with-threads` でビルドし、`http` の外側の **main** コンテキストにコアのプールを定義します。
 
 ```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
+thread_pool default threads=2;
 ```
 
-```sh
-curl -X PURGE 'http://127.0.0.1:8080/objects/item'
-curl -X REFRESH -H 'X-Cache-Key: origin.test/objects/*'      'http://127.0.0.1:8080/admin/refresh'
-# Repeat with X-Cache-Purge-Cursor set to the returned next_cursor.
-```
+`cache_purge_thread_pool <name>` は `http`、`server`、`location` で名前付きプールを選択します。既定は `default` です。このプールが参照されても明示的な宣言がなければ、NGINX が標準設定で作成します。独自の名前はコアの `thread_pool` で宣言する必要があります。設定は継承され、重複してまとめられたタスクでは最初に受け付けたリクエストがプールを決めます。各ワーカーは独自のコアプールを持ちます。プールが満杯の場合はタスクの容量枠を保持し、10 ms 後に投入を再試行します。満杯を理由に同期走査を開始しません。スレッド非対応ビルド、Windows、単一プロセスモード、または reload で以前のタスクのプールが削除された場合は、段階実行のカーソルを使います。
 
-<a id="sample-configurations"></a>
+REFRESH は選択したプールに worker ごとに最大一つの追加スキャナーを投入します。HTTP サブリクエストはイベントループで実行され、I/O スレッドからその状態にはアクセスしません。
 
-## 設定例
+キューとインデックスの構造変更には slab mutex を使います。受け付け処理とバックグラウンドコールバックは trylock を使用し、取得できなければタイマーで再試行します。待機中**および実行中**のタスクをキャッシュパスごとのコア文字列 rbtree に保持し、ハッシュ衝突はキー全体の比較で解決します。対象パスの未完了タスク数を `Q` とすると、インデックス操作は `O(log Q)` です。キャッシュパスの検索は登録パス数に対して線形です。待機中と実行中の管理にはネイティブ `ngx_queue_t` リストを使います。実行中操作に最初の重複が来ると再走査を予約し、その後の重複は同じ予約にまとめます。現在の走査後に再走査をキュー末尾へ入れるため、後続 PURGE を黙って捨てません。新しい PURGE が継続すると、さらに再走査する場合があります。最終完了時にのみ容量枠を解放します。ファイル操作と応答生成はロックの外で行います。
 
-<a id="basic--inline-purge-method"></a>
+rbtree は物理削除タスクの重複排除専用です。世代ルールは別の SHM 領域の有界なバイトトライに保持します。名前空間走査と従来のキー別タスクは異なる索引識別子を使い、REFRESH の無効化も共通の削除処理へ合流します。
 
-### 基本 — 同一 location で PURGE
+キューが満杯、またはタスクのメモリ確保に失敗した場合、HTTP リクエストは 10 ms の再試行タイマーとコアの切断検出を使って受け付けを待ちます。リクエストと cleanup ハンドラーは所属ワーカーに保持し、SHM にリクエストポインターを保存しません。HTTP/2 と HTTP/3 で接続全体の読み取りを止めません。キュー負荷による 429/503 は返さず、読み取り済みの短い PURGE で TCP Zero Window が発生する保証もありません。待機リクエストは依然としてメモリと接続を消費するため、配備環境の接続予算に合わせてコアのタイムアウトと受け付け方針を設定してください。
 
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+受け付けたタスクは、通常の reload 後もキー、プール名、一時パスの保護設定を保持します。新しい重複は、待機中タスクまたは次回の再走査の保護設定を更新します。新規バックグラウンド受け付けを無効にしても、受け付け済みの作業は失われません。graceful 終了中のワーカーは現在の走査を終え、新しいタスクを引き受けません。高速終了時は未完了の段階実行タスクを待機キューに戻し、exit hook で走査を完遂しません。投入済みのスレッドタスクの寿命は、コアのプール終了処理が管理します。
 
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
+割り当て済みタスクは PID とスロットの世代番号で識別します。ワーカーは 1 秒間隔の回復処理で最大 64 件の実行中レコードを確認し、所有者が終了した作業を再登録します。これは所有者を失った割り当ての回復であり、トランザクションジャーナルではありません。共有リストや slab の変更中にクラッシュすると、状態破損により再起動が必要になる可能性があります。クラッシュ直前の削除はメトリクスに残らない場合があります。待機作業と再走査には実行中ワーカーが必要です。完了が必要なら停止前にキューを空にしてください。キューは永続化されません。
 
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
+キューの内部レイアウトはアップグレード ABI ではありません。異なるレイアウトのビルドへ交換するときは、必要な作業を先に完了させてから完全に再起動してください。同じビルドの通常 reload はゾーンを再利用します。
 
-<a id="basic--separate-purge-location"></a>
+削除はベストエフォートです。`202` は受け付けを示し、削除完了を示しません。走査完了もキャッシュのアトミックなスナップショットではありません。同時リクエストは走査中や走査後に新しいエントリを作成でき、ファイルエラーはログに記録されます。ワイルドカードと全件走査は、すべてのネイティブキャッシュノードを同期更新せずに unlink します。完全一致と Vary 操作では一致したノードを無効化します。
 
-### 基本 — 専用 PURGE location
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### バックグラウンドキューの有効化
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### 全エントリの削除
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### location ごとに上書きする JSON 応答
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Vary 対応の PURGE
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-キーを削除すると、別のファイルパスにある gzip と Vary のバリアントも自動で削除します。
+バックグラウンド処理の失敗時は 100 ms、1 秒、10 秒後に最大 3 回再試行します。待機中も重複排除と受付枠を保持しますが、他のタスクは進行できます。新たな PURGE は再試行回数をリセットします。上限後はエラーを記録してタスクを終了するため、`cleanup.exhausted` を確認し、ストレージを修復して再度 PURGE してください。物理削除が失敗しても世代の無効化は有効です。消失済みファイルは通常の競合として扱い、不正なファイルは再試行せずスキップします。
 
 ---
 
@@ -875,6 +918,8 @@ tail -f /var/log/nginx/error.log | grep 'ngx_cache_purge:'
 <a id="testing"></a>
 
 ## テスト
+
+[テスト範囲](../TEST_COVERAGE.md)（英語）に、検証済みの動作と残っている不足を記載しています。
 
 Docker 内でビルドし、全スイートを実行します。
 

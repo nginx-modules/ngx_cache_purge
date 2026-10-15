@@ -49,6 +49,9 @@ Missing entries are successful idempotent outcomes (`200 no_match`), not
 failed HTTP preconditions. Generation invalidation of an absent key still
 returns `invalidated`. A completed REFRESH can contain origin/transport errors
 for individual entries; inspect its existing `results` and continuation fields.
+See [REFRESH semantics and edge cases](REFRESH.md) for origin-status policy,
+metadata limitations, cancellation and retry behavior. A directory scan failure
+returns `500 scan_failed`; it does not return a normal continuation document.
 
 Physical wildcard prefixes are limited to 511 bytes excluding the trailing
 `*`. Exact keys with Vary-aware traversal have the same 511-byte limit.
