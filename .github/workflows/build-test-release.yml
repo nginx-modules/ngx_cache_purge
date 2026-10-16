@@ -369,7 +369,7 @@ jobs:
         with:
           path: test-results
           pattern: test-results-*
-      - uses: dorny/test-reporter@v1
+      - uses: dorny/test-reporter@v3
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         with:
           name: Test Results
