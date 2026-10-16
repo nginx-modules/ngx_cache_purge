@@ -605,8 +605,17 @@ ngx_http_cache_purge_init_main_conf(ngx_conf_t *cf, void *conf)
     }
 
     /*
-     * Reserve space for inline keys, slab alignment and permanent path
-     * records.  Allocation can still fail before capacity is reached.
+     * Queue capacity counts pending and assigned allocations together.
+     * Reserve two item/key allowances per credit for slab rounding and
+     * variable inline keys/pool names.  Each cache path also reserves its
+     * record/name plus a cache-line-aligned stats slot per process, doubled
+     * for reload metadata.  Round the total to native pages below and keep
+     * at least NGX_CACHE_PURGE_SHM_MIN_PAGES for slab metadata.
+     *
+     * This is a conservative native-layout estimate, not a portable bytes-
+     * per-task ABI.  Long keys, pool names and reload protection records can
+     * exhaust the slab before the configured task count.  Namespace zones,
+     * request pools, traversal buffers and thread stacks are separate.
      */
     stride = 2 * (sizeof(ngx_http_cache_purge_queue_item_t)
                   + 2 * (NGX_CACHE_PURGE_KEY_MAX_LEN + 1));

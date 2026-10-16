@@ -2,55 +2,9 @@
 
 # ngx_cache_purge
 
+Модуль NGINX для удаления записей из кэшей `FastCGI`, `proxy`, `SCGI` и `uWSGI`. В v4 поколения ключей позволяют перестать выдавать старые записи новым запросам ещё до удаления файлов. REFRESH проверяет у сервера-источника, изменилось ли содержимое proxy-кэша. Обе возможности нужно настроить явно. Синтаксис PURGE сохранён, но HTTP-ответы изменились: см. [переход на v4](README.ru.md#migration).
+
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
-
-Модуль NGINX для удаления записей из кэшей `FastCGI`, `proxy`, `SCGI` и `uWSGI`. В v4 поколения ключей позволяют перестать выдавать старые записи новым запросам ещё до удаления файлов. REFRESH проверяет у сервера-источника, изменилось ли содержимое proxy-кэша. Обе возможности нужно настроить явно. Синтаксис PURGE сохранён, но HTTP-ответы изменились: см. [переход на v4](#migration).
-
----
-
-<a id="contents"></a>
-
-## Содержание
-
-- [Возможности](#features)
-- [Как выбрать режим](#choosing-a-mode)
-- [Совместимость](#compatibility)
-- [Установка](#installation)
-- [Очистка по части ключа](#partial-key-purge)
-- [Поколения ключей](#generation-invalidation)
-- [Проверка кэша у источника (REFRESH)](#conditional-refresh)
-- [Примеры конфигурации](#sample-configurations)
-- [Директивы](#directives)
-- [Модель выполнения](#execution-model)
-- [Настройка производительности](#performance-tuning)
-- [Мониторинг и отладка](#monitoring-and-debugging)
-- [Устранение неполадок](#troubleshooting)
-- [Тестирование](#testing)
-- [Миграция](#migration)
-- [Временные каталоги](#temporary-directories)
-- [Безопасность](#security)
-- [Лицензия](#license)
-
----
-
-<a id="features"></a>
-
-## Возможности
-
-- **Очистка в обслуживающем location** — отдельный HTTP-метод (`PURGE`) с контролем доступа по IP
-- **Отдельный location для очистки** — синтаксис зоны и ключа `proxy_cache_purge zone key` для очистки по ключу из захватов регулярного выражения без `proxy_pass`
-- **Маска / частичная очистка** — завершающий `*` запускает обход каталога кэша и удаление совпадающих записей
-- **`purge_all`** — удаление всех записей зоны кэша одним запросом
-- **Фоновая очередь** — отложенный обход ограниченными шагами цикла событий или через необязательный пул потоков NGINX; настраиваемые группы задач и паузы
-- **Учёт Vary** — после очистки точного ключа удаляются все файловые варианты с тем же ключом, включая gzip и варианты заголовка Vary
-- **Форматы ответа** — `json` (по умолчанию), `html`, `xml`, `text`, `none`
-- **Именованные пулы** — наследуемый выбор пула с инкрементальным выполнением в сборках без потоков и на Windows
-- **Дедупликация активных задач** — одна индексируемая операция и не более одного ожидающего повторного прохода для PURGE, поступивших во время обхода
-- **Статус** — метрики очереди, удаления и HIT/MISS для каждого кэша без захвата общего mutex очереди при чтении
-- **Ключи поколений** — инвалидация точного ключа, префикса или пространства имён без дискового I/O в пути обработки запроса; поздние старые записи остаются недоступными
-- [Проверка кэша у источника (REFRESH)](#conditional-refresh)
-
----
 
 <a id="choosing-a-mode"></a>
 
@@ -63,34 +17,13 @@
 | Не выдавать старое содержимое новым запросам, включая позднюю запись файла | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; новые запросы используют новое поколение ключа, файлы удаляются позже |
 | Проверить, изменилось ли содержимое proxy-кэша у источника | Поколения ключей + `proxy_cache_refresh` + внутренний профиль | `200` с результатом по каждой записи и продолжением; пустой кэш не заполняется |
 
-Эти настройки сочетаются: смена поколения тоже ставит очистку в очередь. Одного включения фоновой очереди недостаточно для защиты от поздних записей. Начните с [примера v4](#generation-and-refresh-example) или [обычного PURGE](#sample-configurations). Перед реализацией клиента изучите [контракт HTTP-ответов](../HTTP_RESPONSES.md) (на английском).
-
----
+Эти настройки сочетаются: смена поколения тоже ставит очистку в очередь. Одного включения фоновой очереди недостаточно для защиты от поздних записей. Начните с [примера v4](README.ru.md#generation-and-refresh-example) или [обычного PURGE](EXAMPLES.ru.md#sample-configurations). Перед реализацией клиента изучите [контракт HTTP-ответов](../HTTP_RESPONSES.md) (на английском).
 
 <a id="compatibility"></a>
 
 ## Совместимость
 
-Матрица перечисляет настроенные цели CI. Успешная задача подтверждает проверенную конфигурацию исходников и сборки, а не все выпуски соответствующей серии.
-
-| NGINX | CI: push / PR | CI: + full |
-|---|---|---|
-| 1.30.5, 1.31.6 | `test-matrix` | — |
-| 1.31.6 | `build-compatibility` (GCC/Clang), `sanitizer`, `native-macos`, `native-windows` (x64/x86) | `memory-leak-test` (Valgrind) |
-| 1.7.9 | `build-compatibility` (GCC) | — |
-| 1.7.11, 1.7.12 | `build-compatibility` (GCC) | — |
-| 1.20.2, 1.26.3, 1.28.3 | — | `test-matrix` |
-| 1.11.4, 1.11.5 | — | `build-compatibility` (GCC) |
-
-Задачи Linux используют те же Docker-образы и точку входа тестов, что и локальные запуски. Нативные задачи macOS и Windows проверяют собственные API файловой системы и процессов; Windows собирается MSVC и выполняет HTTP-проверки `nginx.exe`, проверки путей и reload. Стенды процессов и сигналов POSIX работают на Linux и macOS. Windows не запускает эти стенды и необязательный путь выполнения через пул потоков NGINX.
-
-Без `--with-threads` используется пошаговый обход. На epoll в NGINX до 1.7.12 модуль также выбирает этот режим из-за гонки уведомления в ядре. Нативного CI для BSD нет. Обычный прогон проверяет текущие stable/mainline и границы API; расширенный добавляет предыдущие выпуски и Valgrind. Изменения только документации пропускают сборки. Расписание и команды: [тестирование](../../t/TESTING.md).
-
-Код разделён на конфигурацию, обработчики, очередь, обход, инвалидацию, REFRESH и ответы. Общие функции путей находятся в `ngx_cache_purge.h`, платформенные — в заголовках POSIX/Win32. Файлы `generation.*` переименованы в `invalidation.*`; поколение по-прежнему обозначает версию ключей. См. [структуру модуля](../ARCHITECTURE.md).
-
-Модуль следует совместимому с C89 стилю NGINX и использует API событий, slab, rbtree и атомарных операций ядра. Атомарные операции C11 или более новый API файловой системы не требуются. Строгие сборки GNU89 проверяют порядок объявлений и предупреждения; фактически проверенные компилятор и платформа фиксируются вместе с результатами тестов.
-
----
+Для рабочей среды выбирайте поддерживаемый выпуск NGINX. Основная платформа — POSIX/UNIX; Windows остаётся экспериментальной. Потоки необязательны: без `--with-threads` фоновый обход выполняется небольшими шагами в цикле событий. См. [проверяемые версии и платформы](../../t/TESTING.md#compatibility-matrix).
 
 <a id="installation"></a>
 
@@ -106,11 +39,98 @@ make install
 Динамический модуль:
 
 ```bash
-./configure --add-dynamic-module=/path/to/ngx_cache_purge
+./configure --with-compat --add-dynamic-module=/path/to/ngx_cache_purge
 make modules
 ```
 
----
+Используйте исходники той же версии NGINX, что установлена на сервере. `--with-compat` не гарантирует совместимость произвольных версий NGINX и библиотек C. Подробнее: [динамические модули и релизные архивы](../BINARY_MODULES.md) (на английском).
+
+<a id="generation-and-refresh-example"></a>
+
+## Пример: каталог товаров
+
+Полный пример слушает локальный порт 8080 и направляет запросы товаров приложению на порту 8081. Приложение должно обслуживать `/products/42` с Host `shop.example.com`. Замените адрес приложения, домен и доступные для записи каталоги кеша и состояния.
+
+`shop.example.com` — домен в HTTP-заголовке Host, а не каталог. `/products/42` — URI карточки товара. `catalog:` — произвольный постоянный префикс ключа кеша, а не имя сервера. Логический ключ складывается из префикса и полного URI запроса, включая query string: `catalog:/products/42`. Профиль REFRESH удаляет ровно `catalog:` и проверяет `/products/42` в том же приложении.
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx/catalog levels=1:2
+                     keys_zone=catalog:10m;
+    cache_purge_namespace catalog 1m /var/lib/nginx/cache-purge;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /products/ {
+            cache_purge_key catalog "catalog:$request_uri";
+            proxy_cache catalog;
+            proxy_cache_key $cache_purge_key;
+            proxy_cache_lock on;
+            proxy_cache_valid 200 10m;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_set_header Host shop.example.com;
+            proxy_pass http://catalog_backend;
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location = /admin/refresh {
+            allow 127.0.0.1;
+            deny all;
+            cache_purge_key catalog $http_x_cache_key;
+            proxy_cache_refresh catalog $cache_purge_key;
+            cache_purge_refresh_profile /internal/cache-probe catalog:;
+            cache_purge_refresh_timeout 10s;
+        }
+
+        location = /internal/cache-probe {
+            internal;
+            proxy_cache off;
+            proxy_intercept_errors off;
+            proxy_pass_request_headers off;
+            proxy_pass_request_body off;
+            proxy_connect_timeout 1s;
+            proxy_send_timeout 2s;
+            proxy_read_timeout 2s;
+            proxy_method HEAD;
+            proxy_set_header Host shop.example.com;
+            proxy_set_header Authorization "";
+            proxy_set_header Cookie "";
+            proxy_set_header If-None-Match $cache_purge_refresh_etag;
+            proxy_set_header If-Modified-Since
+                             $cache_purge_refresh_last_modified;
+            proxy_pass http://catalog_backend$cache_purge_refresh_uri;
+        }
+    }
+}
+```
+
+Запросите существующий товар, ответ для которого разрешено кешировать. Повторяйте GET до `X-Cache-Status: HIT`, затем проверьте его через REFRESH:
+
+```sh
+curl -i 'http://127.0.0.1:8080/products/42'
+curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/42' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
+
+Если товар изменился и запись нужно сразу исключить из кеша, отправьте PURGE. Здесь `200 invalidated` означает, что новые запросы не получат старое поколение; следующий GET обратится к приложению.
+
+```sh
+curl -i -X PURGE 'http://127.0.0.1:8080/products/42'
+```
+
+Для проверки всех закешированных карточек выберите `catalog:/products/*`. При продолжении замените `<next_cursor>` полученным значением, сохранив селектор. При HTTP-ошибке сначала устраните её причину.
+
+```sh
+curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
+  'http://127.0.0.1:8080/admin/refresh'
+curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
+  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
+  'http://127.0.0.1:8080/admin/refresh'
+```
 
 <a id="partial-key-purge"></a>
 
@@ -128,72 +148,21 @@ PURGE /images/header*
 
 Звёздочка должна завершать вычисленный ключ, а не только путь URI. Учитывайте query string и переменные в конце `proxy_cache_key`. Ключ из одной `*` обходит все подходящие записи.
 
----
-
 <a id="generation-invalidation"></a>
 
 ## Как перестать выдавать старые записи: поколения ключей
 
-Поколения нужны, когда после PURGE старый ответ не должен снова выдаваться новым запросам из кэша.
-Такое возможно при обычном удалении файлов: запрос начал получать данные до
-очистки, а закончил запись уже после неё.
+Используйте поколения ключей, если после завершения PURGE новые запросы уже не должны получать устаревший ответ. Запрос к источнику, начавшийся раньше, может завершиться позже, но его запись со старым поколением не станет HIT для новых запросов. Файлы удаляются отдельно.
 
-**Логический ключ** обозначает объект, например `origin.test/objects/item`.
-**Пространство имён** объединяет ключи с общими правилами очистки. Модуль
-добавляет к ключу номер версии — **поколение**. Получившийся ключ NGINX доступен
-через `$cache_purge_key`. Используйте эту переменную целиком: внутренний формат
-ключа не нужно составлять вручную.
-
-Пример последовательности:
-
-1. GET начал получать объект, когда действовало поколение 7.
-2. PURGE сменил поколение и вернул `200 invalidated`.
-3. Новые запросы, впервые вычисляющие ключ после этой смены, используют новую
-   версию. Старый GET ещё может завершиться, но записанный им файл не станет
-   HIT для новых запросов. Их первый GET снова обратится к источнику.
-
-Запрос сохраняет выбранное поколение для каждой пары «пространство имён / ключ»,
-включая внутренние перенаправления. Точный ключ учитывает регистр; префикс с `*`
-в конце не учитывает регистр ASCII. `purge_all` меняет всё пространство имён.
-Если несколько каталогов кэша используют одно пространство имён, записи
-теряют актуальность во всех этих каталогах. Удаление файлов ставится в очередь
-только для каталога, к которому обращён PURGE; остальные очищаются последующими
-PURGE или штатными средствами NGINX.
-
-`200 invalidated` означает, что новое поколение уже действует для новых запросов, а задача удаления принята в очередь. Дисковое пространство освобождается позже. При заполненной очереди
-запрос может ждать свободного места. `proxy_cache_lock` и аналогичные средства
-NGINX помогают ограничить число одновременных обращений к источнику, когда
-новую версию объекта нужно заново загрузить в кэш.
-
-Обычная перезагрузка конфигурации сохраняет поколения. Каталог состояния
-пространства имён храните столько же, сколько сам кэш: файлы-маркеры не дают
-повторно использовать старую версию после полного перезапуска. Устойчивость к
-потере питания посредством fsync не гарантируется. При нехватке общей памяти
-модуль сбрасывает более широкий набор ключей, чтобы старые записи не вернулись.
-Последующие операции освобождают до 64 отсоединённых узлов дерева за вызов.
-Повторная очистка одного ключа не вызывает бесконечного роста дерева; работа
-зависит от длины ключа и очереди, а не от предварительного обхода всех файлов.
+Пространство имён объединяет ключи с общими правилами инвалидации. Сохраняйте каталог его состояния вместе с кешем между перезапусками. Общее пространство имён распространяет инвалидацию на несколько путей кеша; физическая очистка относится только к указанному пути. См. [эксплуатацию](../OPERATIONS.md) (на английском).
 
 <a id="conditional-refresh"></a>
 
 ## Проверка кэша у источника (REFRESH)
 
-Используйте REFRESH, когда объект уже есть в кэше, но неизвестно, изменились ли
-данные на сервере-источнике. Например, после импорта каталога можно проверить
-закэшированные страницы товаров и сохранить те, которые источник считает
-неизменившимися. Если объект точно нужно сбросить, отправляйте PURGE.
+REFRESH нужен, когда следует проверить, изменилось ли содержимое у источника. Он отправляет HEAD для того же варианта ответа с сохранёнными ETag и Last-Modified. Если карточка товара заведомо устарела, используйте PURGE.
 
-REFRESH отправляет источнику **HEAD-запрос**: запрашивает заголовки без загрузки
-тела ответа. Сохранённый ETag передаётся в `If-None-Match`, а время последнего
-изменения — в `If-Modified-Since`, если эти значения есть в кэше. В HTTP такие
-запросы называются условными. Это не отдельный режим REFRESH и не директива `if`.
-
-**Профиль проверки** — внутренний proxy-location, в котором заданы источник,
-Host, заголовки и правило получения URI из ключа. Он должен обращаться к той
-же версии ресурса, которая попала в кэш. Например, из ключа
-`origin.test/objects/item?lang=en` удаляется префикс `origin.test`; источнику
-передаётся URI `/objects/item?lang=en`. Host, cookies и учётные данные клиента
-не должны менять проверяемый ресурс.
+REFRESH не загружает новое тело, не прогревает пустой кеш и не продлевает TTL. Проверяйте результат каждой записи. При `complete: false` повторите тот же селектор, передав `next_cursor` в `X-Cache-Purge-Cursor`. См. [контракт и ограничения](../REFRESH.md) (на английском).
 
 | Ответ источника или состояние записи | Что делает модуль |
 |---|---|
@@ -207,889 +176,11 @@ Host, заголовки и правило получения URI из ключ�
 | Ошибка смены поколения или выделения памяти | Сохраняет запись: `invalidation_error`. |
 | Выбранная работа не завершена | Учитывает её в `undispatched`; продолжение не пропускает эту запись. |
 
-REFRESH не загружает новое тело ответа и не заполняет пустой кэш. Если обход
-завершён, но подходящих файлов текущего поколения нет, массив `results` пуст.
-Если источник всегда отвечает `200`, даже на неизменившийся объект, запись
-тоже будет сброшена. `proxy_cache_revalidate` и `proxy_cache_background_update`
-по-прежнему обслуживают обычные запросы к объектам с истёкшим сроком хранения.
-
-### Как читать ответ и продолжать проверку
-
-1. Отправьте REFRESH с логическим ключом или префиксом с `*` в конце, без курсора.
-2. Проверьте `results` и `complete`. Сам по себе HTTP `200` не означает успех
-   каждой проверки источника. Одна порция содержит до 32 выбранных записей.
-3. Если `complete` равно `false`, повторите тот же запрос с заголовком
-   `X-Cache-Purge-Cursor`, взяв его значение из `next_cursor` ответа.
-
-`scan_complete` означает, что каталог удалось обойти полностью. `complete`
-также требует завершения выбранных операций и отсутствия следующей порции.
-Поля `timed_out` и `undispatched` объясняют незавершённую работу.
-При прерванном обходе HEAD не отправляются, а курсор остаётся прежним. Повтор
-без устранения ограничения по времени или хранилищу может снова не продвинуться.
-Некорректный или повторённый заголовок курсора даёт `400`. Курсор из 32
-шестнадцатеричных символов нужно передавать как есть, не вычислять самостоятельно.
-В ответе выводятся хеши файлов, а не ключи кэша или учётные данные.
-
-Каждый рабочий процесс обрабатывает одну порцию и один HEAD одновременно;
-общий предел — 16 одновременных HEAD. Одинаковые запросы REFRESH выполняются
-отдельно, но их задачи удаления объединяются общей очередью. Тайм-аут
-останавливает запуск новой работы; уже отправленный HEAD ограничивается
-тайм-аутами proxy. Для каждой порции каталог обходится заново: полная операция
-требует `O(files × pages)` операций ввода-вывода. Изменения кэша во время обхода
-влияют на выбор записей; точного снимка на один момент времени нет. Частые
-проверки большого активного кэша поэтому дороги. Файл, заменённый внутри того
-же поколения, может быть сброшен; более новое поколение после PURGE защищено
-от результата запоздалого HEAD.
-
-<a id="generation-and-refresh-example"></a>
-
-### Пример поколений и REFRESH
-
-Это фрагмент конфигурации main/http; сохраните свой блок `events`. Замените адрес источника и пути. Для объявления `thread_pool` нужна сборка с `--with-threads`. В сборке без потоков удалите это объявление и `cache_purge_thread_pool`: обход будет выполняться по частям в цикле событий.
-
-```nginx
-thread_pool purge_io threads=2 max_queue=32;
-http {
-    upstream origin { server 127.0.0.1:8081; }
-    proxy_cache_path /var/cache/nginx/objects levels=1:2 keys_zone=objects:10m;
-    cache_purge_namespace objects 1m /var/lib/nginx/purge-epochs;
-    cache_purge_thread_pool purge_io;
-    cache_purge_response_type json;
-
-    server {
-        listen 8080;
-        location /objects/ {
-            cache_purge_key objects "origin.test$request_uri";
-            proxy_cache objects;
-            proxy_cache_key $cache_purge_key;
-            proxy_cache_lock on;
-            proxy_cache_valid 200 10m;
-            add_header X-Cache-Status $upstream_cache_status always;
-            proxy_set_header Host origin.test;
-            proxy_pass http://origin;
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-        location = /admin/refresh {
-            allow 127.0.0.1; deny all;
-            cache_purge_key objects $http_x_cache_key;
-            proxy_cache_refresh objects $cache_purge_key;
-            cache_purge_refresh_profile /internal/cache-probe origin.test;
-            cache_purge_refresh_timeout 10s;
-        }
-        location = /internal/cache-probe {
-            internal;
-            proxy_cache off;
-            proxy_intercept_errors off;
-            proxy_pass_request_headers off;
-            proxy_pass_request_body off;
-            proxy_connect_timeout 1s;
-            proxy_send_timeout 2s;
-            proxy_read_timeout 2s;
-            proxy_method HEAD;
-            proxy_set_header Host origin.test;
-            proxy_set_header Authorization "";
-            proxy_set_header Cookie "";
-            proxy_set_header If-None-Match $cache_purge_refresh_etag;
-            proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
-            proxy_pass http://origin$cache_purge_refresh_uri;
-        }
-    }
-}
-```
-
-Сначала запросите существующий объект, который можно кэшировать. Повторяйте GET до `X-Cache-Status: HIT`: это подтверждает готовность записи. Затем проверьте тот же объект через REFRESH. После `kept` следующий GET остаётся HIT; после `invalidated` он снова обращается к источнику.
-
-```sh
-curl -i 'http://127.0.0.1:8080/objects/item'
-curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/item' \
-  'http://127.0.0.1:8080/admin/refresh'
-```
-
-Для префикса начните без курсора. Если `complete` равно `false`, повторите запрос с полученным значением в `X-Cache-Purge-Cursor`, заменив `<next_cursor>` ниже. Селектор менять нельзя. При HTTP-ошибке сначала устраните её причину.
-
-```sh
-curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
-  'http://127.0.0.1:8080/admin/refresh'
-curl -i -X REFRESH -H 'X-Cache-Key: origin.test/objects/*' \
-  -H 'X-Cache-Purge-Cursor: <next_cursor>' \
-  'http://127.0.0.1:8080/admin/refresh'
-```
-
-Если объект заведомо устарел, сразу используйте PURGE. В этом примере настроены поколения ключей: `200 invalidated` означает, что новые запросы не получат старое поколение, хотя его файлы ещё могут существовать.
-
-```sh
-curl -i -X PURGE 'http://127.0.0.1:8080/objects/item'
-```
-
-См. [соответствие HTTP и пограничные случаи](../REFRESH.md) (на английском). Ошибка обхода возвращает `500 scan_failed`, а не страницу продолжения с `scan_error: true`.
-
-<a id="sample-configurations"></a>
-
-## Примеры конфигурации
-
-<a id="basic--inline-purge-method"></a>
-
-### Базовая — встроенный метод очистки
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/images/logo.png
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
-```
-
-<a id="basic--separate-purge-location"></a>
-
-### Базовая — отдельный location очистки
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location / {
-            proxy_pass      http://backend;
-            proxy_cache     main;
-            proxy_cache_key "$host$uri$is_args$args";
-        }
-
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
-        location ~ ^/purge(/.*) {
-            allow             127.0.0.1;
-            deny              all;
-            proxy_cache_purge main "$host$1$is_args$args";
-        }
-    }
-}
-```
-
-<a id="background-queue-enabled"></a>
-
-### Включённая фоновая очередь
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-    cache_purge_queue_size        2048;
-    cache_purge_batch_size        20;
-    cache_purge_throttle_ms       10ms;
-
-    server {
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-    }
-}
-```
-
-<a id="purge-all-entries"></a>
-
-### Очистка всех записей
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    server {
-        location /content {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE purge_all from 127.0.0.1;
-        }
-    }
-}
-```
-
-```bash
-curl -X PURGE http://localhost/content/anything
-# 200 — walk completed; inspect error_log for file errors
-```
-
-<a id="json-responses-with-per-location-override"></a>
-
-### Ответы JSON с переопределением в location
-
-```nginx
-http {
-    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
-
-    cache_purge_background_queue on;
-
-    server {
-        cache_purge_response_type json;   # default for all locations in this server
-        location / {
-            proxy_pass        http://backend;
-            proxy_cache       main;
-            proxy_cache_key   "$host$uri$is_args$args";
-            proxy_cache_purge PURGE from 127.0.0.1;
-        }
-
-        location /admin/purge {
-            allow 127.0.0.1;
-            deny  all;
-            # Override to plain text for scripting
-            cache_purge_response_type text;
-            proxy_cache_purge         main "$arg_key";
-        }
-    }
-}
-```
-
-<a id="vary-aware-purge"></a>
-
-### Очистка с учётом Vary
-
-```nginx
-http {
-    cache_purge_vary_aware on;
-    gzip_vary              on;
-}
-```
-
-После очистки ключа автоматически удаляются все его gzip- и Vary-варианты по другим файловым путям.
-
----
-
-<a id="directives"></a>
-
-## Директивы
-
-<a id="proxy_cache_purge"></a>
-
-### `proxy_cache_purge`
-
-```
-Syntax:  proxy_cache_purge on | off;
-         proxy_cache_purge <method> [purge_all] from all | <cidr> ...;
-         proxy_cache_purge <zone> "<key_expression>";
-Default: off
-Context: http, server, location
-```
-
-**Встроенная форма** (`from …`) — перехватывает заданный HTTP-метод в proxy location и удаляет соответствующую запись кэша. `on` сокращённо задаёт метод `PURGE`; `off` отключает очистку. Можно ограничить доступ списком CIDR или разрешить любые адреса через `from all`. `purge_all` перед `from` очищает всю зону кэша независимо от URI запроса.
-
-**Форма отдельного location** (аргументы зоны и ключа) — допускается только в location очистки, обычно с регулярным выражением, захватывающим ключ кэша. Находит зону по имени и очищает по скомпилированному выражению ключа. Эта форма несовместима с `proxy_cache` и `proxy_pass` в том же location.
-
-<a id="fastcgi_cache_purge"></a>
-
-### `fastcgi_cache_purge`
-
-```
-Syntax:  fastcgi_cache_purge on | off;
-         fastcgi_cache_purge <method> [purge_all] from all | <cidr> ...;
-         fastcgi_cache_purge <zone> "<key_expression>";
-Default: off
-Context: http, server, location
-```
-
-Аналог `proxy_cache_purge` для зон FastCGI, настроенных через `fastcgi_cache` / `fastcgi_cache_path`.
-
-<a id="scgi_cache_purge"></a>
-
-### `scgi_cache_purge`
-
-```
-Syntax:  scgi_cache_purge on | off;
-         scgi_cache_purge <method> [purge_all] from all | <cidr> ...;
-         scgi_cache_purge <zone> "<key_expression>";
-Default: off
-Context: http, server, location
-```
-
-Аналог `proxy_cache_purge` для зон SCGI, настроенных через `scgi_cache` / `scgi_cache_path`.
-
-<a id="uwsgi_cache_purge"></a>
-
-### `uwsgi_cache_purge`
-
-```
-Syntax:  uwsgi_cache_purge on | off;
-         uwsgi_cache_purge <method> [purge_all] from all | <cidr> ...;
-         uwsgi_cache_purge <zone> "<key_expression>";
-Default: off
-Context: http, server, location
-```
-
-Аналог `proxy_cache_purge` для зон uWSGI, настроенных через `uwsgi_cache` / `uwsgi_cache_path`.
-
-<a id="cache_purge_response_type"></a>
-
-### `cache_purge_response_type`
-
-```
-Syntax:  cache_purge_response_type json | html | xml | text | none;
-Default: json
-Context: http, server, location
-```
-
-Выбирает формат тела успешного ответа PURGE; по умолчанию используется JSON. Заголовок `Cache-Purge-Code` и код в теле совпадают. Ответы модуля содержат `Cache-Control: no-store`; ошибки используют `application/problem+json` по RFC 9457. Текстовые ключи экранируются, двоичные передаются в Base64 с указанием кодировки.
-
-`none` отключает тело PURGE: завершённая успешная операция возвращает `204`, принятая фоновая — `202`, ошибки сохраняют 4xx/5xx. Статус и REFRESH сохраняют структурированный JSON. Коды, поля и ограничения описаны в [HTTP-контракте](../HTTP_RESPONSES.md).
-
-<a id="cache_purge_background_queue"></a>
-
-### `cache_purge_background_queue`
-
-```
-Syntax:  cache_purge_background_queue on | off;
-Default: off
-Context: http
-```
-
-Включает отложенную обработку масок и `purge_all`. Запрос возвращает `202 Accepted` после постановки в очередь или объединения с такой же ожидающей либо выполняющейся задачей. Очистка точного ключа не меняется.
-
-Переключатель управляет прежним поведением масок и полной очистки. Привязка `cache_purge_key` всегда использует отложенную физическую очистку и логические ответы `200`, даже когда переключатель выключен.
-
-Если очередь заполнена или выделение задачи не удалось, запрос остаётся открытым до успешного допуска. Во время ожидания обход каталогов не выполняется. Дубликат уже ожидающей или выполняющейся задачи может быть принят и при заполненной очереди. Отказ выделения небольшого состояния ожидания запроса возвращает `500`. Обработчик отключения отменяет таймер и уменьшает счётчик ожидающих запросов.
-
-Для этого флага и `cache_purge_vary_aware` действует последнее объявленное значение; некорректные значения отклоняются. `cache_purge_legacy_status` устарел и игнорируется. Потоки и жизненный цикл описаны в [модели выполнения](#execution-model).
-
-<a id="cache_purge_queue_size"></a>
-
-### `cache_purge_queue_size`
-
-```
-Syntax:  cache_purge_queue_size <number>;
-Default: 1024
-Minimum: 1
-Context: http
-```
-
-Максимальное число незавершённых задач для всех путей кэша. Ожидающие и назначенные задачи занимают ёмкость. Дубликаты используют одно выделение памяти; повторный проход сохраняет его и место допуска. Различные задачи ждут свободного места.
-
-Общая зона создаётся при настройке фоновой обработки или endpoint статуса. Изменение ёмкости требует перезапуска, даже если округлённый размер зоны не меняется. Reload отклоняет изменение размера, сохраняя принятую работу. Добавление корней кэша тоже может потребовать больше памяти зоны и перезапуск. Если задачи должны завершиться, сначала дождитесь окончания ожидающей и активной работы.
-
-Объявление пространства имён также создаёт очередь задач.
-
-Размер зоны включает задачи, метаданные путей и выровненные метрики workers. Он зависит от сборки и числа путей кэша; см. [расчёт памяти](#memory-sizing).
-
-<a id="cache_purge_thread_pool"></a>
-
-### `cache_purge_thread_pool`
-
-```
-Syntax:  cache_purge_thread_pool <name>;
-Default: default
-Context: http, server, location
-```
-
-Выбирает исполнитель для принятых фоновых задач с обычным наследованием. Например:
-
-```nginx
-thread_pool purge_io threads=2 max_queue=128;
-http {
-    cache_purge_background_queue on;
-    cache_purge_thread_pool purge_io;
-}
-```
-
-NGINX проверяет именованные пулы и сообщает о завершении через штатное событие задачи. Приватная структура пула потоков и очередь завершений не копируются. При поддержке потоков пользовательские пулы должны существовать. Без потоков или на Windows директива принимается, а работа выполняется ограниченными шагами цикла событий. Полный выбранный пул откладывает выполнение и не возвращает I/O в цикл событий. Выделенные пулы добавляют расходы на стеки потоков и переключения контекста.
-
-<a id="cache_purge_batch_size"></a>
-
-### `cache_purge_batch_size`
-
-```
-Syntax:  cache_purge_batch_size <number>;
-Default: 10
-Minimum: 1
-Maximum: 64
-Context: http
-```
-
-Максимальное число задач, обрабатываемых каждым worker между регулирующими паузами. Прогресс сохраняется между шагами обхода и завершениями потоков. Пустая очередь завершает текущую группу. Значения выше 64 ограничиваются с предупреждением конфигурации; ноль отклоняется.
-
-Параметр управляет задачами, а не файлами или длительностью callback. Меньшее значение увеличивает число пауз между задачами, но не прерывает активный потоковый обход. Настраивайте дисковую нагрузку совместно с `cache_purge_throttle_ms`.
-
-<a id="cache_purge_throttle_ms"></a>
-
-### `cache_purge_throttle_ms`
-
-```
-Syntax:  cache_purge_throttle_ms <time>;
-Default: 10ms
-Minimum: 1ms
-Context: http
-```
-
-Задержка между группами фоновых задач. Принимает `10ms`, `500ms`, `1s` и составные значения в кавычках, например `"2s 500ms"`. Целое число без единицы означает миллисекунды: `10` и `10ms` эквивалентны. Значения без единицы вызывают предупреждение конфигурации; явная единица его устраняет.
-
-Бездействующий worker повторяет проверку через десятикратный интервал. Незавершённые шаги и повторы при занятом mutex используют таймеры 1 мс. Задержки таймеров — минимальные интервалы планирования, а не крайние сроки. Ноль и значения вне безопасного диапазона таймера платформы отклоняются.
-
-Допуск, ожидание пула и отложенные повторы очистки используют опрос каждые 10 мс.
-
-<a id="cache_purge_queue_status"></a>
-
-### `cache_purge_queue_status`
-
-```
-Syntax:  cache_purge_queue_status <cache_path>;
-Default: not configured
-Context: location
-```
-
-Возвращает снимок JSON для GET/HEAD с `Cache-Control: no-store`. Путь должен указывать настроенный корень кэша; неизвестный путь вызывает ошибку загрузки конфигурации даже при выключенной фоновой обработке. Ограничьте доступ к endpoint:
-
-```nginx
-location = /cache_purge_queue_status {
-    allow 127.0.0.1;
-    deny  all;
-    cache_purge_queue_status /var/cache/nginx;
-}
-```
-
-```json
-{
-  "code": "status",
-  "queue": { "size": 0, "running": 0, "max_size": 1024, "wait_time": 0, "full": false },
-  "cache": {
-    "pending": { "total": 0, "full": 0 },
-    "active": 0,
-    "requests": { "overflow": 0, "deduplicated": 0, "waiting": 0 },
-    "files": { "deleted": 0, "errors": 0, "bytes": 0 },
-    "logical": { "invalidations": 0 },
-    "cleanup": { "scan_errors": 0, "retries": 0, "exhausted": 0 },
-    "responses": { "hit": 0, "miss": 0, "hit_ratio": 0.000000 }
-  }
-}
-```
-
-`queue` описывает общую очередь всех путей кэша:
-
-| Поле | Тип / единица | Значение |
-|---|---|---|
-| `size` | Целое / задачи | Задачи, ожидающие worker |
-| `running` | Целое / задачи | Назначенные задачи, включая ожидающие пул |
-| `max_size` | Целое / задачи | Вместимость ожидающих и назначенных задач вместе |
-| `wait_time` | Целое / миллисекунды | Возраст самой старой ожидающей задачи; ноль при пустой очереди |
-| `full` | Логический | В измерении число ожидающих и назначенных задач достигло вместимости |
-
-`cache` описывает корень кэша, выбранный этим location:
-
-| Поле | Тип / единица | Значение |
-|---|---|---|
-| `pending.total` | Целое / задачи | Ожидающие задачи этого кэша |
-| `pending.full` | Целое / задачи | Ожидающие задачи `purge_all`, включённые в `pending.total` |
-| `active` | Целое / задачи | Назначенные задачи до завершения учёта результата |
-| `requests.overflow` | Целое / запросы | Запросы, вошедшие в ожидание допуска, включая давление блокировки или выделения памяти |
-| `requests.deduplicated` | Целое / запросы | Запросы, объединённые с ожидающей или выполняющейся работой |
-| `requests.waiting` | Целое / запросы | Текущие запросы, ожидающие допуска для этого кэша |
-| `files.deleted` | Целое / файлы | Успешные фоновые удаления, учтённые по окончании прохода |
-| `files.errors` | Целое / ошибки | Ошибки фонового удаления, кроме уже отсутствующего файла |
-| `files.bytes` | Целое / байты | Оценка логических размеров успешно удалённых файлов |
-| `responses.hit`, `responses.miss` | Целое / основные запросы | Решения HIT и MISS ядра, наблюдаемые в log phase |
-| `responses.hit_ratio` | Число / 0..1 | HIT / (HIT + MISS), либо ноль при отсутствии обоих наблюдений |
-| `logical.invalidations` | Целое / решения | Опубликованные инвалидации поколений, включая дубликаты и решения REFRESH |
-| `cleanup.scan_errors` | Целое / ошибки | Фоновые ошибки метаданных, открытия, чтения, закрытия и выделения памяти |
-| `cleanup.retries` | Целое / проходы | Дополнительные проходы, запланированные из-за ошибки очистки |
-| `cleanup.exhausted` | Целое / задачи | Задачи очистки, снятые после трёх неудачных повторов |
-
-`pending.full` считает операции очистки всего кэша. Маска с ключом `*` — отдельный тип операции. `active` включает ожидающие пул задачи; активные задачи исключены из `queue.size` и `pending.total`, но занимают место допуска.
-
-Для объединённого обхода пространства имён `pending.full` отражает классификацию первой принятой задачи. Сканирования и проверки REFRESH не входят в глубину очереди PURGE или счётчики ошибок удаления. Перестановка отложенного повтора может превратить `wait_time` в возраст измеренной головы очереди вместо максимального возраста ожидающих задач.
-
-У счётчиков один писатель из цикла событий на слот процесса; начало и шаг размещения выровнены по строке кэша CPU. Потоки возвращают результаты через события завершения. Читатель статуса не захватывает mutex очереди и не выполняет atomic fetch-add, в том числе с нулевым приращением. В 64-битных сборках используются обычные выровненные volatile-чтения и записи. В 32-битных сборках 64-битные чтения защищены ограниченными проверками последовательности; занятый сегмент может быть пропущен в одном измерении. Поля приблизительны и не образуют транзакцию между workers. Допуск всегда использует заблокированное управляющее состояние, а не значения мониторинга.
-
-Накопительные счётчики насыщаются на максимуме беззнакового 64-битного числа, сохраняются при обычном reload и сбрасываются при перезапуске. Счётчик ожидающих следует за очисткой запросов. Синхронные операции и удаления cache manager ядра не входят в фоновые итоги. Байты оценивают длину файлов, а не блоки файловой системы или реально освобождённое место: открытые читатели и конкурентные записи влияют на результат. Частичные результаты прохода учитываются; результаты аварийно завершившегося worker могут отсутствовать. Эти метрики не являются журналом аудита.
-
-HIT/MISS учитывает только основные запросы с решением нативного кэша. Отсутствующий upstream, нулевой cache status, BYPASS, EXPIRED, STALE, UPDATING и REVALIDATED исключены из отношения. Обычный некэшируемый запрос не становится MISS. Один лишь мониторинг может создать зону SHM при выключенной фоновой очистке. На 32-битных системах возраст очереди покрывает интервалы меньше примерно 24,9 дня; отрицательная знаковая разность часов отображается как ноль.
-
-<a id="cache_purge_legacy_status"></a>
-
-### `cache_purge_legacy_status`
-
-```
-Syntax:  cache_purge_legacy_status on | off;
-Default: — (obsolete; ignored)
-Context: http
-```
-
-Устаревшая директива для перехода со старой конфигурации. Оба значения вызывают предупреждение и игнорируются; удалите директиву. Некорректные значения отклоняются. Синхронное отсутствие совпадений возвращает `200 no_match`, принятая физическая очистка — `202 accepted`, опубликованная инвалидация поколения — `200 invalidated`. Переключения между `412` и `404` больше нет. См. [HTTP-контракт](../HTTP_RESPONSES.md).
-
-<a id="cache_purge_vary_aware"></a>
-
-### `cache_purge_vary_aware`
-
-```
-Syntax:  cache_purge_vary_aware on | off;
-Default: off
-Context: http
-```
-
-При `on` успешная очистка точного ключа после удаления основного файла обходит каталог кэша и удаляет оставшиеся файлы с той же строкой `KEY:`. Это охватывает все варианты `Vary` и `gzip_vary` ответа, хранящиеся по разным файловым путям, но с одним логическим ключом. Проверяется, что байт сразу после строки ключа в каждом файле равен `\n`, что исключает ложные совпадения только по общему префиксу.
-
-По умолчанию выключено: каждый точный purge добавляет полный обход каталога. Включайте для нескольких представлений `Vary`/`gzip_vary`. Обход выполняется и при отсутствии основной записи. Маски и `purge_all` уже охватывают варианты. Точные ключи Vary чувствительны к регистру и ограничены 511 байтами; более длинные возвращают `400 invalid_selector` до любого удаления.
-
-Инвалидация поколений охватывает все представления логического ключа без этой опции.
-
-<a id="cache_purge_namespace"></a>
-
-### `cache_purge_namespace`
-
-```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
-Default: none
-Context: http
-```
-
-Объединяет логические ключи с общими правилами инвалидации. Объявите пространство имён до его использования в `cache_purge_key`. Имя содержит от 1 до 32 букв ASCII, цифр, `_` или `-`. Размер общей памяти — не менее восьми системных страниц; эта память выделяется отдельно от очереди очистки.
-
-В каталоге состояния хранятся небольшие файлы-маркеры, различающие полные перезапуски. Разместите его вне каталогов кэша и временных файлов. Храните маркеры, пока может существовать соответствующий кэш. Новый маркер создаётся только при отсутствии файла с таким именем: это исключает повторное использование прежнего идентификатора перезапуска. Если удалить маркеры, сохранив кэш, старые версии могут снова стать доступными. Гарантии сохранности при потере питания через fsync нет.
-
-Обычная перезагрузка конфигурации сохраняет состояние. Для изменения размера, пути или удаления пространства имён нужен полный перезапуск.
-
-<a id="cache_purge_key"></a>
-
-### `cache_purge_key`
-
-```text
-Syntax:  cache_purge_key <namespace> "<logical-key-expression>";
-Default: none; inherited when configured
-Context: http, server, location
-```
-
-Привязывает location к существующему пространству имён и предоставляет `$cache_purge_key`. Установите эту переменную как полное значение `proxy_cache_key`, `fastcgi_cache_key`, `scgi_cache_key` или `uwsgi_cache_key`, включая соответствующий отдельный PURGE location. Если вычисленный нативный ключ отличается от сгенерированного, PURGE завершается с `500` вместо подтверждения строгой инвалидации. Не ссылайтесь на `$cache_purge_key` внутри её собственного логического выражения. Логический ключ ограничен 8096 байтами. Привязывайте только участвующие location, если остальным нужна прежняя семантика: формы `off` для отмены наследования нет.
-
-<a id="proxy_cache_refresh"></a>
-
-### `proxy_cache_refresh`
-
-```text
-Syntax:  proxy_cache_refresh <zone> "<native-key-expression>";
-Default: off
-Context: location
-```
-
-Создаёт явный endpoint REFRESH только для основных запросов; другие методы получают `405`. Требуются привязка `cache_purge_key`, нативное выражение `$cache_purge_key` и профиль refresh. Вычисленный логический ключ выбирает точный ключ, префикс с конечной `*` либо `*` для пространства имён этого пути. Защитите location средствами доступа/аутентификации ядра. REFRESH поддерживается только для proxy-кэшей; PURGE доступен для всех четырёх протоколов.
-
-<a id="cache_purge_refresh_profile"></a>
-
-### `cache_purge_refresh_profile`
-
-```text
-Syntax:  cache_purge_refresh_profile <internal-uri> <logical-key-prefix>;
-Default: none
-Context: location
-```
-
-Задаёт адрес проверки HEAD и правило преобразования логического ключа в URI источника. Первый аргумент — постоянный URI внутренней proxy-location. Второй — префикс, который нужно удалить из ключа с учётом регистра. Остаток должен начинаться с `/`; параметры запроса и экранирование сохраняются. Например, префикс `origin.test` превращает ключ `origin.test/objects/item?lang=en` в URI `/objects/item?lang=en`.
-
-Профиль должен проверять ту же версию представления, которую получил исходный GET. Укажите `internal`, `proxy_cache off`, `proxy_intercept_errors off`, `proxy_pass_request_headers off`, `proxy_pass_request_body off` и `proxy_method HEAD`. Значение `Host` должно быть непустым и постоянным. Заголовки, определяющие представление, тоже должны быть постоянными: язык, cookies или учётные данные административного клиента не должны менять проверяемый ресурс.
-
-Для `If-None-Match` используйте ровно `$cache_purge_refresh_etag`, для `If-Modified-Since` — ровно `$cache_purge_refresh_last_modified`. Переменная `$cache_purge_refresh_uri` передаёт полученный URI в `proxy_pass`. Эти переменные содержат данные проверки и доступны только в её подзапросах.
-
-Модуль проверяет фактическую location до проверки доступа, в том числе после внутренних перенаправлений. Он не угадывает хост по ключу и не ищет `://`. Правильность соответствия ключа и источника обеспечивает администратор. Записи с Vary пропускаются: исходные заголовки запроса неизвестны.
-
-<a id="cache_purge_refresh_timeout"></a>
-
-### `cache_purge_refresh_timeout`
-
-```text
-Syntax:  cache_purge_refresh_timeout <time>;
-Default: 10s
-Context: http, server, location
-Range:   1ms .. 1h
-```
-
-Ограничивает время, в течение которого страница может запускать новую работу: обход и HEAD-проверки. В него входит ожидание сканера рабочего процесса. По истечении времени новые операции не запускаются, а страница отмечается как незавершённая.
-
-Уже отправленный HEAD завершается по правилам `proxy_connect_timeout`, `proxy_send_timeout` и `proxy_read_timeout`. Задайте их явно в профиле. Эта директива не гарантирует жёсткий срок HTTP-ответа и не может прервать системный вызов файловой системы.
-
-Отключение клиента и штатное завершение процесса останавливают новые операции. Если поток ввода-вывода ещё работает, его память освобождается только после уведомления NGINX о завершении.
-
----
-
-<a id="execution-model"></a>
-
-## Модель выполнения
-
-В этом разделе **инвалидация** означает, что старый ключ больше нельзя
-использовать для новых запросов; **очистка** — удаление его файлов.
-**Приём в очередь** резервирует место для ожидающего или выполняемого задания.
-**SHM** — общая память рабочих процессов NGINX; **worker** — процесс,
-обслуживающий запросы. Обход пространства имён удаляет файлы, которые
-устарели после смены поколения.
-
-**Задача** — одна операция с маской или `purge_all`. **Группа** — число задач, обрабатываемых worker перед регулирующей паузой. **Шаг** — ограниченная часть инкрементального обхода каталога; для одной задачи может потребоваться много шагов.
-
-При использовании ключей поколений один физический обход на путь кэша и пространство имён объединяет все принятые инвалидации. Страницы REFRESH — отдельные HTTP-операции, а не задачи очереди очистки.
-
-| Запрос и конфигурация | Обход файлов | Завершение HTTP |
-|---|---|---|
-| Прежний точный ключ, с сопоставлением Vary или без него | Worker запроса; Vary добавляет обход каталога | После операции |
-| Маска или `purge_all`, фоновая очередь выключена | Worker запроса, синхронный обход | После обхода |
-| Фоновая задача, выбран пул | Не более одной задачи пула на worker одновременно | `202` после допуска |
-| Фоновая задача без доступного пула потоков | Цикл событий worker, инкрементальные шаги | `202` после постановки в очередь |
-| Ёмкость очереди или выделение памяти исчерпаны | Запрос ожидает допуска; обход в запросе не выполняется | `202` после допуска |
-| PURGE с поколениями, любая форма ключа | Отложенный обход пространства имён; без открытия и удаления файлов кэша в запросе | `200 invalidated` после публикации и допуска |
-| Endpoint REFRESH | Ограниченное сканирование и до 32 последовательных проверок HEAD | `200` JSON с полями завершения и продолжения |
-
-Строки без ключей поколений описывают прежнее поведение. Запрос с поколениями, ожидающий свободной ёмкости, после допуска возвращает `200`, а не `202`.
-
-Инкрементальный шаг завершается не позднее 64 итераций каталога либо после обнаружения истечения 5 мс. В бюджет входят пропущенные записи и завершения каталогов. Он не ограничивает длительность отдельного системного вызова файловой системы.
-
-Чтобы перенести фоновые файловые операции в потоки, соберите NGINX с `--with-threads` и объявите пул ядра в контексте **main**, за пределами `http`:
-
-```nginx
-thread_pool default threads=2;
-```
-
-`cache_purge_thread_pool <name>` выбирает существующий именованный пул в `http`, `server` или `location`. Значение по умолчанию — `default`; при ссылке на него без явного объявления NGINX создаёт пул со стандартными параметрами. Другие имена необходимо объявлять директивой ядра `thread_pool`. Выбор наследуется; первый принятый запрос определяет исполнитель для объединённой работы. Каждый worker имеет собственные пулы ядра. При заполнении пула отправка повторяется через 10 мс, а занятое задачей место сохраняется; заполненный пул не вызывает синхронного обхода. Без поддержки потоков, на Windows, в однопроцессном режиме или после удаления именованного пула старой задачи при reload используется инкрементальный курсор.
-
-REFRESH использует выбранный пул для одного дополнительного сканера на worker. Нативные HTTP-подзапросы выполняются в цикле событий; поток I/O никогда не обращается к их состоянию.
-
-Структурные изменения очереди и индекса защищены slab mutex. Допуск и фоновые callback используют trylock и повторы через таймеры. Ожидающие **и выполняющиеся** задачи остаются в строковом rbtree ядра для каждого пути кэша; сравнение полных ключей разрешает коллизии хеша. Операции индекса имеют сложность `O(log Q)` для `Q` незавершённых задач этого пути; поиск пути кэша линейно зависит от числа зарегистрированных путей. Списки ядра `ngx_queue_t` отслеживают ожидающую и активную работу. Первый дубликат выполняющейся операции запрашивает повторный проход; следующие запросы объединяются с ним. После текущего прохода повтор помещается в хвост ожидающей очереди, поэтому более поздний PURGE не теряется молча. Постоянный поток новых PURGE может вызывать дополнительные проходы. Место в очереди освобождается только после окончательного завершения. Файловые операции и форматирование ответа выполняются вне блокировки.
-
-Rbtree дедуплицирует только задачи физической очистки. Правила поколений хранятся в ограниченных побайтовых префиксных деревьях отдельной зоны SHM. Строгий обход пространства имён имеет иную идентичность в индексе, чем задача прежнего ключа; решения REFRESH используют тот же путь очистки.
-
-При заполненной очереди или отказе выделения задачи HTTP-запрос ожидает допуска с таймером повтора 10 мс и штатной обработкой отключения клиента. Запросы и обработчики очистки остаются в своём worker; указателей на запросы в SHM нет. Чтение всего соединения HTTP/2 и HTTP/3 не отключается. Перегрузка очереди не создаёт 429/503, а короткий уже прочитанный PURGE не гарантирует TCP Zero Window. Ожидающие запросы всё ещё занимают память и соединения; учитывайте бюджет соединений через таймауты и политики допуска ядра.
-
-Принятые задачи сохраняют ключи, имена пулов и настройки временных путей при обычном reload. Более новый дубликат обновляет защитные настройки ожидающей задачи или её следующего повтора. Отключение нового фонового допуска сохраняет уже принятую работу. Worker при graceful-завершении заканчивает текущий проход и не берёт новых задач. Быстрое завершение возвращает незавершённую инкрементальную задачу в очередь без окончания файлового обхода в exit hook. Жизненным циклом отправленных потоковых задач управляет штатное завершение пула ядра.
-
-Эпохи PID/слота определяют назначенные задачи. Раз в секунду workers проверяют не более 64 активных записей за проход восстановления и возвращают в очередь работу завершившегося владельца. Это восстановление брошенных назначений, а не транзакционный журнал. Авария во время изменения общего списка или slab может повредить состояние и потребовать перезапуска. Удаления непосредственно перед аварией могут не попасть в метрики. Ожидающей работе и повторам нужен работающий worker: если завершение важно, дождитесь опустошения очереди перед остановкой. Очередь не сохраняется на диске.
-
-Внутренняя структура очереди не является ABI обновления. При замене сборки версией с другой структурой нужен полный перезапуск; если принятая работа должна завершиться, сначала дождитесь её окончания. Обычный reload той же сборки повторно использует зону.
-
-Удаление выполняется по принципу best effort. `202` подтверждает приём, а не завершение удаления; законченный обход не является атомарным снимком кэша. Параллельные запросы могут создавать записи во время или после обхода; файловые ошибки журналируются. Обходы по маске и всего кэша удаляют файлы без синхронного обновления каждого узла кэша ядра. Точные операции и Vary инвалидируют совпавшие узлы.
-
-Неудачный фоновый проход повторяется через 100 мс, 1 с и 10 с, не более трёх раз. Отложенные задачи сохраняют место допуска и запись дедупликации, позволяя выполняться другим задачам. Новый PURGE сбрасывает окно повторов. После исчерпания попыток задача снимается и журналируется ошибка; проверьте `cleanup.exhausted` и повторите очистку после исправления хранилища. Инвалидация поколений остаётся действующей даже при отказе физической очистки. Отсутствующие файлы — ожидаемые гонки; файлы неверного формата пропускаются без бесконечных повторов.
-
----
-
-<a id="performance-tuning"></a>
-
-## Настройка производительности
-
-`queue_size` ограничивает незавершённую работу, `batch_size` группирует задачи worker, `throttle_ms` разделяет группы паузами. Измеряйте задержку, конкуренцию за диск и возраст очереди до и после изменений. Увеличение ёмкости не ускоряет опустошение.
-
-Это начальные настройки, а не заявления о производительности оборудования. Столбцы опускают общий префикс `cache_purge_`.
-
-| Нагрузка / ресурсы хранилища | `queue_size` | `batch_size` | `throttle_ms` |
-|---|---:|---:|---:|
-| Ограниченный узел или хранилище | 512 | 5 | 25ms |
-| Общая начальная конфигурация | 2048 | 20 | 10ms |
-| Быстрое хранилище с измеренным запасом | 8192 | 50 | 5ms |
-| Короткие всплески с умеренной фоновой обработкой | 8192 | 5 | 50ms |
-
-Пример общей конфигурации:
-
-```nginx
-cache_purge_background_queue on;
-cache_purge_queue_size        2048;
-cache_purge_batch_size        20;
-cache_purge_throttle_ms       10ms;
-```
-
-Большая очередь поглощает всплески, но устойчивый приход выше скорости завершения её заполнит. Оценивайте дополнительный запас как `max(0, arrival_rate - completion_rate) * burst_seconds` задач, используя задачи/с после дедупликации. Оставляйте запас на разброс длительности и текущий backlog. Ожидание добавляет открытые запросы/соединения; учитывайте их память и FD при насыщенном хранилище.
-
-<a id="memory-sizing"></a>
-
-### Расчёт памяти
-
-Размер зоны вычисляется по нативным структурам:
-
-```text
-Q = cache_purge_queue_size; P = native page size
-I = sizeof(ngx_http_cache_purge_queue_item_t)
-H = sizeof(ngx_http_cache_purge_queue_t)
-A = max(ngx_cacheline_size, 64)
-R = align(sizeof(ngx_http_cache_purge_stats_t), A)
-S = 2 * (I + 2 * (512 + 1))
-M = sum over cache paths of
-    2 * (sizeof(ngx_http_cache_purge_path_t) + path_length + 1
-         + A + R * NGX_MAX_PROCESSES)
-zone_bytes = max(8 * P, align(H + Q * S + M, P))
-```
-
-| Компонент | Зарезервированная или используемая память |
-|---|---|
-| Резерв задач | `Q * S`, включая округление slab и встроенные имена ключей/пулов |
-| Метрики одного пути | `R * NGX_MAX_PROCESSES` и выравнивание; 192 KiB при шаге 192 байта и 1024 слотах |
-| Управление очередью | `H`, включая владельцев-процессы и массивы эпох |
-| Резерв путей | `M`, включая имена, корни rbtree, выравнивание и массивы метрик |
-| Минимальная зона | Восемь нативных страниц |
-
-Для измеренного LP64 (`I=184`, `H=20576`, запись пути 104 байта, статистики 144), строки кэша 64 байта, страниц 4 KiB и одного пути длиной 20 байт:
-
-| Ёмкость | Размер зоны, байты | Размер зоны, MiB |
-|---:|---:|---:|
-| 512 | 1654784 | 1.58 |
-| 2048 | 5373952 | 5.12 |
-| 8192 | 20242432 | 19.30 |
-
-Фактическая память задачи — `I + index_bytes + 1 + pool_name_bytes` до округления slab. Индекс содержит однобайтовый тег действия плюс старый ключ или имя пространства для обхода поколений. Прежний `purge_all` хранит только тег. Ёмкость ограничивает вместе pending/active-выделения. Нативные размеры, строка кэша, `NGX_MAX_PROCESSES` и пути определяют итог; Windows и 32-битные структуры отличаются. Защита reload требует дополнительной SHM; выделение может отказать до лимита задач.
-
-Память процесса учитывается отдельно. Активный обход использует фиксированный буфер ключа, переиспользуемый буфер пути и фиксированный frame на открытый каталог. Frames хранят длины префиксов без копирования предков: `O(depth + longest_path)`, независимо от числа файлов. Потоки каталогов имеют платформенные буферы. Ожидающие запросы держат небольшой контекст таймера/очистки без курсора. Стеки потоков и пулы ядра требуют отдельной памяти.
-
-Пространство имён имеет отдельный размер SHM. Один сканер REFRESH использует фиксированный LP64 буфер/контекст 283864 байта (32 записи), frames обхода и до 32 подзапросов в HTTP-пуле. Завершение страницы освобождает запрос; продолжение начинает новый. Дополнительные ожидающие запросы не выделяют массивы кандидатов.
-
-<a id="throughput-and-latency"></a>
-
-### Пропускная способность и задержки
-
-Для постоянно занятого worker полезна оценка:
-
-```text
-B = tasks completed in a batch
-T = throttle delay in milliseconds
-D = elapsed batch processing time in milliseconds, including slice waits
-rate_per_worker ~= 1000 * B / (D + T) tasks/s
-```
-
-Без `D` верхняя граница только планирования — `1000 * B / T`, по умолчанию 1000 задач/с на worker. Это не скорость удаления файлов и не измерение. Десять задач за суммарные 200 мс при паузе 10 мс дают около 47,6 задачи/с. Хранилище общее; умножение на число workers не гарантирует результат. Бездействующий worker может ждать до `10 * T` плюс задержка цикла перед проверкой новой работы.
-
-Уменьшайте группу или увеличивайте паузу для сокращения работы между остановками. Для меньшей задержки worker при дисковом I/O используйте необязательный пул. Ни одна настройка не ограничивает syscall и не разбивает потоковую задачу на группы.
-
----
-
-<a id="monitoring-and-debugging"></a>
-
-## Мониторинг и отладка
-
-[Endpoint статуса](#cache_purge_queue_status) показывает очередь, активные задачи, ожидание допуска, дубликаты, удаления и HIT/MISS. `202 Accepted` подтверждает допуск/объединение, а не удаление или немедленную логическую инвалидацию. Следите за задержками вместе с возрастом очереди и конкуренцией за хранилище.
-
-| Уровень | Условие |
-|---|---|
-| `warn` | Слишком длинный ключ, удалённый пул или ограниченное значение |
-| `error` | Отказ доступа, ошибка поиска/профиля REFRESH, исчерпанные повторы; ошибка пула ядра или чтения Windows |
-| `crit` | Ошибка открытия/stat/удаления или операции каталога; ошибка чтения POSIX ядра |
-| `alert` | Ошибка закрытия файла |
-| `emerg` | Ошибочная конфигурация, несовместимая SHM, изменение размера или ошибка выделения метаданных reload |
-| `debug` | Дополнительный контекст запроса и обхода |
-
-Диагностика использует штатное журналирование NGINX и начинается с `ngx_cache_purge: `. NGINX добавляет уровень, время, ID процесса/потока, текст errno и контекст запроса/конфигурации. Файловые сообщения указывают фактическую операцию и путь в кавычках; namespace/REFRESH — объект и причину отказа. Используйте стандартный парсер error log и фильтруйте префикс.
-
-Отладка использует `NGX_LOG_DEBUG_HTTP`; нужны сборка `--with-debug` и `error_log /var/log/nginx/error.log debug;`.
-
-Давление очереди отражается метриками ожидания без предупреждений на каждый повтор. Исчезнувший файл — ожидаемая гонка без диагностики модуля. Сообщения парсера, аллокатора, I/O и пулов ядра сохраняют его формат; при расследовании просматривайте полный журнал.
-
-```bash
-tail -f /var/log/nginx/error.log | grep 'ngx_cache_purge:'
-```
-
-Проверяемые сообщения описаны в [проверках журналирования](../../t/TESTING.md#logging-contracts).
-
----
-
-<a id="troubleshooting"></a>
-
-## Устранение неполадок
-
-| Симптом | Проверка или настройка |
-|---|---|
-| Задержки worker при больших обходах | Включите очередь и необязательный пул для I/O. Точные/Vary и работа без очереди остаются синхронными. |
-| Растёт ожидание допуска | Проверьте поток запросов, возраст очереди, пул и диск. Ёмкость поглощает всплески; изменение требует перезапуска. |
-| Высокий iowait | Уменьшите `cache_purge_batch_size`, увеличьте `cache_purge_throttle_ms`, ограничьте входящие PURGE. |
-| Медленная очередь | Измерьте длительность и конкуренцию до увеличения группы или сокращения паузы. |
-| Клиент ожидает прежние `412`/`404` | Удалите `cache_purge_legacy_status`; обрабатывайте `200` с `Cache-Purge-Code: no_match`. |
-| Остаются Vary-варианты | Включите `cache_purge_vary_aware`, проверьте основной результат и лимит 511 байт. |
-| Принятая работа выглядит незавершённой | Проверьте активные задачи, восстановление и ошибки. `202` не подтверждает завершение; подозрение на повреждение SHM требует перезапуска. |
-
----
-
-<a id="testing"></a>
-
-## Тестирование
-
-В [карте покрытия](../TEST_COVERAGE.md) (на английском) перечислены реальные проверки и оставшиеся пробелы. Успешный CI не означает полного покрытия.
-
-Соберите и запустите полный набор в Docker:
-
-```sh
-make test-all
-NGINX_VERSION=1.31.6 make test-all
-```
-
-Из `t/` доступны прежние сервисы Compose:
-
-```sh
-docker-compose -f docker-compose.test.yml build nginx-test
-docker-compose -f docker-compose.test.yml run --rm nginx-test
-
-docker-compose -f docker-compose.test.yml run --rm test-basic
-docker-compose -f docker-compose.test.yml run --rm test-queue
-docker-compose -f docker-compose.test.yml run --rm test-config
-docker-compose -f docker-compose.test.yml run --rm test-memory
-docker-compose -f docker-compose.test.yml run --rm test-performance
-docker-compose -f docker-compose.test.yml run --rm test-native
-docker-compose -f docker-compose.test.yml run --rm test-runtime
-```
-
-С плагином Compose используйте `docker compose` вместо `docker-compose`; Makefile определяют оба варианта. `nginx-test` и `make test-all` запускают семь `t/*.t` через тот же `prove`, что CI. Интеграционный образ включает нативные проверки вспомогательных функций/структур и runtime с пулом. Строгие сборки без потоков проверяют инкрементальное выполнение. Любой проваленный тест завершает команду ошибкой.
-
-Строгие сборки, санитайзеры, Valgrind, платформенные задания и отчёты описаны в [`t/TESTING.md`](../../t/TESTING.md). Все задания GitHub определены в `ci.yml`.
-
----
-
 <a id="migration"></a>
 
 ## Миграция
 
-<a id="queue-and-status-changes"></a>
-
-### Изменения очереди и статуса
-
-Изменения структуры SHM внедряйте полным перезапуском. Синтаксис методов/ACL и обработчики протоколов сохранены. В v4 JSON используется по умолчанию, код результата доступен в заголовке и теле, отсутствие записи возвращает `200 no_match`, а `cache_purge_legacy_status` только вызывает предупреждение. Обновите клиенты по [HTTP-контракту](../HTTP_RESPONSES.md). Ёмкость включает назначенные задачи; при перегрузке запрос ожидает допуска. Активные дубликаты могут назначить повторный проход.
-
-Статус добавляет поля с сохранением старых имён. `requests.overflow` теперь считает ожидание допуска. Метрики приблизительны, используют 64-битные накопительные счётчики. Сборка с потоками автоматически регистрирует упомянутый `default`; именованный пул изолирует I/O. Конфигурация только со статусом тоже выделяет SHM.
-
-Поколения и REFRESH в v4.0 включаются явно. Привяжите `cache_purge_key` и используйте `$cache_purge_key` как весь нативный ключ во всех участвующих location. Физические имена меняются: старые файлы холодные и ждут штатного истечения срока или явной прежней очистки. Храните маркеры состояния вместе с кэшем. Существующие PURGE location не получают REFRESH автоматически. Пользователям экспериментального PR60 нужны новые endpoint/профиль и пагинация; безграничный ответ, угадывание URI/Host и неявное расширение методов PR60 не являются обещаниями совместимости.
-
-<a id="from-the-original-frickle-module"></a>
-
-### Из исходного модуля FRiCKLE
-
-Формы метод/список доступа и зона/ключ остаются доступными. Отсутствие записи возвращает `200 no_match`; удалите `cache_purge_legacy_status` и обновите клиенты. Для фоновой обработки добавьте:
-
-```nginx
-http {
-    cache_purge_background_queue on;
-}
-```
-
-<a id="from-nginx-selective-cache-purge-module"></a>
-
-### Из nginx-selective-cache-purge-module
-
-Замените модуль: очередь встроена. Перенесите настройки на `cache_purge_queue_size`, `cache_purge_batch_size` и `cache_purge_throttle_ms`.
-
----
-
-<a id="temporary-directories"></a>
-
-## Временные каталоги
-
-Обход пропускает настроенные временные каталоги внутри корня, сравнивая полные компоненты пути. Имена вроде `proxy_temp` не резервируются без соответствующей настройки. Кандидаты на удаление — обычные файлы с именем ровно из 32 шестнадцатеричных символов. Числовые и суффиксные временные файлы записи пропускаются, включая `use_temp_path=off`.
-
-Каждый обход проверяет нативную версию заголовка, смещения, полный маркер `KEY: `, CRC32 и хеш ключа/варианта в имени, с фиксированным лимитом ключа 8192 байта. Повреждённые, усечённые, чужой версии или несовпадающие файлы пропускаются даже purge-all. Длины ETag/Vary, равные максимуму ядра, допустимы. Проверка формата не аутентифицирует вредоносный файл.
-
-Корень может быть симлинком или Windows junction; дочерние symlink/reparse points пропускаются. На POSIX с полной проверкой descriptor-relative возможностей дети используют `ngx_openat_file`/`ngx_file_at_info` ядра с no-follow, а удаление относительно удерживаемого родителя. Это предотвращает перенаправление через подменённый дочерний симлинк, но не защищает от переноса уже открытого каталога. Windows и старые Unix используют полные пути ядра и проверки ссылок, сохраняя гонку подмены. Прежний точный поиск/удаление также использует полные пути. Храните корни приватными без недоверенных писателей.
-
-Используйте единообразные канонические пути. Сравнение не разрешает псевдонимы симлинков, монтирования и Unicode. Задачи сохраняют защитный набор; новый дубликат обновляет pending или следующий повтор. Активный проход сохраняет старый набор, а не объединение всех живых поколений workers. Не меняйте назначение путей, пока затронутые задачи ожидают или выполняются.
-
----
+В v4 JSON используется по умолчанию, а отсутствие записи возвращает `200 no_match`. `cache_purge_legacy_status` только предупреждает и не меняет ответы. Обновите клиентов; при изменении структуры общей памяти выполните полный перезапуск. Поколения ключей включаются явно и меняют имена файлов кеша. См. [переход на v4](../MIGRATION.md) (на английском).
 
 <a id="security"></a>
 
@@ -1099,7 +190,25 @@ http {
 - Выбирайте `cache_purge_queue_size` по трафику, ограничивая SHM при потоке запросов.
 - Рассмотрите `limit_req` для ограничения PURGE независимо от обычного трафика.
 
----
+<a id="documentation"></a>
+
+## Документация
+
+- [Справочник директив](DIRECTIVES.ru.md)
+- [Другие примеры конфигурации](EXAMPLES.ru.md)
+- [Эксплуатация и устранение неполадок](../OPERATIONS.md)
+- [HTTP-ответы и ограничения REFRESH](../REFRESH.md)
+- [Переход на v4](../MIGRATION.md)
+- [Архитектура реализации](../ARCHITECTURE.md)
+- [Разработка и тесты](../../t/TESTING.md)
+
+<a id="see-also"></a>
+
+## См. также
+
+- [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
+- [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
+- [Документация nginx](https://nginx.org/en/docs/)
 
 <a id="license"></a>
 
@@ -1134,13 +243,3 @@ STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
 ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
-
----
-
-<a id="see-also"></a>
-
-## См. также
-
-- [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
-- [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
-- [Документация nginx](https://nginx.org/en/docs/)

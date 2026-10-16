@@ -116,7 +116,7 @@ deletion; sanitizer and Valgrind results apply to the paths exercised.
 ## Native helper and runtime coverage
 
 For a feature-by-feature map, including missing end-to-end cases, see
-[what the v4 tests cover](../docs/TEST_COVERAGE.md). The suite has no measured
+[what the v4 tests cover](COVERAGE.md). The suite has no measured
 line/branch coverage percentage; successful jobs do not imply complete coverage.
 
 Native fixtures compile extracted production helper bodies. Checks cover:
@@ -279,16 +279,50 @@ Sanitizer builds use the core portable MD5 implementation
 (`NGX_HAVE_NONALIGNED=0`) to avoid unaligned typed loads while retaining
 UBSan alignment checks. These are test options, not module directives.
 
+## Compatibility matrix
+
+The historical 1.7.x and 1.11.x targets exercise core API and lifecycle
+boundaries. They are not recommended deployment releases and do not imply that a
+maintained distribution ships them. The matrix pins exact upstream source
+versions; it does not qualify every vendor-patched package or ABI. For
+deployments, follow the distribution's package maintenance policy or NGINX's
+current stable/mainline releases.
+
+The matrix lists configured CI targets. A successful job qualifies that source
+and build configuration; it does not cover every release in a series.
+
+| NGINX | Commit checks | Extended checks |
+|---|---|---|
+| 1.30.5, 1.31.6 | All seven container suites | Same coverage |
+| 1.31.6 | Strict GCC/Clang, incremental/pooled; ASan/UBSan; native macOS and Windows x64/x86; Valgrind on PRs | Valgrind also outside PRs |
+| 1.7.9 | Strict GCC, native helpers and runtime, incremental | Same coverage |
+| 1.7.11, 1.7.12 | Strict GCC; epoll fallback / first corrected thread-pool notification | Same coverage |
+| 1.20.2, 1.26.3, 1.28.3 | — | All seven container suites |
+| 1.11.4, 1.11.5 | — | Strict GCC; manager callback seconds/milliseconds boundary |
+
+Linux jobs use the same Docker images and test entry point as local runs. Native
+macOS and Windows jobs exercise their own filesystem and process APIs; Windows
+builds with MSVC and runs `nginx.exe` HTTP, path and reload checks. The POSIX
+process/signal fixtures run on Linux and macOS. Windows does not run those
+fixtures or the optional NGINX thread-pool path.
+
+Thread support is optional. Builds without `--with-threads` use incremental
+traversal; epoll builds before 1.7.12 also use that fallback to avoid a core
+thread-notification race. BSD has no native CI job. Commit checks cover API
+boundaries and current stable/mainline releases; scheduled, manual full and
+release runs add historical representatives. Documentation-only changes skip
+builds. The commands and triggers are described below.
+
 ## Platform jobs and CI
 
-All jobs live in `.github/workflows/ci.yml`:
+All jobs live in `.github/workflows/build-test-release.yml`:
 
 | Job | Environment | Checks |
 |---|---|---|
-| `test-matrix` | Docker, Ubuntu 20.04/24.04 | Every TAP suite; the README lists NGINX versions |
+| `test-matrix` | Docker, Ubuntu 20.04/24.04 | Every TAP suite; see the compatibility matrix above |
 | `build-compatibility` | Docker, Ubuntu 24.04 | GCC/Clang, strict debug/release compilation, native and runtime suites, selected thread builds |
 | `sanitizer` | Docker, NGINX 1.31.6 | ASan/UBSan, pooled and incremental modes, 16 workers/16384 files |
-| `memory-leak-test` | Docker, NGINX 1.31.6 | Valgrind-instrumented memory suite, extended runs |
+| `memory-leak-test` | Docker, NGINX 1.31.6 | Valgrind-instrumented memory suite, code PRs and extended runs |
 | `native-macos` | macOS 14, NGINX 1.31.6 | Clang build, native helpers and POSIX runtime suite |
 | `native-windows` | Windows 2022, MSVC x64/x86, NGINX 1.31.6 | Native build and `windows_runtime.ps1` HTTP/filesystem/lifecycle checks |
 | `static-analysis` | Docker | Cppcheck |
@@ -299,7 +333,8 @@ product of every minor version and compiler. Normal code changes run two
 integration targets (stable/mainline), four strict boundary targets, sanitizer,
 platform and analysis jobs. GCC/Clang and execution modes are grouped within
 the mainline strict job, with separate report directories. Extended runs add
-three older integration releases, two manager boundaries and Valgrind.
+three older integration releases and two manager boundaries. Valgrind also
+runs on code pull requests and is required by the final CI gate.
 
 Push and pull-request branches remain `main`, `releases/**` and `dev/**`.
 Extended checks run weekly, with `workflow_dispatch` input `full`, on release
@@ -406,3 +441,30 @@ and only applies in the two intentionally missing-ETag cases. All other core
 and module sanitizer diagnostics still fail the suite. This is an unresolved
 NGINX defect, not a clean UBSan result or a module fix. The behavioral assertions
 for date-only and absent validators still run normally.
+
+### Listener ownership in runtime fixtures
+
+A controlled origin binds its listener before the test chooses the NGINX port.
+Choosing and releasing the NGINX port first lets the origin immediately reuse
+it. An HTTP 200 from that origin could then masquerade as a healthy NGINX while
+the real master retries bind(). The regression forces this legal port-reuse
+order with real sockets; it also requires a cache HIT. Readiness checks the
+health body, and warmup failures include the last response and bounded
+process/error-log tails. Timeouts and behavioral assertions are not relaxed.
+
+
+## Release module checks
+
+`tools/build-release-module.sh` compiles a dynamic module with `--with-compat`
+and tests its loading with a purge configuration before packaging it. Release
+jobs use native x86_64 and aarch64 runners for the pinned stable and mainline
+versions. This load check does not replace the runtime or Valgrind suites.
+
+`python3 -m unittest discover -s t -p test_release.py -v` checks publication
+ordering and failure handling using a fake GitHub CLI, checks that differing
+rebuild archives block publication, and exercises the final
+CI gate for PR, push, full and documentation-only runs. It performs no GitHub
+writes. The prepare job runs these tests on every CI invocation.
+
+See [dynamic modules and release archives](../docs/BINARY_MODULES.md) for the
+binary compatibility contract and immutable-release publishing sequence.

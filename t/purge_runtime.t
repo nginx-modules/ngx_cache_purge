@@ -386,10 +386,6 @@ sub start_server {
     $s->{cache} = "$s->{root}/proxy_temp/cache-a";
     $s->{cache_b} = "$s->{root}/cache-b";
     $s->{temp} = "$s->{cache}/custom-spool";
-    my $socket = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0,
-                                     Listen => 1) or die $!;
-    $s->{port} = $socket->sockport;
-    close $socket;
     if ($s->{linked_root}) {
         make_path(dirname($s->{cache}), "$s->{cache}.real");
         symlink "$s->{cache}.real", $s->{cache} or die $!;
@@ -398,6 +394,12 @@ sub start_server {
     write_file("$s->{root}/health", 'ready');
     write_file("$s->{root}/origin/$_", "cache fixture $_") for qw(warm item);
     start_origin($s) if $s->{controlled_origin};
+    # Bind the origin first. Otherwise it can reuse the just-released NGINX
+    # port and answer /health while NGINX is still retrying a failed bind.
+    my $socket = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0,
+                                     Listen => 1) or die $!;
+    $s->{port} = $socket->sockport;
+    close $socket;
     write_file("$s->{root}/nginx.conf", config($s));
     my $pid = fork();
     die "fork: $!" unless defined $pid;
@@ -415,7 +417,8 @@ sub start_server {
             delete $s->{pid};
             die read_file("$s->{root}/process.log");
         }
-        request($s, '/health')->{status} == 200;
+        my $health = request($s, '/health');
+        $health->{status} == 200 && ($health->{content} || '') eq 'ready';
     }, 'nginx did not start');
     return $s;
 }
@@ -489,8 +492,27 @@ END {
 
 sub warm {
     my ($s) = @_;
-    await(sub { (request($s, '/cache/warm')->{headers}{'x-cache'} || '') eq 'HIT' },
-          'cache did not warm');
+    my $last;
+    my $ok = eval {
+        await(sub {
+            $last = request($s, '/cache/warm');
+            ($last->{headers}{'x-cache'} || '') eq 'HIT';
+        }, 'cache did not warm');
+        1;
+    };
+    unless ($ok) {
+        my $error = $@;
+        diag("cache warmup failed: $s->{root}; nginx=$s->{port}; origin="
+             . ($s->{origin_port} || $s->{port}));
+        diag('last response: ' . JSON::PP::encode_json($last)) if $last;
+        for my $name (qw(error.log process.log)) {
+            next unless -f "$s->{root}/$name";
+            my @lines = split /\n/, read_file("$s->{root}/$name");
+            splice @lines, 0, @lines - 20 if @lines > 20;
+            diag("$name tail:\n" . join("\n", @lines));
+        }
+        die $error;
+    }
     my $path;
     find(sub { $path ||= $File::Find::name if -f $_ && /^[0-9a-f]{32}$/ }, abs_path($s->{cache}));
     my $bytes = read_file($path);
@@ -546,6 +568,36 @@ sub check_config {
            'configuration check has no sanitizer report') or diag($log);
     return $rc;
 }
+
+subtest 'controlled origin cannot take the NGINX listener port' => sub {
+    my $socket_new = IO::Socket::INET->can('new');
+    my $last_listener;
+    my $s;
+    {
+        no warnings 'redefine';
+        # Model a legal allocator that immediately reuses a released port.
+        # Keep real sockets: an occupied port must fall back to another port.
+        local *IO::Socket::INET::new = sub {
+            my ($class, %args) = @_;
+            if (exists $args{LocalPort} && $args{LocalPort} == 0) {
+                my $socket;
+                $socket = $socket_new->($class, %args, LocalPort => $last_listener)
+                    if $last_listener;
+                $socket ||= $socket_new->($class, %args);
+                $last_listener = $socket->sockport if $socket;
+                return $socket;
+            }
+            return $socket_new->($class, %args);
+        };
+        $s = start_server('listener-reuse', workers => 1, strict => 1,
+                          controlled_origin => 1);
+    }
+    isnt($s->{port}, $s->{origin_port}, 'NGINX and origin have different listeners');
+    warm($s);
+    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'warmup reaches the NGINX cache rather than the origin directly');
+    stop_server($s);
+};
 
 subtest 'response escaping and content lengths' => sub {
     for my $background (0, 1) {

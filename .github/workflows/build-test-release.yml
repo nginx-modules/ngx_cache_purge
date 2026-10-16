@@ -1,9 +1,9 @@
-name: ngx_cache_purge CI
+name: ngx_cache_purge · Build, Test & Release
 
 on:
   push:
     branches: [ main, 'releases/**', 'dev/**' ]
-    #tags: ['v4.*']
+    tags: ['v4.*']
   pull_request:
     branches: [ main, 'releases/**', 'dev/**' ]
   schedule:
@@ -35,11 +35,13 @@ jobs:
       integration: ${{ steps.matrix.outputs.integration }}
       compatibility: ${{ steps.matrix.outputs.compatibility }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Check APT mirror export
         run: python3 -m unittest discover -s .github/actions/apt-mirror -v
+      - name: Check immutable release publication safeguards
+        run: python3 -m unittest discover -s t -p test_release.py -v
       - id: matrix
         env:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
@@ -60,7 +62,7 @@ jobs:
       NGINX_VERSION: ${{ matrix.nginx }}
       UBUNTU_VERSION: ${{ matrix.ubuntu }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: apt
         uses: ./.github/actions/apt-mirror
       - uses: docker/setup-buildx-action@v4
@@ -105,7 +107,7 @@ jobs:
       NGINX_VERSION: ${{ matrix.nginx }}
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: apt
         uses: ./.github/actions/apt-mirror
       - uses: docker/setup-buildx-action@v4
@@ -160,7 +162,7 @@ jobs:
       NGINX_VERSION: '1.31.6'
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: apt
         uses: ./.github/actions/apt-mirror
       - uses: docker/setup-buildx-action@v4
@@ -205,7 +207,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: brew install openssl@3 cpanminus
       - name: Install JUnit formatter
         run: cpanm --local-lib "$RUNNER_TEMP/perl5" --notest TAP::Formatter::JUnit
@@ -236,7 +238,7 @@ jobs:
       matrix:
         arch: [x64, x86]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: ${{ matrix.arch }}
@@ -271,7 +273,7 @@ jobs:
 
   memory-leak-test:
     needs: prepare
-    if: needs.prepare.outputs.run == 'true' && needs.prepare.outputs.full == 'true'
+    if: needs.prepare.outputs.run == 'true' && (github.event_name == 'pull_request' || needs.prepare.outputs.full == 'true')
     name: Valgrind / memory suite
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -279,7 +281,7 @@ jobs:
       NGINX_VERSION: '1.31.6'
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: apt
         uses: ./.github/actions/apt-mirror
       - uses: docker/setup-buildx-action@v4
@@ -314,7 +316,7 @@ jobs:
     name: Cppcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - id: apt
         uses: ./.github/actions/apt-mirror
       - uses: docker/setup-buildx-action@v4
@@ -347,7 +349,7 @@ jobs:
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: semgrep scan --config p/security-audit --config p/secrets --config p/c --error
 
   publish-test-results:
@@ -359,7 +361,7 @@ jobs:
       checks: write
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v4
         with:
           path: test-results
@@ -381,6 +383,7 @@ jobs:
       - name: Require every selected check to pass
         env:
           RESULTS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           python3 - <<'PYTHON'
           import json, os
@@ -394,69 +397,77 @@ jobs:
               failed.append('prepare')
           elif jobs['prepare']['outputs'].get('run') == 'true':
               for name, job in jobs.items():
-                  if name == 'memory-leak-test' and jobs['prepare']['outputs'].get('full') != 'true':
+                  if name == 'memory-leak-test' and os.environ['EVENT_NAME'] != 'pull_request' and jobs['prepare']['outputs'].get('full') != 'true':
                       continue
                   if job['result'] != 'success':
                       failed.append(name)
           raise SystemExit(1 if failed else 0)
           PYTHON
 
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
+  release-modules:
+    name: Rebuild check · NGINX ${{ matrix.nginx }} · ${{ matrix.platform.arch }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     needs: ci
+    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        nginx: ['1.30.6', '1.31.7']
+        platform:
+          - {arch: x86_64, runner: ubuntu-24.04}
+          - {arch: aarch64, runner: ubuntu-24.04-arm}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/apt-mirror
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev libssl-dev python3
+      - name: Build, load-test and package module
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+          MODULE_VERSION: ${{ github.ref_name }}
+        run: bash tools/build-release-module.sh
+      - name: Verify byte-for-byte rebuild
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+          MODULE_VERSION: ${{ github.ref_name }}
+        run: bash tools/verify-release-rebuild.sh
+      - name: Attest archive build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-module-${{ matrix.nginx }}-${{ matrix.platform.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  create-release:
+    name: Publish release with verified assets
+    needs: [ci, release-modules]
+    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
     permissions:
       contents: write
-    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v5
-      with:
-        fetch-depth: 0
-
-    - name: Generate changelog
-      id: changelog
-      run: |
-        echo "## Changes" > CHANGELOG.md
-        previous=$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)
-        if [ -n "$previous" ]; then
-          git log --format="* %s" "$previous..$GITHUB_SHA" >> CHANGELOG.md
-        else
-          git log -1 --format="* %s" "$GITHUB_SHA" >> CHANGELOG.md
-        fi
-        echo "changelog<<EOF" >> $GITHUB_OUTPUT
-        cat CHANGELOG.md >> $GITHUB_OUTPUT
-        echo "EOF" >> $GITHUB_OUTPUT
-
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ github.ref_name }}
-        name: Release ${{ github.ref_name }}
-        body: |
-          ## ngx_cache_purge ${{ github.ref_name }}
-
-          ### New Features
-          * Opt-in generation invalidation before deferred physical cleanup
-          * Explicit conditional REFRESH with bounded continuation pages
-          * Named core thread pools, active-task deduplication and incremental fallback
-          * Descendant-link protection, guarded descriptor-relative I/O and bounded retries
-          * Worker-local queue, cleanup and cache-response metrics
-          * Consistent HTTP results with Cache-Purge-Code and RFC 9457 errors
-
-          ### Configuration
-          * `cache_purge_background_queue` - Enable async processing
-          * `cache_purge_queue_size` - Max queue size (default 1024)
-          * `cache_purge_batch_size` - Tasks per worker between pauses (default 10, maximum 64)
-          * `cache_purge_throttle_ms` - Delay between batches (default 10ms)
-          * `cache_purge_namespace` / `cache_purge_key` - Explicit strict key contract
-          * `proxy_cache_refresh` / `cache_purge_refresh_profile` - Administrative HEAD validation
-          * `cache_purge_response_type` - JSON by default; optional bodyless PURGE responses
-          * `cache_purge_legacy_status` - Obsolete; both values warn and are ignored
-          * See the full README and translations for migration and platform limits.
-
-          ${{ steps.changelog.outputs.changelog }}
-        draft: false
-        prerelease: ${{ contains(github.ref_name, '-') }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-module-*
+          merge-multiple: true
+          path: dist
+      - name: Upload to draft, verify and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash tools/publish-release.sh
