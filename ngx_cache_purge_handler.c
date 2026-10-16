@@ -1,7 +1,7 @@
 /*
  * Copyright (c) 2009-2014, FRiCKLE <info@frickle.com>
  * Copyright (c) 2009-2014, Piotr Sikora <piotr.sikora@frickle.com>
- * Copyright (C) 2016-2026 Denys Denysov
+ * Copyright (C) 2016-2026, Denys Denysov
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without

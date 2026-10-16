@@ -8,14 +8,13 @@
 - [互換性](#compatibility)
 - [ディストリビューションのパッケージ](#distribution-packages)
 - [インストール](#installation)
-- [目的に応じた動作の選び方](#choosing-a-mode)
 - [使用方法](#usage)
-- [キーの部分一致による PURGE](#partial-key-purge)
-- [世代による無効化](#generation-invalidation)
-- **REFRESH** — [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
+  - [キーの部分一致による PURGE](#partial-key-purge)
+  - [世代による無効化](#generation-invalidation)
+  - **REFRESH** — [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
+- [設定例](#localized-examples)
 - [セキュリティ](#security)
 - [移行](#migration)
-- [翻訳済み設定例](#localized-examples)
 - [ドキュメント](#documentation)
 - [関連情報](#see-also)
 - [ライセンス](#license)
@@ -35,7 +34,7 @@
 - **実行中タスクの重複排除** — 走査中に同じ PURGE を受けても、インデックス上の操作は 1 件で、次回の再走査は最大 1 件だけ予約
 - **ステータス** — キャッシュごとのキュー、削除、HIT/MISS メトリクスを、共有キューの mutex を取得せずに参照
 - **世代付きキー** — PURGE リクエスト内でディスク I/O を行わず、完全一致・プレフィックス・名前空間を無効化。古い書き込みが遅れて完了しても新規要求からは参照されません
-- [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
+- **[オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)**
 
 <a id="compatibility"></a>
 
@@ -69,29 +68,15 @@ make modules
 
 サーバーにインストールされている NGINX と同じバージョンのソースを使用してください。`--with-compat` は、任意の NGINX バージョンや C ライブラリ間の互換性を保証するものではありません。詳しくは[動的モジュールとリリースアーカイブ](../BINARY_MODULES.md)（英語）を参照してください。
 
-<a id="choosing-a-mode"></a>
-
-## 目的に応じた動作の選び方
-
-| 目的 | 設定 | レスポンスの意味 |
-|---|---|---|
-| 古いと分かっているエントリを削除し、削除処理を待つ | バックグラウンドキューを無効にして PURGE | `200 purged` または `200 no_match`。エラーは 4xx/5xx |
-| プレフィックス単位または全体の削除を予約する | PURGE と `cache_purge_background_queue on` | `202 accepted`。待機中は古いエントリが返る可能性がある |
-| 遅れて書き込まれたものも含め、古い内容を新しいリクエストで使わせない | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`。新しいキー世代を使用し、ファイルは後で削除 |
-| オリジンの変更を確認する | キー世代 + `proxy_cache_refresh` + 内部プロファイル | エントリごとの結果と継続情報を含む `200`。事前読み込みは行わない |
-
-これらは組み合わせて使えます。世代の切り替えでも削除処理が予約されます。キューだけでは遅延書き込みによる古い内容の再利用を防げません。 [v4 の例](#localized-examples)、[PURGE の例](#localized-examples)、[HTTP レスポンス](../HTTP_RESPONSES.md)（英語）を参照してください。
-
 <a id="usage"></a>
 
 ## 使用方法
 
-[→ 翻訳済み設定例](#localized-examples)
-
+[→ 設定例](#localized-examples)
 
 <a id="partial-key-purge"></a>
 
-## キーの部分一致による PURGE
+### キーの部分一致による PURGE
 
 **評価後のキャッシュキー**に `*` を付けると、大文字小文字を区別せず前方一致します。完全一致キーと Vary は引き続き大文字小文字を区別します。物理削除のプレフィックスは末尾の `*` を除き 511 バイトまでです。超過すると一度ログを記録し、ファイルを走査せず `400 invalid_selector` を返します。
 
@@ -107,13 +92,13 @@ PURGE /images/header*
 
 <a id="generation-invalidation"></a>
 
-## 世代による無効化
+### 世代による無効化
 
 キー世代を使うと、PURGE 完了後の新しいリクエストが古い内容に HIT しなくなります。遅れて書き込まれた古い応答も対象です。ファイルは別途削除されます。名 前空間は無効化ルールを共有するための単位です。再起動時も状態ディレクトリを保持してください。
 
 <a id="conditional-refresh"></a>
 
-## オリジンにキャッシュ内容を確認する（REFRESH）
+### オリジンにキャッシュ内容を確認する（REFRESH）
 
 REFRESH は保存済みの ETag と Last-Modified を使い、同じオリジンの表現に HEAD を送ります。商品ページが古いと分かっている場合は PURGE を使ってください。REFRESH は本文の再取得、空のキャッシュの事前生成、TTL の延長を行いません。 [HTTP / REFRESH](../REFRESH.md).
 
@@ -129,28 +114,28 @@ REFRESH は保存済みの ETag と Last-Modified を使い、同じオリジン
 | 内部の無効化／割り当て失敗 | 保持。`invalidation_error` |
 | ページ停止までに未開始／未完了 | `undispatched`。カーソルはその項目を越えない |
 
-<a id="security"></a>
-
-## セキュリティ
-
-- `allow` / `deny` または上流の認証で PURGE エンドポイントを制限し、公開しないでください。
-- リクエスト集中時の SHM 消費を抑えるため、負荷に合った `cache_purge_queue_size` を選んでください。
-- 通常トラフィックと独立して制限するため、PURGE location に `limit_req` を併用することも検討してください。
-
-<a id="migration"></a>
-
-## 移行
-
-SHM レイアウト変更には完全再起動が必要です。メソッド／ACL 構文とプロトコルハンドラーは維持します。v4 は既定で JSON を使用し、ヘッダーと本文に一致する結果コードを返します。未登録のキーは `200 no_match` となり、`cache_purge_legacy_status` は警告のみ出します。[HTTP 応答仕様](../HTTP_RESPONSES.md)に合わせてクライアントを更新してくださ い。容量は割り当て済みタスクも含み、過負荷時は受け付けを待ちます。実行中の重複は再走査を予約できます。
-
 <a id="localized-examples"></a>
 
-## 翻訳済み設定例
+## 設定例
 
-完全な例には REFRESH を使う商品カタログと通常の PURGE 設定が含まれます。 [英語の設定例](../EXAMPLES.md).
+完全な例には REFRESH を使う商品カタログと通常の PURGE 設定が含まれます。 [英語の設定例](../EXAMPLES.md)。
+
+
+<a id="choosing-a-mode"></a>
+
+### 目的に応じた動作の選び方
+
+| 目的 | 設定 | レスポンスの意味 |
+|---|---|---|
+| 古いと分かっているエントリを削除し、削除処理を待つ | バックグラウンドキューを無効にして PURGE | `200 purged` または `200 no_match`。エラーは 4xx/5xx |
+| プレフィックス単位または全体の削除を予約する | PURGE と `cache_purge_background_queue on` | `202 accepted`。待機中は古いエントリが返る可能性がある |
+| 遅れて書き込まれたものも含め、古い内容を新しいリクエストで使わせない | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`。新しいキー世代を使用し、ファイルは後で削除 |
+| オリジンの変更を確認する | キー世代 + `proxy_cache_refresh` + 内部プロファイル | エントリごとの結果と継続情報を含む `200`。事前読み込みは行わない |
+
+これらは組み合わせて使えます。世代の切り替えでも削除処理が予約されます。キューだけでは遅延書き込みによる古い内容の再利用を防げません。 [v4 の例](#localized-examples)、[PURGE の例](#localized-examples)、[HTTP レスポンス](../HTTP_RESPONSES.md)（英語）を参照してください。
 
 <details>
-<summary>翻訳済み設定例 — 7 件の例</summary>
+<summary>設定例 — 7 件の例</summary>
 
 <a id="generation-and-refresh-example"></a>
 
@@ -275,9 +260,9 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/images/logo.png'
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
+# 200 — エントリを削除
+# 200 + Cache-Purge-Code: no_match — 一致するキャッシュエントリなし
+# 403 — クライアント IP が許可されていません
 ```
 
 <a id="basic--separate-purge-location"></a>
@@ -303,8 +288,8 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
+        # URI からキャッシュキーを取得してゾーンとキーを渡す。
+        # この location に proxy_pass と proxy_cache は不要。
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
             deny              all;
@@ -376,7 +361,7 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/content/anything'
-# 200 — walk completed; inspect error_log for file errors
+# 200 — 走査完了。ファイルのエラーは error_log を確認
 ```
 
 <a id="json-responses-with-per-location-override"></a>
@@ -395,7 +380,7 @@ http {
         listen 127.0.0.1:8080;
         server_name shop.example.com;
 
-        # Default for all locations in this server.
+        # このサーバーのすべての location に適用する既定値。
         cache_purge_response_type json;
         location / {
             proxy_pass        http://catalog_backend;
@@ -410,7 +395,7 @@ http {
         location /admin/purge {
             allow 127.0.0.1;
             deny  all;
-            # Override to plain text for scripting
+            # スクリプト用にプレーンテキストへ切り替え
             cache_purge_response_type text;
             proxy_cache_purge         main "$arg_key";
         }
@@ -432,6 +417,20 @@ http {
 キーを削除すると、別のファイルパスにある gzip と Vary のバリアントも自動で削除します。
 
 </details>
+
+<a id="security"></a>
+
+## セキュリティ
+
+- `allow` / `deny` または上流の認証で PURGE エンドポイントを制限し、公開しないでください。
+- リクエスト集中時の SHM 消費を抑えるため、負荷に合った `cache_purge_queue_size` を選んでください。
+- 通常トラフィックと独立して制限するため、PURGE location に `limit_req` を併用することも検討してください。
+
+<a id="migration"></a>
+
+## 移行
+
+SHM レイアウト変更には完全再起動が必要です。メソッド／ACL 構文とプロトコルハンドラーは維持します。v4 は既定で JSON を使用し、ヘッダーと本文に一致する結果コードを返します。未登録のキーは `200 no_match` となり、`cache_purge_legacy_status` は警告のみ出します。[HTTP 応答仕様](../HTTP_RESPONSES.md)に合わせてクライアントを更新してくださ い。容量は割り当て済みタスクも含み、過負荷時は受け付けを待ちます。実行中の重複は再走査を予約できます。
 
 <a id="documentation"></a>
 

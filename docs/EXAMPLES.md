@@ -8,13 +8,28 @@ The first five blocks are alternative complete `nginx.conf` examples. The Vary b
 
 ## In this guide
 
+- [Choosing a cache operation](#choosing-a-mode)
 - [Basic: inline PURGE method](#basic--inline-purge-method)
 - [Basic: separate PURGE location](#basic--separate-purge-location)
+- [Partial-key PURGE](#partial-key-purge)
 - [Background cleanup queue](#background-queue-enabled)
 - [Purge all entries](#purge-all-entries)
 - [Response format overrides](#json-responses-with-per-location-override)
 - [Vary-aware purge](#vary-aware-purge)
 - [Generation-key PURGE and REFRESH: product catalog](#generation-and-refresh-example)
+
+<a id="choosing-a-mode"></a>
+
+## Choosing a cache operation
+
+| Your goal | Configuration | What the response means |
+|---|---|---|
+| Delete known stale entries and wait for the deletion attempt | PURGE with the background queue off | `200 purged` or `200 no_match`; errors use 4xx/5xx |
+| Schedule a large prefix or full-cache cleanup | PURGE with `cache_purge_background_queue on` | `202 accepted`; files may still exist and be served while cleanup is pending |
+| Stop new requests from hitting old content, including late writes | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; new requests use a new key generation; disk cleanup follows |
+| Check whether cached proxy content changed at the origin | Generation keys + `proxy_cache_refresh` + an internal profile | `200` with per-entry results and continuation; it does not prewarm the cache |
+
+These settings combine: generation invalidation also schedules cleanup. The background-queue switch alone does not protect against late writes. Read [generation-key example](#generation-and-refresh-example) for the v4 setup, [sample configurations](#sample-configurations) for ordinary PURGE, and [HTTP results](HTTP_RESPONSES.md) before writing a client.
 
 ## Basic — inline purge method
 
@@ -80,6 +95,22 @@ http {
     }
 }
 ```
+
+<a id="partial-key-purge"></a>
+
+## Partial-key PURGE
+
+Append `*` to the **expanded cache key** for a case-insensitive prefix match. Exact-key and Vary matching remain case-sensitive. A physical prefix may contain up to 511 bytes, excluding the trailing `*`. A longer prefix is logged once and returns `400 invalid_selector` without walking files.
+
+With `cache_purge_key`, matching uses the logical expression and accepts at most 8096 bytes including a trailing `*`.
+
+For a key expression ending in `$uri`, this request selects a URI prefix:
+
+```http
+PURGE /images/header*
+```
+
+The asterisk must be the last byte of the evaluated key, not merely the last byte of the URI path. Account for any query-string or variable suffix in `proxy_cache_key`. A key consisting only of `*` walks every eligible entry.
 
 ## Background queue enabled
 

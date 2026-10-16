@@ -2,7 +2,7 @@
 
 REFRESH checks existing proxy-cache entries and may invalidate them. It does not fetch replacement bodies or refresh their expiry time. Use PURGE when the content is already known to be obsolete. Use ordinary NGINX cache revalidation when an expired GET response needs updating.
 
-Start with the [configuration example](../README.md#generation-and-refresh-example). Protect the administrative endpoint and keep its origin mapping explicit.
+Start with the [configuration example](EXAMPLES.md#generation-and-refresh-example). Protect the administrative endpoint and keep its origin mapping explicit.
 
 ## Relationship to HTTP standards
 
@@ -30,6 +30,8 @@ The administrative response uses `200` for a processed page, including a page wi
 | File changes within the same generation | Conservative invalidation is possible | Generation protection is not a byte-for-byte compare-and-swap on a file |
 | Page deadline expires | Stop new work; `refresh_incomplete` | An active HEAD still obeys core proxy timeouts; this is not a hard response deadline |
 | Client disconnects | Stop dispatching; retire active resources through NGINX callbacks | Previous invalidations remain; cancellation is not a rollback |
+| Allocation or generation invalidation fails | `invalidation_error`; entry retained | Check shared-memory pressure and the module error log |
+| Selected work remains undispatched | Counted in `undispatched` | Continuation cannot skip the unfinished work |
 | Storage scan fails | `500 scan_failed` problem response | Inspect the error log; do not expect continuation JSON for this failure |
 
 `complete: true` means all selected work and pages are finished, not that every entry was kept or successfully invalidated. Read each result. For `200` responses with `complete: false`, repeat the same selector and profile with `next_cursor` as `X-Cache-Purge-Cursor`. A scan that times out before finishing returns its input cursor unchanged and sends no probes. Detect a non-advancing cursor and resolve the time/storage limit instead of retrying forever.

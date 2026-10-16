@@ -8,14 +8,13 @@
 - [Tương thích](#compatibility)
 - [Gói của các bản phân phối](#distribution-packages)
 - [Cài đặt](#installation)
-- [Chọn cách xử lý phù hợp](#choosing-a-mode)
 - [Sử dụng](#usage)
-- [Xóa theo một phần khóa](#partial-key-purge)
-- [Vô hiệu hóa theo thế hệ](#generation-invalidation)
-- **REFRESH** — [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
+  - [Xóa theo một phần khóa](#partial-key-purge)
+  - [Vô hiệu hóa theo thế hệ](#generation-invalidation)
+  - **REFRESH** — [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
+- [Ví dụ cấu hình](#localized-examples)
 - [Bảo mật](#security)
 - [Chuyển đổi](#migration)
-- [Ví dụ cấu hình đã dịch](#localized-examples)
 - [Tài liệu](#documentation)
 - [Xem thêm](#see-also)
 - [Giấy phép](#license)
@@ -35,7 +34,7 @@
 - **Khử trùng lặp tác vụ đang chạy** — một thao tác có chỉ mục và tối đa một lượt chạy lại chờ cho yêu cầu đến trong lúc duyệt
 - **Trạng thái** — số liệu hàng đợi, xóa và HIT/MISS theo cache, đọc không khóa mutex dùng chung
 - **Khóa thế hệ** — vô hiệu hóa chính xác, theo tiền tố hoặc không gian tên mà không thực hiện I/O đĩa trong đường xử lý yêu cầu; bản ghi cũ hoàn tất muộn vẫn không truy cập được
-- [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
+- **[Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)**
 
 <a id="compatibility"></a>
 
@@ -69,29 +68,15 @@ make modules
 
 Dùng mã nguồn đúng phiên bản NGINX đang cài trên máy chủ. `--with-compat` không bảo đảm khả năng tương thích giữa mọi phiên bản NGINX hoặc thư viện C. Xem [mô-đun động và gói phát hành](../BINARY_MODULES.md) (tiếng Anh).
 
-<a id="choosing-a-mode"></a>
-
-## Chọn cách xử lý phù hợp
-
-| Mục tiêu | Cấu hình | Ý nghĩa phản hồi |
-|---|---|---|
-| Xóa mục đã lỗi thời và chờ thao tác xóa | PURGE khi tắt hàng đợi nền | `200 purged` hoặc `200 no_match`; lỗi trả về 4xx/5xx |
-| Lên lịch dọn theo tiền tố hoặc toàn bộ bộ nhớ đệm | PURGE với `cache_purge_background_queue on` | `202 accepted`; mục cũ vẫn có thể được phục vụ trong lúc chờ |
-| Không cho yêu cầu mới dùng nội dung cũ, kể cả tệp được ghi muộn | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; dùng thế hệ khóa mới, xóa tệp sau |
-| Kiểm tra thay đổi tại máy chủ gốc | Thế hệ khóa + `proxy_cache_refresh` + hồ sơ nội bộ | `200` kèm kết quả từng mục và thông tin tiếp tục; không nạp sẵn nội dung |
-
-Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn tệp. Chỉ bật hàng đợi không ngăn được tác động của việc ghi muộn. Xem [ví dụ v4](#localized-examples), [ví dụ PURGE](#localized-examples) và [phản hồi HTTP](../HTTP_RESPONSES.md) (tiếng Anh).
-
 <a id="usage"></a>
 
 ## Sử dụng
 
-[→ Ví dụ cấu hình đã dịch](#localized-examples)
-
+[→ Ví dụ cấu hình](#localized-examples)
 
 <a id="partial-key-purge"></a>
 
-## Xóa theo một phần khóa
+### Xóa theo một phần khóa
 
 Thêm `*` vào **khóa cache đã được tính giá trị** để khớp tiền tố không phân biệt hoa/thường. Khóa chính xác và Vary vẫn phân biệt hoa/thường. Tiền tố dọn dẹp vật lý tối đa 511 byte, không tính `*` cuối. Tiền tố dài hơn được ghi log một lần và trả `400 invalid_selector` mà không duyệt tệp.
 
@@ -107,13 +92,13 @@ Dấu sao phải là byte cuối khóa đã tính, không chỉ cuối đường
 
 <a id="generation-invalidation"></a>
 
-## Vô hiệu hóa theo thế hệ
+### Vô hiệu hóa theo thế hệ
 
 Thế hệ khóa ngăn yêu cầu mới dùng nội dung cũ sau PURGE, kể cả phản hồi cũ được ghi muộn. Tệp được xóa riêng. Không gian tên dùng chung quy tắc vô hiệu hóa; giữ thư mục trạng thái qua các lần khởi động lại.
 
 <a id="conditional-refresh"></a>
 
-## Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)
+### Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)
 
 REFRESH gửi HEAD cho cùng dạng biểu diễn tại nguồn, dùng ETag và Last-Modified đã lưu. Nếu biết trang sản phẩm đã cũ, hãy dùng PURGE. REFRESH không tải nội dung mới, không điền bộ nhớ đệm trống và không kéo dài TTL. [HTTP / REFRESH](../REFRESH.md).
 
@@ -129,28 +114,28 @@ REFRESH gửi HEAD cho cùng dạng biểu diễn tại nguồn, dùng ETag và 
 | Lỗi nội bộ vô hiệu hóa/cấp phát | Giữ; `invalidation_error` |
 | Chưa gửi/xong khi trang dừng | `undispatched`; con trỏ không vượt qua |
 
-<a id="security"></a>
-
-## Bảo mật
-
-- Giới hạn endpoint xóa bằng `allow` / `deny` hoặc lớp xác thực phía trước; không công khai.
-- Chọn `cache_purge_queue_size` theo lưu lượng để giới hạn SHM khi ngập yêu cầu.
-- Cân nhắc `limit_req` để giới hạn PURGE độc lập lưu lượng thường.
-
-<a id="migration"></a>
-
-## Chuyển đổi
-
-Thay đổi cấu trúc SHM cần khởi động lại hoàn toàn. Cú pháp phương thức/ACL và bộ xử lý giao thức được giữ lại. v4 mặc định dùng JSON, mã kết quả thống nhất ở header và nội dung, cùng `200 no_match` khi không có mục. `cache_purge_legacy_status` chỉ phát cảnh báo. Cập nhật ứng dụng khách theo [quy ước HTTP](../HTTP_RESPONSES.md). Sức chứa bao gồm tác vụ đã giao; yêu cầu quá tải chờ được nhận. Tác vụ trùng đang chạy có thể lên lịch duyệt lại.
-
 <a id="localized-examples"></a>
 
-## Ví dụ cấu hình đã dịch
+## Ví dụ cấu hình
 
 Các ví dụ đầy đủ gồm danh mục sản phẩm với REFRESH và cấu hình PURGE thông thường. [Ví dụ cấu hình bằng tiếng Anh](../EXAMPLES.md).
 
+
+<a id="choosing-a-mode"></a>
+
+### Chọn cách xử lý phù hợp
+
+| Mục tiêu | Cấu hình | Ý nghĩa phản hồi |
+|---|---|---|
+| Xóa mục đã lỗi thời và chờ thao tác xóa | PURGE khi tắt hàng đợi nền | `200 purged` hoặc `200 no_match`; lỗi trả về 4xx/5xx |
+| Lên lịch dọn theo tiền tố hoặc toàn bộ bộ nhớ đệm | PURGE với `cache_purge_background_queue on` | `202 accepted`; mục cũ vẫn có thể được phục vụ trong lúc chờ |
+| Không cho yêu cầu mới dùng nội dung cũ, kể cả tệp được ghi muộn | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; dùng thế hệ khóa mới, xóa tệp sau |
+| Kiểm tra thay đổi tại máy chủ gốc | Thế hệ khóa + `proxy_cache_refresh` + hồ sơ nội bộ | `200` kèm kết quả từng mục và thông tin tiếp tục; không nạp sẵn nội dung |
+
+Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn tệp. Chỉ bật hàng đợi không ngăn được tác động của việc ghi muộn. Xem [ví dụ v4](#localized-examples), [ví dụ PURGE](#localized-examples) và [phản hồi HTTP](../HTTP_RESPONSES.md) (tiếng Anh).
+
 <details>
-<summary>Ví dụ cấu hình đã dịch — 7 ví dụ</summary>
+<summary>Ví dụ cấu hình — 7 ví dụ</summary>
 
 <a id="generation-and-refresh-example"></a>
 
@@ -275,9 +260,9 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/images/logo.png'
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
+# 200 — đã xóa mục
+# 200 + Cache-Purge-Code: no_match — không có mục bộ nhớ đệm phù hợp
+# 403 — IP máy khách không được phép
 ```
 
 <a id="basic--separate-purge-location"></a>
@@ -303,8 +288,8 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
+        # Lấy khóa bộ nhớ đệm từ URI rồi truyền theo dạng vùng/khóa.
+        # Không cần proxy_pass hoặc proxy_cache trong location này.
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
             deny              all;
@@ -376,7 +361,7 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/content/anything'
-# 200 — walk completed; inspect error_log for file errors
+# 200 — quét xong; kiểm tra lỗi tệp trong error_log
 ```
 
 <a id="json-responses-with-per-location-override"></a>
@@ -395,7 +380,7 @@ http {
         listen 127.0.0.1:8080;
         server_name shop.example.com;
 
-        # Default for all locations in this server.
+        # Giá trị mặc định cho mọi location trên máy chủ này.
         cache_purge_response_type json;
         location / {
             proxy_pass        http://catalog_backend;
@@ -410,7 +395,7 @@ http {
         location /admin/purge {
             allow 127.0.0.1;
             deny  all;
-            # Override to plain text for scripting
+            # Chuyển sang văn bản thuần cho tập lệnh
             cache_purge_response_type text;
             proxy_cache_purge         main "$arg_key";
         }
@@ -432,6 +417,20 @@ http {
 Sau xóa khóa, mọi biến thể gzip/Vary ở đường dẫn khác cũng tự động bị xóa.
 
 </details>
+
+<a id="security"></a>
+
+## Bảo mật
+
+- Giới hạn endpoint xóa bằng `allow` / `deny` hoặc lớp xác thực phía trước; không công khai.
+- Chọn `cache_purge_queue_size` theo lưu lượng để giới hạn SHM khi ngập yêu cầu.
+- Cân nhắc `limit_req` để giới hạn PURGE độc lập lưu lượng thường.
+
+<a id="migration"></a>
+
+## Chuyển đổi
+
+Thay đổi cấu trúc SHM cần khởi động lại hoàn toàn. Cú pháp phương thức/ACL và bộ xử lý giao thức được giữ lại. v4 mặc định dùng JSON, mã kết quả thống nhất ở header và nội dung, cùng `200 no_match` khi không có mục. `cache_purge_legacy_status` chỉ phát cảnh báo. Cập nhật ứng dụng khách theo [quy ước HTTP](../HTTP_RESPONSES.md). Sức chứa bao gồm tác vụ đã giao; yêu cầu quá tải chờ được nhận. Tác vụ trùng đang chạy có thể lên lịch duyệt lại.
 
 <a id="documentation"></a>
 

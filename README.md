@@ -14,11 +14,9 @@ An NGINX module for removing entries from `FastCGI`, `proxy`, `SCGI` and `uWSGI`
 - [Compatibility](#compatibility)
 - [Distribution packages](#distribution-packages)
 - [Installation](#installation)
-- [Choose the behavior you need](#choosing-a-mode)
 - [Usage](#usage)
-- [Partial key purge](#partial-key-purge)
-- [Stop serving old entries with generation keys](#generation-invalidation)
-- [Check cached content against the origin (REFRESH)](#conditional-refresh)
+- [Configuration examples](docs/EXAMPLES.md)
+- [REFRESH reference](docs/REFRESH.md)
 - [Security](#security)
 - [Migration](#migration)
 - [Documentation](#documentation)
@@ -83,19 +81,6 @@ make modules
 
 Use matching NGINX sources; `--with-compat` does not provide compatibility across arbitrary NGINX versions or C libraries. See [dynamic modules and release archives](docs/BINARY_MODULES.md).
 
-<a id="choosing-a-mode"></a>
-
-## Choose the behavior you need
-
-| Your goal | Configuration | What the response means |
-|---|---|---|
-| Delete known stale entries and wait for the deletion attempt | PURGE with the background queue off | `200 purged` or `200 no_match`; errors use 4xx/5xx |
-| Schedule a large prefix or full-cache cleanup | PURGE with `cache_purge_background_queue on` | `202 accepted`; files may still exist and be served while cleanup is pending |
-| Stop new requests from hitting old content, including late writes | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; new requests use a new key generation; disk cleanup follows |
-| Check whether cached proxy content changed at the origin | Generation keys + `proxy_cache_refresh` + an internal profile | `200` with per-entry results and continuation; it does not prewarm the cache |
-
-These settings combine: generation invalidation also schedules cleanup. The background-queue switch alone does not protect against late writes. Read [generation-key example](docs/EXAMPLES.md#generation-and-refresh-example) for the v4 setup, [sample configurations](docs/EXAMPLES.md#sample-configurations) for ordinary PURGE, and [HTTP results](docs/HTTP_RESPONSES.md) before writing a client.
-
 <a id="usage"></a>
 
 ## Usage
@@ -111,50 +96,28 @@ formats and Vary-aware removal.
 For v4 generation-key invalidation and conditional REFRESH, follow the
 [complete product catalog example](docs/EXAMPLES.md#generation-and-refresh-example).
 
+<a id="choosing-a-mode"></a>
+
+For a comparison of PURGE, background cleanup, generation keys and REFRESH,
+see [choosing a cache operation](docs/EXAMPLES.md#choosing-a-mode).
 
 <a id="partial-key-purge"></a>
 
-## Partial key purge
-
-Append `*` to the **expanded cache key** for a case-insensitive prefix match. Exact-key and Vary matching remain case-sensitive. A physical prefix may contain up to 511 bytes, excluding the trailing `*`. A longer prefix is logged once and returns `400 invalid_selector` without walking files.
-
-With `cache_purge_key`, matching uses the logical expression and accepts at most 8096 bytes including a trailing `*`.
-
-For a key expression ending in `$uri`, this request selects a URI prefix:
-
-```http
-PURGE /images/header*
-```
-
-The asterisk must be the last byte of the evaluated key, not merely the last byte of the URI path. Account for any query-string or variable suffix in `proxy_cache_key`. A key consisting only of `*` walks every eligible entry.
+A trailing `*` selects matching cache keys. See
+[partial-key PURGE](docs/EXAMPLES.md#partial-key-purge) for key-size limits,
+case sensitivity and selector rules.
 
 <a id="generation-invalidation"></a>
 
-## Stop serving old entries with generation keys
-
-Use generation keys when newly arriving requests must stop using stale content as soon as PURGE completes. A request already fetching from the origin may finish later, but its old cache write cannot become a HIT for new requests. Physical files are deleted separately.
-
-A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [operating notes](docs/OPERATIONS.md) before deployment.
+Generation keys prevent new requests from reaching invalidated entries,
+including stale files written by older in-flight requests. See
+[generation-key operation](docs/OPERATIONS.md#generation-invalidation) for
+namespace persistence and cleanup constraints.
 
 <a id="conditional-refresh"></a>
 
-## Check cached content against the origin (REFRESH)
-
-Use REFRESH when you need to ask whether cached content changed. It sends HEAD to the same origin representation using the cached ETag and Last-Modified values. If you already know a product page is outdated, use PURGE.
-
-REFRESH does not download a replacement, prewarm an empty cache or extend TTL. Read each entry result. If `complete` is false, repeat the same selector with the returned `next_cursor` in `X-Cache-Purge-Cursor`. See the [response contract and limits](docs/REFRESH.md).
-
-| Origin response or entry state | What happens |
-|---|---|
-| `304` | Keep the current entry: `kept`. Its TTL is not extended. |
-| `200`, `404`, `410` | Invalidate the current generation: `invalidated`. The next ordinary GET refills the cache if the origin response is cacheable. |
-| Another status | Keep the entry: `upstream_status`. Inspect `upstream_status` for the origin's code. |
-| No origin response | Keep the entry: `transport_error`. |
-| Vary metadata | Skip the probe: `skipped_vary`; the original request headers are not available. |
-| Invalid profile or key-to-URI mapping | Keep the entry: `skipped_profile`. Check profile diagnostics and the URI mapping. |
-| Another PURGE changed the generation meanwhile | Leave that newer generation alone: `raced_replaced`. |
-| Invalidation/allocation failure | Keep the entry: `invalidation_error`. |
-| Selected work did not finish | Count it in `undispatched`; continuation does not move past it. |
+REFRESH checks cached proxy content against the origin without refilling
+or extending its TTL. See [REFRESH semantics and limits](docs/REFRESH.md).
 
 <a id="security"></a>
 

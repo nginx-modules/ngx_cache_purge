@@ -8,14 +8,13 @@
 - [Kompatibilität](#compatibility)
 - [Pakete der Distributionen](#distribution-packages)
 - [Installation](#installation)
-- [Das passende Verhalten wählen](#choosing-a-mode)
 - [Verwendung](#usage)
-- [Teilweises Löschen nach Schlüssel](#partial-key-purge)
-- [Generationeninvalidierung](#generation-invalidation)
-- **REFRESH** — [Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)](#conditional-refresh)
+  - [Teilweises Löschen nach Schlüssel](#partial-key-purge)
+  - [Generationeninvalidierung](#generation-invalidation)
+  - **REFRESH** — [Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)](#conditional-refresh)
+- [Konfigurationsbeispiele](#localized-examples)
 - [Sicherheit](#security)
 - [Migration](#migration)
-- [Übersetzte Konfigurationsbeispiele](#localized-examples)
 - [Dokumentation](#documentation)
 - [Weitere Informationen](#see-also)
 - [Lizenz](#license)
@@ -35,7 +34,7 @@
 - **Deduplizierung aktiver Aufträge** — eine indexierte Operation mit höchstens einem vorgemerkten Wiederholungsdurchlauf für während des Durchlaufs eintreffende Purges
 - **Status** — Warteschlangen-, Lösch- und HIT/MISS-Metriken je Cache, ohne den gemeinsamen Warteschlangen-Mutex beim Lesen zu sperren
 - **Generationsschlüssel** — Invalidierung einzelner Schlüssel, von Präfixen und Namespaces ohne Datenträger-I/O im PURGE-Request; späte alte Schreibvorgänge bleiben unerreichbar
-- [Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)](#conditional-refresh)
+- **[Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)](#conditional-refresh)**
 
 <a id="compatibility"></a>
 
@@ -69,29 +68,15 @@ make modules
 
 Verwenden Sie den Quellcode der auf dem Server installierten NGINX-Version. `--with-compat` garantiert keine Kompatibilität zwischen beliebigen NGINX-Versionen oder C-Bibliotheken. Siehe [dynamische Module und Release-Archive](../BINARY_MODULES.md) (Englisch).
 
-<a id="choosing-a-mode"></a>
-
-## Das passende Verhalten wählen
-
-| Ziel | Konfiguration | Bedeutung der Antwort |
-|---|---|---|
-| Veraltete Einträge löschen und den Löschversuch abwarten | PURGE ohne Hintergrundwarteschlange | `200 purged` oder `200 no_match`; bei Fehlern 4xx/5xx |
-| Bereinigung eines Präfixes oder des ganzen Caches einplanen | PURGE mit `cache_purge_background_queue on` | `202 accepted`; alte Einträge können bis zur Bereinigung noch ausgeliefert werden |
-| Alte Inhalte für neue Anfragen sperren, auch bei verspäteten Schreibvorgängen | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; neue Schlüsselgeneration, Dateilöschung folgt |
-| Änderungen beim Ursprungsserver prüfen | Generationen + `proxy_cache_refresh` + internes Profil | `200` mit Ergebnissen pro Eintrag und Fortsetzung; kein Vorbefüllen |
-
-Die Verfahren lassen sich kombinieren: Ein Generationswechsel plant ebenfalls eine Bereinigung ein. Die Warteschlange allein schützt nicht vor verspäteten Schreibvorgängen. Siehe [v4-Beispiel](#localized-examples), [PURGE-Beispiele](#localized-examples) und [HTTP-Antworten](../HTTP_RESPONSES.md) (Englisch).
-
 <a id="usage"></a>
 
 ## Verwendung
 
-[→ Übersetzte Konfigurationsbeispiele](#localized-examples)
-
+[→ Konfigurationsbeispiele](#localized-examples)
 
 <a id="partial-key-purge"></a>
 
-## Teilweises Löschen nach Schlüssel
+### Teilweises Löschen nach Schlüssel
 
 Hängen Sie `*` an den **ausgewerteten Cache-Schlüssel** an, um Präfixe ohne Beachtung der Groß-/Kleinschreibung abzugleichen. Exakte Schlüssel und Vary bleiben groß-/kleinschreibungssensitiv. Physische Präfixe dürfen ohne abschließendes `*` bis zu 511 Byte umfassen. Längere Präfixe werden einmal protokolliert und liefern ohne Dateidurchlauf `400 invalid_selector`.
 
@@ -107,13 +92,13 @@ Der Stern muss das letzte Byte des ausgewerteten Schlüssels sein, nicht nur des
 
 <a id="generation-invalidation"></a>
 
-## Generationeninvalidierung
+### Generationeninvalidierung
 
 Schlüsselgenerationen verhindern, dass neue Anfragen nach PURGE alte Inhalte treffen, auch bei verspäteten Schreibvorgängen. Dateien werden separat gelöscht. Ein Namensraum teilt Invalidierungsregeln; sein Zustandsverzeichnis muss Neustarts überdauern.
 
 <a id="conditional-refresh"></a>
 
-## Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)
+### Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)
 
 REFRESH sendet HEAD für dieselbe Darstellung am Ursprung und nutzt gespeicherte ETag- und Last-Modified-Werte. Ist die Produktseite bereits als veraltet bekannt, verwenden Sie PURGE. REFRESH lädt keinen neuen Inhalt, füllt keinen leeren Cache und verlängert keine TTL. [HTTP / REFRESH](../REFRESH.md).
 
@@ -129,28 +114,28 @@ REFRESH sendet HEAD für dieselbe Darstellung am Ursprung und nutzt gespeicherte
 | Interner Invalidierungs-/Speicherfehler | Behalten; `invalidation_error` |
 | Vor Seitenende nicht gestartet/abgeschlossen | `undispatched`; Cursor bleibt davor |
 
-<a id="security"></a>
-
-## Sicherheit
-
-- Purge-Endpunkte mit `allow` / `deny` oder vorgelagerter Authentifizierung begrenzen. Niemals öffentlich freigeben.
-- `cache_purge_queue_size` passend zur Last wählen, um SHM-Verbrauch bei Anfragefluten zu begrenzen.
-- Purge-Locations gegebenenfalls mit `limit_req` unabhängig vom normalen Verkehr drosseln.
-
-<a id="migration"></a>
-
-## Migration
-
-Änderungen am SHM-Layout erfordern einen vollständigen Neustart. Methoden-/ACL-Syntax und Protokollhandler bleiben erhalten. v4 verwendet standardmäßig JSON, übereinstimmende Ergebniskennungen in Header und Antwortkörper sowie `200 no_match` bei fehlendem Eintrag. `cache_purge_legacy_status` erzeugt nur eine Warnung. Passen Sie Clients an den [HTTP-Vertrag](../HTTP_RESPONSES.md) an. Die Kapazität umfasst zugewiesene Aufgaben; Überlast wartet auf Zulassung. Aktive Duplikate können einen weiteren Durchlauf vormerken.
-
 <a id="localized-examples"></a>
 
-## Übersetzte Konfigurationsbeispiele
+## Konfigurationsbeispiele
 
 Die vollständigen lokalen Beispiele enthalten den Produktkatalog mit REFRESH sowie die klassischen PURGE-Konfigurationen. [Englische Konfigurationsbeispiele](../EXAMPLES.md).
 
+
+<a id="choosing-a-mode"></a>
+
+### Das passende Verhalten wählen
+
+| Ziel | Konfiguration | Bedeutung der Antwort |
+|---|---|---|
+| Veraltete Einträge löschen und den Löschversuch abwarten | PURGE ohne Hintergrundwarteschlange | `200 purged` oder `200 no_match`; bei Fehlern 4xx/5xx |
+| Bereinigung eines Präfixes oder des ganzen Caches einplanen | PURGE mit `cache_purge_background_queue on` | `202 accepted`; alte Einträge können bis zur Bereinigung noch ausgeliefert werden |
+| Alte Inhalte für neue Anfragen sperren, auch bei verspäteten Schreibvorgängen | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; neue Schlüsselgeneration, Dateilöschung folgt |
+| Änderungen beim Ursprungsserver prüfen | Generationen + `proxy_cache_refresh` + internes Profil | `200` mit Ergebnissen pro Eintrag und Fortsetzung; kein Vorbefüllen |
+
+Die Verfahren lassen sich kombinieren: Ein Generationswechsel plant ebenfalls eine Bereinigung ein. Die Warteschlange allein schützt nicht vor verspäteten Schreibvorgängen. Siehe [v4-Beispiel](#localized-examples), [PURGE-Beispiele](#localized-examples) und [HTTP-Antworten](../HTTP_RESPONSES.md) (Englisch).
+
 <details>
-<summary>Übersetzte Konfigurationsbeispiele — 7 Beispiele</summary>
+<summary>Konfigurationsbeispiele — 7 Beispiele</summary>
 
 <a id="generation-and-refresh-example"></a>
 
@@ -275,9 +260,9 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/images/logo.png'
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
+# 200 — Eintrag entfernt
+# 200 + Cache-Purge-Code: no_match — kein passender Cache-Eintrag
+# 403 — Client-IP nicht zugelassen
 ```
 
 <a id="basic--separate-purge-location"></a>
@@ -303,8 +288,8 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
+        # Cache-Schlüssel aus URI erfassen und als Zone/Schlüssel übergeben.
+        # Hier sind weder proxy_pass noch proxy_cache erforderlich.
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
             deny              all;
@@ -376,7 +361,7 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/content/anything'
-# 200 — walk completed; inspect error_log for file errors
+# 200 — Durchlauf abgeschlossen; bei Dateifehlern error_log prüfen
 ```
 
 <a id="json-responses-with-per-location-override"></a>
@@ -395,7 +380,7 @@ http {
         listen 127.0.0.1:8080;
         server_name shop.example.com;
 
-        # Default for all locations in this server.
+        # Standard für alle Locations dieses Servers.
         cache_purge_response_type json;
         location / {
             proxy_pass        http://catalog_backend;
@@ -410,7 +395,7 @@ http {
         location /admin/purge {
             allow 127.0.0.1;
             deny  all;
-            # Override to plain text for scripting
+            # Für Skripte auf Klartext umstellen
             cache_purge_response_type text;
             proxy_cache_purge         main "$arg_key";
         }
@@ -432,6 +417,20 @@ http {
 Nach dem Purge eines Schlüssels werden auch seine gzip- und Vary-Varianten an anderen Dateipfaden automatisch entfernt.
 
 </details>
+
+<a id="security"></a>
+
+## Sicherheit
+
+- Purge-Endpunkte mit `allow` / `deny` oder vorgelagerter Authentifizierung begrenzen. Niemals öffentlich freigeben.
+- `cache_purge_queue_size` passend zur Last wählen, um SHM-Verbrauch bei Anfragefluten zu begrenzen.
+- Purge-Locations gegebenenfalls mit `limit_req` unabhängig vom normalen Verkehr drosseln.
+
+<a id="migration"></a>
+
+## Migration
+
+Änderungen am SHM-Layout erfordern einen vollständigen Neustart. Methoden-/ACL-Syntax und Protokollhandler bleiben erhalten. v4 verwendet standardmäßig JSON, übereinstimmende Ergebniskennungen in Header und Antwortkörper sowie `200 no_match` bei fehlendem Eintrag. `cache_purge_legacy_status` erzeugt nur eine Warnung. Passen Sie Clients an den [HTTP-Vertrag](../HTTP_RESPONSES.md) an. Die Kapazität umfasst zugewiesene Aufgaben; Überlast wartet auf Zulassung. Aktive Duplikate können einen weiteren Durchlauf vormerken.
 
 <a id="documentation"></a>
 

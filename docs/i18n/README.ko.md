@@ -8,14 +8,13 @@
 - [호환성](#compatibility)
 - [배포판 패키지](#distribution-packages)
 - [설치](#installation)
-- [목적에 맞는 동작 선택](#choosing-a-mode)
 - [사용 방법](#usage)
-- [부분 키 삭제](#partial-key-purge)
-- [세대 무효화](#generation-invalidation)
-- **REFRESH** — [원본 서버에서 캐시 내용 확인하기 (REFRESH)](#conditional-refresh)
+  - [부분 키 삭제](#partial-key-purge)
+  - [세대 무효화](#generation-invalidation)
+  - **REFRESH** — [원본 서버에서 캐시 내용 확인하기 (REFRESH)](#conditional-refresh)
+- [설정 예제](#localized-examples)
 - [보안](#security)
 - [마이그레이션](#migration)
-- [번역된 설정 예제](#localized-examples)
 - [문서](#documentation)
 - [관련 자료](#see-also)
 - [라이선스](#license)
@@ -35,7 +34,7 @@
 - **활성 작업 중복 제거** — 인덱스 작업 하나와, 순회 중 받은 반복 삭제에 대해 최대 하나의 대기 재실행
 - **상태** — 공유 큐 뮤텍스를 잡지 않고 읽는 캐시별 큐, 삭제, HIT/MISS 지표
 - **세대 키** — 요청 처리 경로의 디스크 I/O 없이 정확한 키·접두사·네임스페이스 무효화; 늦게 끝난 이전 쓰기는 접근 불가 상태 유지
-- [원본 서버에서 캐시 내용 확인하기 (REFRESH)](#conditional-refresh)
+- **[원본 서버에서 캐시 내용 확인하기 (REFRESH)](#conditional-refresh)**
 
 <a id="compatibility"></a>
 
@@ -69,29 +68,15 @@ make modules
 
 서버에 설치된 NGINX와 같은 버전의 소스 코드를 사용하세요. `--with-compat`는 임의의 NGINX 버전이나 C 라이브러리 간 호환성을 보장하지 않습니다. 자세한 내용은 [동적 모듈 및 릴리스 아카이브](../BINARY_MODULES.md)(영문)를 참고하세요.
 
-<a id="choosing-a-mode"></a>
-
-## 목적에 맞는 동작 선택
-
-| 목적 | 설정 | 응답 의미 |
-|---|---|---|
-| 오래된 항목을 삭제하고 삭제 시도가 끝날 때까지 대기 | 백그라운드 큐를 끄고 PURGE | `200 purged` 또는 `200 no_match`; 오류는 4xx/5xx |
-| 접두사별 또는 전체 캐시 정리 예약 | PURGE와 `cache_purge_background_queue on` | `202 accepted`; 대기 중에는 이전 항목이 제공될 수 있음 |
-| 늦게 기록된 파일을 포함해 이전 내용을 새 요청에서 사용하지 못하게 차단 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; 새 키 세대를 사용하고 파일은 나중에 삭제 |
-| 원본 내용의 변경 여부 확인 | 키 세대 + `proxy_cache_refresh` + 내부 프로필 | 항목별 결과와 이어서 처리할 정보를 담은 `200`; 캐시를 미리 채우지 않음 |
-
-이 기능들은 함께 사용할 수 있습니다. 세대 변경도 파일 정리를 예약합니다. 큐만으로는 늦은 쓰기로 이전 내용이 다시 사용되는 문제를 막을 수 없습니다. [v4 예제](#localized-examples), [PURGE 예제](#localized-examples), [HTTP 응답](../HTTP_RESPONSES.md) (영문)을 참고하세요.
-
 <a id="usage"></a>
 
 ## 사용 방법
 
-[→ 번역된 설정 예제](#localized-examples)
-
+[→ 설정 예제](#localized-examples)
 
 <a id="partial-key-purge"></a>
 
-## 부분 키 삭제
+### 부분 키 삭제
 
 **평가된 캐시 키** 뒤에 `*`를 붙이면 대소문자를 구분하지 않는 접두사 일치를 사용합니다. 정확 키와 Vary는 대소문자를 구분합니다. 물리적 정리 접두사는 마지막 `*`를 제외하고 최대 511바이트입니다. 더 길면 한 번 로그를 남기고 파일 순회 없이 `400 invalid_selector`를 반환합니다.
 
@@ -107,13 +92,13 @@ PURGE /images/header*
 
 <a id="generation-invalidation"></a>
 
-## 세대 무효화
+### 세대 무효화
 
 키 세대를 사용하면 PURGE 완료 후 새 요청이 이전 콘텐츠를 HIT하지 않습니다. 늦게 기록된 이전 응답도 새 요청에 사용되지 않습니다. 파일 삭제는 별도로 진행됩니다. 네임스페이스는 무효화 규칙을 공유하는 단위이며, 재시작할 때 상태 디렉터리를 보존해야 합니다.
 
 <a id="conditional-refresh"></a>
 
-## 원본 서버에서 캐시 내용 확인하기 (REFRESH)
+### 원본 서버에서 캐시 내용 확인하기 (REFRESH)
 
 REFRESH는 저장된 ETag와 Last-Modified로 동일한 원본 표현에 HEAD를 보냅니다. 상품 페이지가 변경된 사실을 안다면 PURGE를 사용하세요. REFRESH는 새 본문을 받거나 빈 캐시를 채우거나 TTL을 연장하지 않습니다. [HTTP / REFRESH](../REFRESH.md).
 
@@ -129,28 +114,28 @@ REFRESH는 저장된 ETag와 Last-Modified로 동일한 원본 표현에 HEAD를
 | 내부 무효화/할당 오류 | 유지; `invalidation_error` |
 | 페이지 정지 전 제출/완료되지 않은 작업 | `undispatched`; 커서가 이를 넘지 않음 |
 
-<a id="security"></a>
-
-## 보안
-
-- 삭제 엔드포인트를 `allow` / `deny` 또는 앞단 인증으로 제한하고 공개하지 마십시오.
-- 요청 폭주에서 공유 메모리를 제한하도록 트래픽에 맞는 `cache_purge_queue_size`를 설정하십시오.
-- 일반 트래픽과 별개로 PURGE 속도를 제한하려면 `limit_req` 조합을 고려하십시오.
-
-<a id="migration"></a>
-
-## 마이그레이션
-
-SHM 구조 변경은 전체 재시작이 필요합니다. 메서드/ACL 구문과 프로토콜 핸들러는 유지됩니다. v4는 기본 JSON, 헤더와 본문의 동일한 결과 코드, 항목 부재 시 `200 no_match`를 사용합니다. `cache_purge_legacy_status`는 경고만 출력합니다. [HTTP 응답 규약](../HTTP_RESPONSES.md)에 맞게 클라이언트를 갱신하십시오. 용량에는 배정된 작업도 포함되며 과부하 요청은 수락을 기다립니다. 활성 중복 작업은 재실행을 예약할 수 있습니다.
-
 <a id="localized-examples"></a>
 
-## 번역된 설정 예제
+## 설정 예제
 
 전체 예제에는 REFRESH를 사용하는 상품 카탈로그와 일반 PURGE 구성이 포함됩니다. [영어 설정 예제](../EXAMPLES.md).
 
+
+<a id="choosing-a-mode"></a>
+
+### 목적에 맞는 동작 선택
+
+| 목적 | 설정 | 응답 의미 |
+|---|---|---|
+| 오래된 항목을 삭제하고 삭제 시도가 끝날 때까지 대기 | 백그라운드 큐를 끄고 PURGE | `200 purged` 또는 `200 no_match`; 오류는 4xx/5xx |
+| 접두사별 또는 전체 캐시 정리 예약 | PURGE와 `cache_purge_background_queue on` | `202 accepted`; 대기 중에는 이전 항목이 제공될 수 있음 |
+| 늦게 기록된 파일을 포함해 이전 내용을 새 요청에서 사용하지 못하게 차단 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; 새 키 세대를 사용하고 파일은 나중에 삭제 |
+| 원본 내용의 변경 여부 확인 | 키 세대 + `proxy_cache_refresh` + 내부 프로필 | 항목별 결과와 이어서 처리할 정보를 담은 `200`; 캐시를 미리 채우지 않음 |
+
+이 기능들은 함께 사용할 수 있습니다. 세대 변경도 파일 정리를 예약합니다. 큐만으로는 늦은 쓰기로 이전 내용이 다시 사용되는 문제를 막을 수 없습니다. [v4 예제](#localized-examples), [PURGE 예제](#localized-examples), [HTTP 응답](../HTTP_RESPONSES.md) (영문)을 참고하세요.
+
 <details>
-<summary>번역된 설정 예제 — 예제 7개</summary>
+<summary>설정 예제 — 예제 7개</summary>
 
 <a id="generation-and-refresh-example"></a>
 
@@ -275,9 +260,9 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/images/logo.png'
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
+# 200 — 항목 삭제됨
+# 200 + Cache-Purge-Code: no_match — 일치하는 캐시 항목 없음
+# 403 — 클라이언트 IP가 허용 목록에 없음
 ```
 
 <a id="basic--separate-purge-location"></a>
@@ -303,8 +288,8 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
+        # URI에서 캐시 키를 추출하여 영역/키 형식으로 전달합니다.
+        # 이 location에는 proxy_pass나 proxy_cache가 필요하지 않습니다.
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
             deny              all;
@@ -376,7 +361,7 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/content/anything'
-# 200 — walk completed; inspect error_log for file errors
+# 200 — 탐색 완료; 파일 오류는 error_log 확인
 ```
 
 <a id="json-responses-with-per-location-override"></a>
@@ -395,7 +380,7 @@ http {
         listen 127.0.0.1:8080;
         server_name shop.example.com;
 
-        # Default for all locations in this server.
+        # 이 서버의 모든 location에 적용되는 기본값.
         cache_purge_response_type json;
         location / {
             proxy_pass        http://catalog_backend;
@@ -410,7 +395,7 @@ http {
         location /admin/purge {
             allow 127.0.0.1;
             deny  all;
-            # Override to plain text for scripting
+            # 스크립트용 일반 텍스트로 변경
             cache_purge_response_type text;
             proxy_cache_purge         main "$arg_key";
         }
@@ -432,6 +417,20 @@ http {
 키를 삭제하면 다른 파일 경로에 저장된 모든 gzip/Vary 변형도 자동으로 삭제됩니다.
 
 </details>
+
+<a id="security"></a>
+
+## 보안
+
+- 삭제 엔드포인트를 `allow` / `deny` 또는 앞단 인증으로 제한하고 공개하지 마십시오.
+- 요청 폭주에서 공유 메모리를 제한하도록 트래픽에 맞는 `cache_purge_queue_size`를 설정하십시오.
+- 일반 트래픽과 별개로 PURGE 속도를 제한하려면 `limit_req` 조합을 고려하십시오.
+
+<a id="migration"></a>
+
+## 마이그레이션
+
+SHM 구조 변경은 전체 재시작이 필요합니다. 메서드/ACL 구문과 프로토콜 핸들러는 유지됩니다. v4는 기본 JSON, 헤더와 본문의 동일한 결과 코드, 항목 부재 시 `200 no_match`를 사용합니다. `cache_purge_legacy_status`는 경고만 출력합니다. [HTTP 응답 규약](../HTTP_RESPONSES.md)에 맞게 클라이언트를 갱신하십시오. 용량에는 배정된 작업도 포함되며 과부하 요청은 수락을 기다립니다. 활성 중복 작업은 재실행을 예약할 수 있습니다.
 
 <a id="documentation"></a>
 

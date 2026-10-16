@@ -8,14 +8,13 @@
 - [Uyumluluk](#compatibility)
 - [Dağıtım paketleri](#distribution-packages)
 - [Kurulum](#installation)
-- [Gereken davranışı seçin](#choosing-a-mode)
 - [Kullanım](#usage)
-- [Kısmi anahtarla temizleme](#partial-key-purge)
-- [Nesil geçersizleştirmesi](#generation-invalidation)
-- **REFRESH** — [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
+  - [Kısmi anahtarla temizleme](#partial-key-purge)
+  - [Nesil geçersizleştirmesi](#generation-invalidation)
+  - **REFRESH** — [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
+- [Yapılandırma örnekleri](#localized-examples)
 - [Güvenlik](#security)
 - [Geçiş](#migration)
-- [Çevrilmiş yapılandırma örnekleri](#localized-examples)
 - [Belgeler](#documentation)
 - [Ayrıca bakınız](#see-also)
 - [Lisans](#license)
@@ -35,7 +34,7 @@
 - **Etkin görev tekilleştirmesi** — bir indeksli işlem ve tarama sırasında gelen tekrarlar için en fazla bir bekleyen yeniden tarama
 - **Durum** — ortak kuyruk mutex’ini almadan okunan, önbellek bazında kuyruk, silme ve HIT/MISS ölçümleri
 - **Nesil anahtarları** — isteğin işlenme yolunda disk G/Ç’si olmadan tam anahtar, önek ve ad alanı geçersizleştirmesi; geç tamamlanan eski yazmalar erişilemez kalır
-- [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
+- **[Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)**
 
 <a id="compatibility"></a>
 
@@ -69,29 +68,15 @@ make modules
 
 Sunucuda kurulu NGINX sürümüyle aynı sürümün kaynak kodunu kullanın. `--with-compat`, farklı NGINX sürümleri veya C kütüphaneleri arasında koşulsuz uyumluluk sağlamaz. Bkz. [dinamik modüller ve sürüm arşivleri](../BINARY_MODULES.md) (İngilizce).
 
-<a id="choosing-a-mode"></a>
-
-## Gereken davranışı seçin
-
-| Amaç | Yapılandırma | Yanıtın anlamı |
-|---|---|---|
-| Eski kayıtları silmek ve silme girişimini beklemek | Arka plan kuyruğu kapalı PURGE | `200 purged` veya `200 no_match`; hata durumunda 4xx/5xx |
-| Öneke göre veya tüm önbellek için temizlik planlamak | PURGE ve `cache_purge_background_queue on` | `202 accepted`; temizlik beklerken eski kayıtlar sunulabilir |
-| Geç yazılan dosyalar dahil eski içeriği yeni isteklere kapatmak | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; yeni anahtar nesli kullanılır, dosyalar sonra silinir |
-| Kaynak sunucudaki değişiklikleri denetlemek | Nesiller + `proxy_cache_refresh` + dahili profil | `200`, kayıt başına sonuç ve devam bilgisi; önbelleği önceden doldurmaz |
-
-Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyruk tek başına geç yazmalara karşı koruma sağlamaz. [v4 örneğine](#localized-examples), [PURGE örneklerine](#localized-examples) ve [HTTP yanıtlarına](../HTTP_RESPONSES.md) (İngilizce) bakın.
-
 <a id="usage"></a>
 
 ## Kullanım
 
-[→ Çevrilmiş yapılandırma örnekleri](#localized-examples)
-
+[→ Yapılandırma örnekleri](#localized-examples)
 
 <a id="partial-key-purge"></a>
 
-## Kısmi anahtarla temizleme
+### Kısmi anahtarla temizleme
 
 **Değerlendirilmiş önbellek anahtarına** `*` ekleyerek büyük/küçük harfe duyarsız önek eşleşmesi isteyin. Tam anahtar ve Vary eşleşmeleri harf boyutuna duyarlıdır. Fiziksel temizleme öneki, sondaki `*` hariç 511 bayt olabilir. Daha uzun önek bir kez günlüğe yazılır ve dosyalar taranmadan `400 invalid_selector` döndürür.
 
@@ -107,13 +92,13 @@ Yıldız yalnızca URI yolunun değil, değerlendirilmiş anahtarın son baytı 
 
 <a id="generation-invalidation"></a>
 
-## Nesil geçersizleştirmesi
+### Nesil geçersizleştirmesi
 
 Anahtar nesilleri, PURGE sonrasındaki yeni isteklerin eski içeriği kullanmasını engeller; geç yazılan eski yanıtlar da buna dahildir. Dosyalar ayrıca silinir. Ad alanı geçersizleştirme kurallarını paylaşır; durum dizinini yeniden başlatmalar arasında koruyun.
 
 <a id="conditional-refresh"></a>
 
-## Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)
+### Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)
 
 REFRESH, önbellekteki ETag ve Last-Modified değerleriyle aynı kaynak gösterimine HEAD gönderir. Ürün sayfasının eski olduğunu biliyorsanız PURGE kullanın. REFRESH yeni gövde indirmez, boş önbelleği doldurmaz ve TTL’yi uzatmaz. [HTTP / REFRESH](../REFRESH.md).
 
@@ -129,28 +114,28 @@ REFRESH, önbellekteki ETag ve Last-Modified değerleriyle aynı kaynak gösteri
 | İç geçersizleştirme/ayırma hatası | Koru; `invalidation_error` |
 | Sayfa durmadan gönderilemeyen/bitmeyen iş | `undispatched`; imleç üzerinden geçmez |
 
-<a id="security"></a>
-
-## Güvenlik
-
-- Purge uç noktalarını `allow` / `deny` veya öndeki kimlik doğrulamayla sınırlayın. Herkese açmayın.
-- İstek selinde ortak belleği sınırlamak için trafiğe uygun `cache_purge_queue_size` belirleyin.
-- Normal trafikten ayrı purge hız sınırlaması için `limit_req` kullanmayı değerlendirin.
-
-<a id="migration"></a>
-
-## Geçiş
-
-SHM yapısı değişiklikleri tam yeniden başlatma gerektirir. Yöntem/ACL sözdizimi ve protokol işleyicileri korunur. v4 varsayılan JSON, başlık ve gövdede aynı sonuç kodları ve bulunamayan kayıtlar için `200 no_match` kullanır. `cache_purge_legacy_status` yalnızca uyarı üretir. İstemcileri [HTTP sözleşmesine](../HTTP_RESPONSES.md) göre güncelleyin. Kapasite atanmış görevleri de içerir; aşırı yükte istek kabul bekler. Etkin yinelenen görevler yeni bir geçiş planlayabilir.
-
 <a id="localized-examples"></a>
 
-## Çevrilmiş yapılandırma örnekleri
+## Yapılandırma örnekleri
 
 Tam örnekler, REFRESH kullanan ürün kataloğunu ve standart PURGE yapılandırmalarını kapsar. [İngilizce yapılandırma örnekleri](../EXAMPLES.md).
 
+
+<a id="choosing-a-mode"></a>
+
+### Gereken davranışı seçin
+
+| Amaç | Yapılandırma | Yanıtın anlamı |
+|---|---|---|
+| Eski kayıtları silmek ve silme girişimini beklemek | Arka plan kuyruğu kapalı PURGE | `200 purged` veya `200 no_match`; hata durumunda 4xx/5xx |
+| Öneke göre veya tüm önbellek için temizlik planlamak | PURGE ve `cache_purge_background_queue on` | `202 accepted`; temizlik beklerken eski kayıtlar sunulabilir |
+| Geç yazılan dosyalar dahil eski içeriği yeni isteklere kapatmak | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; yeni anahtar nesli kullanılır, dosyalar sonra silinir |
+| Kaynak sunucudaki değişiklikleri denetlemek | Nesiller + `proxy_cache_refresh` + dahili profil | `200`, kayıt başına sonuç ve devam bilgisi; önbelleği önceden doldurmaz |
+
+Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyruk tek başına geç yazmalara karşı koruma sağlamaz. [v4 örneğine](#localized-examples), [PURGE örneklerine](#localized-examples) ve [HTTP yanıtlarına](../HTTP_RESPONSES.md) (İngilizce) bakın.
+
 <details>
-<summary>Çevrilmiş yapılandırma örnekleri — 7 örnek</summary>
+<summary>Yapılandırma örnekleri — 7 örnek</summary>
 
 <a id="generation-and-refresh-example"></a>
 
@@ -275,9 +260,9 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/images/logo.png'
-# 200 — entry purged
-# 200 + Cache-Purge-Code: no_match
-# 403 — client IP not in the allowed list
+# 200 — kayıt temizlendi
+# 200 + Cache-Purge-Code: no_match — eşleşen önbellek kaydı yok
+# 403 — istemci IP adresine izin verilmiyor
 ```
 
 <a id="basic--separate-purge-location"></a>
@@ -303,8 +288,8 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # Capture the cache key from the URI and pass it to the zone/key form.
-        # No proxy_pass or proxy_cache required in this location.
+        # Önbellek anahtarını URI’den alıp bölge/anahtar olarak iletin.
+        # Bu location içinde proxy_pass ve proxy_cache gerekmez.
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
             deny              all;
@@ -376,7 +361,7 @@ http {
 ```bash
 curl -i -X PURGE -H 'Host: shop.example.com' \
   'http://127.0.0.1:8080/content/anything'
-# 200 — walk completed; inspect error_log for file errors
+# 200 — tarama tamamlandı; dosya hataları için error_log dosyasını inceleyin
 ```
 
 <a id="json-responses-with-per-location-override"></a>
@@ -395,7 +380,7 @@ http {
         listen 127.0.0.1:8080;
         server_name shop.example.com;
 
-        # Default for all locations in this server.
+        # Bu sunucudaki tüm location blokları için varsayılan.
         cache_purge_response_type json;
         location / {
             proxy_pass        http://catalog_backend;
@@ -410,7 +395,7 @@ http {
         location /admin/purge {
             allow 127.0.0.1;
             deny  all;
-            # Override to plain text for scripting
+            # Betikler için düz metne geç
             cache_purge_response_type text;
             proxy_cache_purge         main "$arg_key";
         }
@@ -432,6 +417,20 @@ http {
 Anahtar temizlenince farklı yollardaki tüm gzip ve Vary çeşitleri otomatik silinir.
 
 </details>
+
+<a id="security"></a>
+
+## Güvenlik
+
+- Purge uç noktalarını `allow` / `deny` veya öndeki kimlik doğrulamayla sınırlayın. Herkese açmayın.
+- İstek selinde ortak belleği sınırlamak için trafiğe uygun `cache_purge_queue_size` belirleyin.
+- Normal trafikten ayrı purge hız sınırlaması için `limit_req` kullanmayı değerlendirin.
+
+<a id="migration"></a>
+
+## Geçiş
+
+SHM yapısı değişiklikleri tam yeniden başlatma gerektirir. Yöntem/ACL sözdizimi ve protokol işleyicileri korunur. v4 varsayılan JSON, başlık ve gövdede aynı sonuç kodları ve bulunamayan kayıtlar için `200 no_match` kullanır. `cache_purge_legacy_status` yalnızca uyarı üretir. İstemcileri [HTTP sözleşmesine](../HTTP_RESPONSES.md) göre güncelleyin. Kapasite atanmış görevleri de içerir; aşırı yükte istek kabul bekler. Etkin yinelenen görevler yeni bir geçiş planlayabilir.
 
 <a id="documentation"></a>
 

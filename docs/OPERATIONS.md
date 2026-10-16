@@ -2,6 +2,14 @@
 
 Configuration reference: [directives](DIRECTIVES.md).
 
+<a id="generation-invalidation"></a>
+
+## Generation-key invalidation
+
+Use generation keys when newly arriving requests must stop using stale content as soon as PURGE completes. A request already fetching from the origin may finish later, but its old cache write cannot become a HIT for new requests. Physical files are deleted separately.
+
+A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
+
 <a id="performance-tuning"></a>
 
 ## Performance tuning
