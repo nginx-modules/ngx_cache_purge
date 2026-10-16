@@ -17,6 +17,7 @@
 - [مهاجرت](#migration)
 - [مستندات](#documentation)
 - [پیوندهای مرتبط](#see-also)
+- [حامیان](#sponsors)
 - [مجوز](#license)
 
 <a id="features"></a>
@@ -516,6 +517,13 @@ http {
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [مستندات nginx](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## حامیان
+
+از سازمان‌های زیر که ابزارها و خدمات خود را برای پشتیبانی از توسعه و نگهداری `ngx_cache_purge` به‌عنوان یک پروژهٔ متن‌باز به‌رایگان ارائه می‌کنند، سپاسگزاریم:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - ابزار تحلیل ایستای کد برای توسعهٔ نرم‌افزارهای سازمانی (C، C++، C#، Go و Java) و وب (JS و TS).
 
 <a id="license"></a>
 

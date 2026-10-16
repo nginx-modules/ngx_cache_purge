@@ -17,6 +17,7 @@
 - [마이그레이션](#migration)
 - [문서](#documentation)
 - [관련 자료](#see-also)
+- [후원사](#sponsors)
 - [라이선스](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ SHM 구조 변경은 전체 재시작이 필요합니다. 메서드/ACL 구문�
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx 문서](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## 후원사
+
+오픈 소스 프로젝트인 `ngx_cache_purge`의 개발과 유지보수를 지원하기 위해 도구와 서비스를 무료로 제공하는 다음 기관에 감사드립니다:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - 기업용 소프트웨어(C, C++, C#, Go, Java) 및 웹(JS, TS) 개발을 위한 정적 코드 분석 도구.
 
 <a id="license"></a>
 

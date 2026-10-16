@@ -17,6 +17,7 @@
 - [迁移](#migration)
 - [文档](#documentation)
 - [另请参阅](#see-also)
+- [赞助方](#sponsors)
 - [许可证](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ http {
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx documentation](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## 赞助方
+
+感谢以下组织免费提供工具和服务，支持 `ngx_cache_purge` 这一开源项目的开发与维护：
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - 静态代码分析工具，适用于企业级软件（C、C++、C#、Go 和 Java）及 Web（JS 和 TS）开发。
 
 <a id="license"></a>
 

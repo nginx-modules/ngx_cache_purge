@@ -17,6 +17,7 @@
 - [Geçiş](#migration)
 - [Belgeler](#documentation)
 - [Ayrıca bakınız](#see-also)
+- [Sponsorlar](#sponsors)
 - [Lisans](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ SHM yapısı değişiklikleri tam yeniden başlatma gerektirir. Yöntem/ACL söz
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx belgeleri](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Sponsorlar
+
+Açık kaynaklı bir proje olan `ngx_cache_purge` modülünün geliştirilmesini ve bakımını desteklemek amacıyla araç ve hizmetlerini ücretsiz sunan aşağıdaki kuruluşlara teşekkür ederiz:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - kurumsal yazılım (C, C++, C#, Go ve Java) ve web (JS ve TS) geliştirme için statik kod analiz aracı.
 
 <a id="license"></a>
 

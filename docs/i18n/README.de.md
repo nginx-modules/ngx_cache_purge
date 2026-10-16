@@ -17,6 +17,7 @@
 - [Migration](#migration)
 - [Dokumentation](#documentation)
 - [Weitere Informationen](#see-also)
+- [Sponsoren](#sponsors)
 - [Lizenz](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ Nach dem Purge eines Schlüssels werden auch seine gzip- und Vary-Varianten an a
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx documentation](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Sponsoren
+
+Wir danken den folgenden Organisationen, die Werkzeuge und Dienste kostenlos bereitstellen und damit die Entwicklung und Wartung von `ngx_cache_purge` als Open-Source-Projekt unterstützen:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - Werkzeug zur statischen Codeanalyse für die Entwicklung von Unternehmenssoftware (C, C++, C#, Go und Java) und Webanwendungen (JS und TS).
 
 <a id="license"></a>
 

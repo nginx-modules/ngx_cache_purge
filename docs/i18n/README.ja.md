@@ -17,6 +17,7 @@
 - [移行](#migration)
 - [ドキュメント](#documentation)
 - [関連情報](#see-also)
+- [スポンサー](#sponsors)
 - [ライセンス](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ SHM レイアウト変更には完全再起動が必要です。メソッド／A
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx documentation](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## スポンサー
+
+オープンソースプロジェクトである `ngx_cache_purge` の開発と保守を支援するため、ツールやサービスを無償で提供してくださる以下の組織に感謝します：
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - 企業向けソフトウェア（C、C++、C#、Go、Java）および Web（JS、TS）開発向けの静的コード解析ツール。
 
 <a id="license"></a>
 

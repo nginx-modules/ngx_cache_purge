@@ -17,6 +17,7 @@
 - [Миграция](#migration)
 - [Документация](#documentation)
 - [См. также](#see-also)
+- [Спонсоры](#sponsors)
 - [Лицензия](#license)
 
 <a id="features"></a>
@@ -456,6 +457,13 @@ http {
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [Документация nginx](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Спонсоры
+
+Благодарим следующие организации за бесплатное предоставление инструментов и сервисов для разработки и сопровождения `ngx_cache_purge` как проекта с открытым исходным кодом:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - статический анализатор кода для разработки корпоративного ПО (C, C++, C#, Go и Java) и веб-приложений (JS и TS).
 
 <a id="license"></a>
 

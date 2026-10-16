@@ -21,6 +21,7 @@ An NGINX module for removing entries from `FastCGI`, `proxy`, `SCGI` and `uWSGI`
 - [Migration](#migration)
 - [Documentation](#documentation)
 - [See also](#see-also)
+- [Sponsors](#sponsors)
 - [License](#license)
 
 <a id="features"></a>
@@ -152,6 +153,13 @@ v4 defaults to JSON and returns `200 no_match` for a missing entry. `cache_purge
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [nginx documentation](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Sponsors
+
+We thank the following organizations for providing tools and services free of charge to support the development and maintenance of `ngx_cache_purge` as an open-source project:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - static code analyzer for Enterprise (C, C++, C#, Go, and Java) and Web (JS and TS) development.
 
 <a id="license"></a>
 

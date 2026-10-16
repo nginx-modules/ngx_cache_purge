@@ -17,6 +17,7 @@
 - [Chuyển đổi](#migration)
 - [Tài liệu](#documentation)
 - [Xem thêm](#see-also)
+- [Nhà tài trợ](#sponsors)
 - [Giấy phép](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ Thay đổi cấu trúc SHM cần khởi động lại hoàn toàn. Cú pháp ph
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [Tài liệu nginx](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Nhà tài trợ
+
+Chúng tôi cảm ơn các tổ chức sau đã cung cấp miễn phí công cụ và dịch vụ để hỗ trợ phát triển và bảo trì `ngx_cache_purge` như một dự án mã nguồn mở:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - công cụ phân tích mã tĩnh dành cho phát triển phần mềm doanh nghiệp (C, C++, C#, Go và Java) và web (JS và TS).
 
 <a id="license"></a>
 

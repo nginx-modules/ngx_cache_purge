@@ -17,6 +17,7 @@
 - [Migração](#migration)
 - [Documentação](#documentation)
 - [Veja também](#see-also)
+- [Patrocinadores](#sponsors)
 - [Licença](#license)
 
 <a id="features"></a>
@@ -452,6 +453,13 @@ Mudanças na estrutura SHM exigem reinício completo. A sintaxe método/ACL e os
 - [ngx_slowfs_cache](https://github.com/FRiCKLE/ngx_slowfs_cache)
 - [nginx-selective-cache-purge-module](https://github.com/wandenberg/nginx-selective-cache-purge-module)
 - [Documentação nginx](https://nginx.org/en/docs/)
+
+<a id="sponsors"></a>
+
+## Patrocinadores
+
+Agradecemos às seguintes organizações por disponibilizarem gratuitamente ferramentas e serviços que apoiam o desenvolvimento e a manutenção do `ngx_cache_purge` como projeto de código aberto:
+- [PVS-Studio](https://pvs-studio.com/en/pvs-studio/?utm_source=website&utm_medium=github&utm_campaign=open_source) - analisador estático de código para desenvolvimento de software corporativo (C, C++, C#, Go e Java) e aplicações web (JS e TS).
 
 <a id="license"></a>
 
