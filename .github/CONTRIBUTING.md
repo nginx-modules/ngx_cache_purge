@@ -6,10 +6,11 @@ Thank you for contributing! To maintain a clean workflow, please follow our bran
 
 ## 📌 Branching Model & Workflow
 
-* **`master` Branch:** 
+* **`main` Branch:**
   All active development, new features (currently targeting **v4**), and major updates must be submitted against `main`.
 * **Release / Maintenance Branches:** 
-  Older versions are frozen into dedicated release branches:
+  Maintenance and backports use dedicated release branches, when available:
+  * **`releases/4.0`** (4.0.x releases)
   * **`releases/3.0`** (v3.0.x releases)
   * **`releases/2.5`** (v2.5.x releases)
   

@@ -33,8 +33,8 @@ The release matrix pins one current stable and one current mainline version, eac
 
 Example archive names:
 
-- `ngx_cache_purge-v4.0.0-nginx-1.31.7-linux-x86_64.tar.gz`
-- `ngx_cache_purge-v4.0.0-nginx-1.31.7-linux-aarch64.zip`
+- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz`
+- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-aarch64.zip`
 
 Both formats contain the same module, license, instructions, `SHA256SUMS` for the module and `BUILD-INFO.txt`. Build information records the commit, source archive hash, configure options, compiler, build OS, glibc and ELF dependencies. The build uses pinned Ubuntu 24.04 runners and glibc. The OS version is omitted from the archive name, not from the compatibility information. These are not Alpine/musl binaries; musl would require a separate build and clearly distinguished asset name.
 
@@ -42,7 +42,7 @@ Download the release-level `SHA256SUMS` alongside the archives to check their ha
 
 ## Publishing an immutable release
 
-Push an existing `v4.*` tag to start CI. After the required CI jobs pass, four native jobs compile NGINX and the dynamic module, check that NGINX loads the module and accepts a purge configuration, and produce eight archives. The publishing job requires the complete set, creates or resumes a draft, uploads the archives and checksums, downloads them again and verifies their hashes before publishing.
+Push an existing `4.*` tag (for example `4.0.0` without a `v` prefix) to start CI. After the required CI jobs pass, four native jobs compile NGINX and the dynamic module, check that NGINX loads the module and accepts a purge configuration, and produce eight archives. The publishing job requires the complete set, creates or resumes a draft, uploads the archives and checksums, downloads them again and verifies their hashes before publishing.
 
 Do not publish the release manually before this workflow finishes. With [immutable releases](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository), assets must be attached before publication. A failed upload leaves a draft that can be retried. A rerun refuses to modify an already published release. Unexpected assets in an existing draft block publication rather than silently becoming part of the release.
 
@@ -56,7 +56,7 @@ Each release matrix job runs two clean builds in different temporary directories
 The build uses the commit timestamp as `SOURCE_DATE_EPOCH`, normalizes compiler source paths, and fixes archive entry order, timestamps and ownership. `BUILD-INFO.txt` records compiler, linker, packaging tools, installed package versions and source hashes. To repeat the check locally in the same compatible Linux build environment, run from the module checkout:
 
 ```sh
-export NGINX_VERSION=1.31.7 MODULE_VERSION=v4.0.0
+export NGINX_VERSION=1.31.7 MODULE_VERSION=4.0.0
 bash tools/build-release-module.sh
 bash tools/verify-release-rebuild.sh
 ```
@@ -66,7 +66,7 @@ This is a same-environment repeat-build check. Hosted runner images and APT repo
 [Build provenance attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) identify the source commit and GitHub Actions workflow that produced the archives. Verify a downloaded archive with:
 
 ```sh
-gh attestation verify ngx_cache_purge-v4.0.0-nginx-1.31.7-linux-x86_64.tar.gz \
+gh attestation verify ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz \
     -R nginx-modules/ngx_cache_purge
 ```
 

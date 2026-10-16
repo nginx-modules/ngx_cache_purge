@@ -34,7 +34,7 @@ elif command == 'download':
 
 
 class ReleasePublication(unittest.TestCase):
-    def run_release(self, mode='', missing=False):
+    def run_release(self, mode='', missing=False, tag='4.0.0'):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / 'bin').mkdir()
@@ -43,12 +43,12 @@ class ReleasePublication(unittest.TestCase):
             gh = root / 'bin' / 'gh'
             gh.write_text(GH)
             gh.chmod(0o755)
-            assets = [f'ngx_cache_purge-v4.0.0-nginx-{v}-linux-{a}.{e}'
+            assets = [f'ngx_cache_purge-{tag}-nginx-{v}-linux-{a}.{e}'
                       for v in ('1.30.6', '1.31.7')
                       for a in ('x86_64', 'aarch64') for e in ('tar.gz', 'zip')]
             for name in assets[1:] if missing else assets:
                 (root / 'dist' / name).write_bytes(name.encode())
-            env = dict(os.environ, RELEASE_TAG='v4.0.0', FAKE_GH_ROOT=tmp,
+            env = dict(os.environ, RELEASE_TAG=tag, FAKE_GH_ROOT=tmp,
                        FAKE_GH_MODE=mode, PATH=f'{root / "bin"}:{os.environ["PATH"]}')
             result = subprocess.run(['bash', str(ROOT / 'tools/publish-release.sh')],
                                     cwd=root, env=env, capture_output=True, text=True)
@@ -60,6 +60,19 @@ class ReleasePublication(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"--draft"', calls)
         self.assertLess(calls.index('"download"'), calls.index('"edit"'))
+
+    def test_prerelease_tag_is_accepted(self):
+        result, calls = self.run_release('new', tag='4.0.0-rc.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"--prerelease"', calls)
+
+    def test_invalid_tags_fail_before_github_operations(self):
+        for tag in ('v4.0.0', '4.0', '4.0.0.1', '5.0.0', '4.0.0-'):
+            with self.subTest(tag=tag):
+                result, calls = self.run_release('new', tag=tag)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Invalid RELEASE_TAG', result.stderr)
+                self.assertEqual(calls, '')
 
     def test_existing_draft_resumes(self):
         result, calls = self.run_release()
@@ -84,6 +97,24 @@ class ReleasePublication(unittest.TestCase):
                 result, calls = self.run_release(mode)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn('"edit"', calls)
+
+
+class ReleaseTagContract(unittest.TestCase):
+    def test_workflow_filters_match_unprefixed_release_tags(self):
+        workflow = (ROOT / '.github/workflows/build-test-release.yml').read_text()
+        self.assertIn("tags: ['4.*']", workflow)
+        self.assertEqual(workflow.count("startsWith(github.ref, 'refs/tags/4.')"), 2)
+        self.assertNotIn('refs/tags/v4.', workflow)
+        self.assertIn('name: Rebuild check\n', workflow)
+
+    def test_builder_rejects_prefixed_and_invalid_module_versions(self):
+        for version in ('v4.0.0', '4.0', '5.0.0', '4.0.0.1'):
+            with self.subTest(version=version):
+                env = dict(os.environ, MODULE_VERSION=version, NGINX_VERSION='1.31.7')
+                result = subprocess.run(['bash', str(ROOT / 'tools/build-release-module.sh')],
+                                        cwd=ROOT, env=env, capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('Invalid MODULE_VERSION', result.stderr)
 
 
 class ValgrindGate(unittest.TestCase):

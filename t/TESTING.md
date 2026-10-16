@@ -338,8 +338,9 @@ runs on code pull requests and is required by the final CI gate.
 
 Push and pull-request branches remain `main`, `releases/**` and `dev/**`.
 Extended checks run weekly, with `workflow_dispatch` input `full`, on release
-branches and on `v4.*` tags. Documentation-only changes skip builds; an unknown
-comparison base conservatively runs them. The stable `CI` check summarizes
+branches and on `4.*` tags (for example `4.0.0`, without a `v` prefix).
+Documentation-only changes skip builds; an unknown comparison base
+conservatively runs them. The stable `CI` check summarizes
 all selected jobs and fails on failures, cancellations or unexpected skips.
 Use that check for branch protection. The release job requires it to succeed.
 Matrix groups allow at most two simultaneous jobs; a new run cancels an older

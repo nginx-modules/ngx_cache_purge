@@ -4,7 +4,10 @@ set -euo pipefail
 : "${NGINX_VERSION:?Set the exact NGINX version}"
 : "${MODULE_VERSION:?Set the module release tag}"
 [[ "$NGINX_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-[[ "$MODULE_VERSION" =~ ^v4\.[0-9A-Za-z._-]+$ ]]
+if [[ ! "$MODULE_VERSION" =~ ^4\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+    echo "Invalid MODULE_VERSION: expected 4.x.y[-prerelease] without a v prefix" >&2
+    exit 1
+fi
 module_dir=$(pwd)
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]

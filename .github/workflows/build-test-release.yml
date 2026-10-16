@@ -3,7 +3,7 @@ name: ngx_cache_purge · Build, Test & Release
 on:
   push:
     branches: [ main, 'releases/**', 'dev/**' ]
-    tags: ['v4.*']
+    tags: ['4.*']
   pull_request:
     branches: [ main, 'releases/**', 'dev/**' ]
   schedule:
@@ -411,7 +411,7 @@ jobs:
       id-token: write
       attestations: write
     needs: ci
-    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/4.') && github.event_name == 'push'
     runs-on: ${{ matrix.platform.runner }}
     timeout-minutes: 30
     strategy:
@@ -454,7 +454,7 @@ jobs:
   create-release:
     name: Publish release with verified assets
     needs: [ci, release-modules]
-    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/4.') && github.event_name == 'push'
     runs-on: ubuntu-24.04
     permissions:
       contents: write

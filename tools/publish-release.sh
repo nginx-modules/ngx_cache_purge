@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 : "${RELEASE_TAG:?Set the existing release tag}"
-[[ "$RELEASE_TAG" =~ ^v4\.[0-9A-Za-z._-]+$ ]]
+if [[ ! "$RELEASE_TAG" =~ ^4\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+    echo "Invalid RELEASE_TAG: expected 4.x.y[-prerelease] without a v prefix" >&2
+    exit 1
+fi
 # Validate the complete matrix before creating or changing any release.
 python3 - "$RELEASE_TAG" <<'PY'
 import pathlib, sys
