@@ -11,7 +11,7 @@ A clear and concise description of what the bug is.
 
 ### Environment
 - Nginx version: 
-- Module version / branch: (e.g. main, releases/3.0, releases/2.5)
+- Module version / branch: (e.g. main, releases/4.0, releases/3.0, releases/2.5)
 - OS / Platform: 
 
 ### To Reproduce

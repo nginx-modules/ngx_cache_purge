@@ -14,5 +14,6 @@ A clear and concise description of what you want to happen.
 
 ### Target Version
 - [ ] `main` (v4)
+- [ ] Requires backporting to `releases/4.0`
 - [ ] Requires backporting to `releases/3.0`
 - [ ] Requires backporting to `releases/2.5`
