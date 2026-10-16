@@ -1,22 +1,28 @@
-#!/bin/sh
-#
-# nginx module build configuration script.
-#
-# This file is dot-sourced by nginx's auto/configure using POSIX sh.  It must
-# be written in strict POSIX sh — no bash-specific syntax (arrays, [[ … ]],
-# process substitution, etc.).  The shebang documents the intended interpreter
-# but has no effect on how configure invokes the script.
-#
-# Convention:
-#   $NGX_AUTOCONF_ERR is nginx's internal build diagnostic log (objs/autoconf.err).
-#   Third-party modules must NOT write to it; that file is reserved for the
-#   nginx build system.  User-facing messages go to stdout.
-#
+# NGINX addon configuration; sourced by auto/configure with POSIX sh.
 
-# ------------------------------------------------------------------
-# Propagate upstream protocol availability into the module's #define
-# guards so that the C source can use #if (NGX_HTTP_PROXY) etc.
-# ------------------------------------------------------------------
+ngx_addon_name=ngx_http_cache_purge_module
+
+# NGX_HAVE_OPENAT covers openat/fstatat only.  Probe the remaining operations
+# together; the module must not assume they exist on every Unix target.
+if [ "$NGX_PLATFORM" != win32 ]; then
+    ngx_feature="cache purge descriptor-relative traversal"
+    ngx_feature_name="NGX_CACHE_PURGE_HAVE_AT"
+    ngx_feature_run=no
+    ngx_feature_incs="#include <dirent.h>
+                      #include <fcntl.h>
+                      #include <sys/stat.h>"
+    ngx_feature_path=
+    ngx_feature_libs=
+    ngx_feature_test='DIR *d; struct stat st; int fd;
+                      fd = openat(AT_FDCWD, ".", O_RDONLY|O_NOFOLLOW|O_DIRECTORY);
+                      d = fdopendir(fd);
+                      fstatat(dirfd(d), ".", &st, AT_SYMLINK_NOFOLLOW);
+                      unlinkat(dirfd(d), "cache-purge-feature-test", 0);
+                      closedir(d);'
+    . auto/feature
+fi
+
+# Mirror the enabled upstream protocols in the module's compile guards.
 if [ "$HTTP_PROXY" = "YES" ]; then
     have=NGX_HTTP_PROXY . auto/have
 fi
@@ -33,33 +39,33 @@ if [ "$HTTP_UWSGI" = "YES" ]; then
     have=NGX_HTTP_UWSGI . auto/have
 fi
 
-# ------------------------------------------------------------------
-# Module identity and sources
-# ------------------------------------------------------------------
-ngx_addon_name=ngx_http_cache_purge_module
-CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_module.c"
+CACHE_PURGE_SRCS="$ngx_addon_dir/ngx_cache_purge_handler.c \
+                  $ngx_addon_dir/ngx_cache_purge_invalidation.c \
+                  $ngx_addon_dir/ngx_cache_purge_module.c \
+                  $ngx_addon_dir/ngx_cache_purge_queue.c \
+                  $ngx_addon_dir/ngx_cache_purge_refresh.c \
+                  $ngx_addon_dir/ngx_cache_purge_response.c \
+                  $ngx_addon_dir/ngx_cache_purge_walk.c"
+CACHE_PURGE_DEPS="$ngx_addon_dir/ngx_cache_purge.h \
+                  $ngx_addon_dir/ngx_cache_purge_invalidation.h \
+                  $ngx_addon_dir/ngx_cache_purge_posix.h \
+                  $ngx_addon_dir/ngx_cache_purge_upstream.h \
+                  $ngx_addon_dir/ngx_cache_purge_win32.h"
 
-# ------------------------------------------------------------------
-# Register the module with nginx's build system.
-#
-# nginx >= 1.9.11 exports $ngx_module_link and uses auto/module for
-# both static (LINK=ADDON) and dynamic (LINK=DYNAMIC) builds.
-# Older versions require manual population of HTTP_MODULES and
-# NGX_ADDON_SRCS.
-# ------------------------------------------------------------------
+# auto/module supports static and dynamic registration since NGINX 1.9.11.
 if [ -n "$ngx_module_link" ]; then
     ngx_module_type=HTTP
     ngx_module_name="$ngx_addon_name"
     ngx_module_srcs="$CACHE_PURGE_SRCS"
-    ngx_module_deps=""
+    ngx_module_deps="$CACHE_PURGE_DEPS"
     ngx_module_libs=""
     . auto/module
 else
     HTTP_MODULES="$HTTP_MODULES $ngx_addon_name"
     NGX_ADDON_SRCS="$NGX_ADDON_SRCS $CACHE_PURGE_SRCS"
+    NGX_ADDON_DEPS="$NGX_ADDON_DEPS $CACHE_PURGE_DEPS"
 fi
 
-# Mark the module as present (used by other modules that may depend on it).
 have=NGX_CACHE_PURGE_MODULE . auto/have
 
 echo "  + ngx_cache_purge module added"

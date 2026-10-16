@@ -1,2 +1,6 @@
+# MSYS configure and shell runners require LF on Windows checkouts.
+config text eol=lf
+*.sh text eol=lf
+
 *.t linguist-language=Perl
 *.t linguist-vendored

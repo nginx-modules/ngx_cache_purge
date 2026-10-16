@@ -2,7 +2,7 @@
 <!-- Describe your changes and the goal of this PR -->
 
 ## 🎯 Target Branch
-- [ ] `master` (All new features / main development)
+- [ ] `main` (All new features / main development)
 - [ ] `releases/...` (Critical fixes for maintenance branches only)
 
 ## 📋 PR Status
@@ -11,5 +11,5 @@
 - [ ] All CI tests pass
 
 ## 🔄 Backport Request
-- [ ] Feature requires backporting to a release branch after merging to `master`
+- [ ] Feature requires backporting to a release branch after merging to `main`
 - [ ] N/A

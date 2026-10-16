@@ -1,0 +1,473 @@
+name: ngx_cache_purge · Build, Test & Release
+
+on:
+  push:
+    branches: [ main, 'releases/**', 'dev/**' ]
+    tags: ['v4.*']
+  pull_request:
+    branches: [ main, 'releases/**', 'dev/**' ]
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      full:
+        description: Run the extended compatibility and Valgrind checks
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  prepare:
+    name: Select checks
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.matrix.outputs.run }}
+      full: ${{ steps.matrix.outputs.full }}
+      integration: ${{ steps.matrix.outputs.integration }}
+      compatibility: ${{ steps.matrix.outputs.compatibility }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Check APT mirror export
+        run: python3 -m unittest discover -s .github/actions/apt-mirror -v
+      - name: Check immutable release publication safeguards
+        run: python3 -m unittest discover -s t -p test_release.py -v
+      - id: matrix
+        env:
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_FULL: ${{ github.event_name == 'schedule' || inputs.full || startsWith(github.ref, 'refs/tags/') || startsWith(github.ref, 'refs/heads/releases/') }}
+        run: perl t/ci_matrix.pl
+
+  test-matrix:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: Integration · ${{ matrix.name }} · NGINX ${{ matrix.nginx }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.integration) }}
+    env:
+      NGINX_VERSION: ${{ matrix.nginx }}
+      UBUNTU_VERSION: ${{ matrix.ubuntu }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build integration image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: integration
+          build-args: |
+            NGINX_VERSION=${{ matrix.nginx }}
+            UBUNTU_VERSION=${{ matrix.ubuntu }}
+          tags: ngx-cache-purge-test:${{ matrix.nginx }}-${{ matrix.ubuntu }}
+          load: true
+          cache-from: type=gha,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
+          cache-to: type=gha,mode=max,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
+          provenance: false
+          sbom: false
+      - name: Run every TAP suite and write JUnit from this run
+        run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports nginx-test
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
+          path: t/test-results/
+
+  build-compatibility:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: Compatibility · ${{ matrix.name }} · NGINX ${{ matrix.nginx }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.prepare.outputs.compatibility) }}
+    env:
+      NGINX_VERSION: ${{ matrix.nginx }}
+      UBUNTU_VERSION: '24.04'
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: verify
+          build-args: |
+            NGINX_VERSION=${{ matrix.nginx }}
+            UBUNTU_VERSION=24.04
+          tags: ngx-cache-purge-verify:${{ matrix.nginx }}-24.04
+          load: true
+          cache-from: type=gha,scope=verify-${{ matrix.nginx }}
+          cache-to: type=gha,mode=max,scope=verify-${{ matrix.nginx }}
+          provenance: false
+          sbom: false
+      - name: Strict debug/release module builds, native helpers and runtime regressions
+        env:
+          COMPILERS: ${{ matrix.cc }}
+          MODES: ${{ matrix.modes }}
+        run: |
+          result=0
+          for compiler in $COMPILERS; do
+            for mode in $MODES; do
+              threads=()
+              if [ "$mode" = pooled ]; then threads=(--threads); fi
+              docker compose -f t/docker-compose.test.yml run --rm \
+                -e CC="$compiler" -e TEST_REPORT_DIR="/reports/$compiler-$mode" test-verify \
+                perl t/build_verify.pl --nginx-source /opt/nginx --cc "$compiler" \
+                --workers 8 "${threads[@]}" || result=1
+            done
+          done
+          exit "$result"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-build-${{ matrix.nginx }}
+          path: t/test-results/
+
+  sanitizer:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: ASan and UBSan / pooled and incremental traversal
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NGINX_VERSION: '1.31.6'
+      UBUNTU_VERSION: '24.04'
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build compiler image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: verify
+          build-args: |
+            NGINX_VERSION=1.31.6
+            UBUNTU_VERSION=24.04
+          tags: ngx-cache-purge-verify:1.31.6-24.04
+          load: true
+          cache-from: type=gha,scope=sanitizer
+          cache-to: type=gha,mode=max,scope=sanitizer
+          provenance: false
+          sbom: false
+      - name: Run pooled native and runtime checks under sanitizers
+        run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports/pooled test-sanitize
+      - name: Run incremental native and runtime checks under sanitizers
+        if: ${{ !cancelled() }}
+        run: |
+          docker compose -f t/docker-compose.test.yml run --rm \
+            -e TEST_REPORT_DIR=/reports/incremental test-sanitize \
+            perl t/build_verify.pl --nginx-source /opt/nginx \
+            --sanitize --workers 16 --files 16384
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-sanitizer
+          path: t/test-results/
+
+  native-macos:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: macOS / native helpers and runtime
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew install openssl@3 cpanminus
+      - name: Install JUnit formatter
+        run: cpanm --local-lib "$RUNNER_TEMP/perl5" --notest TAP::Formatter::JUnit
+      - name: Build and test native filesystem and process behavior
+        run: |
+          sh t/download.sh https://nginx.org/download/nginx-1.31.6.tar.gz nginx.tar.gz
+          tar -xzf nginx.tar.gz
+          export C_INCLUDE_PATH="$(brew --prefix openssl@3)/include"
+          export LIBRARY_PATH="$(brew --prefix openssl@3)/lib"
+          export PERL5LIB="$RUNNER_TEMP/perl5/lib/perl5"
+          export TEST_REPORT_DIR="$GITHUB_WORKSPACE/t/test-results"
+          perl t/build_verify.pl --cc clang --nginx-source nginx-1.31.6
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-macos
+          path: t/test-results/
+
+  native-windows:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: Windows / MSVC ${{ matrix.arch }} / native purge runtime
+    runs-on: windows-2022
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        arch: [x64, x86]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: ${{ matrix.arch }}
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MSYS
+          path-type: inherit
+          install: curl tar
+      - name: Build native nginx.exe with the module
+        shell: msys2 {0}
+        run: |
+          export PATH="$(cygpath -u "$VCToolsInstallDir")/bin/Hostx64/${{ matrix.arch }}:$PATH"
+          module_path="$(cygpath -m "$GITHUB_WORKSPACE")"
+          sh t/download.sh https://nginx.org/download/nginx-1.31.6.tar.gz nginx.tar.gz
+          tar -xzf nginx.tar.gz
+          cd nginx-1.31.6
+          ./configure --with-cc=cl --with-debug --prefix= \
+            --conf-path=conf/nginx.conf --pid-path=logs/nginx.pid \
+            --http-log-path=logs/access.log --error-log-path=logs/error.log \
+            --sbin-path=nginx.exe --with-cc-opt=-DFD_SETSIZE=1024 \
+            --without-http_rewrite_module --without-http_gzip_module \
+            --without-http_auth_basic_module --add-module="$module_path"
+          nmake -f objs/Makefile
+      - name: HTTP, path, junction and reload regressions
+        shell: pwsh
+        run: ./t/windows_runtime.ps1 -Nginx ./nginx-1.31.6/objs/nginx.exe -OutputDirectory ./t/test-results/windows
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-windows-${{ matrix.arch }}
+          path: t/test-results/windows/
+
+  memory-leak-test:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true' && (github.event_name == 'pull_request' || needs.prepare.outputs.full == 'true')
+    name: Valgrind / memory suite
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      NGINX_VERSION: '1.31.6'
+      UBUNTU_VERSION: '24.04'
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build valgrind image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: integration
+          build-args: |
+            NGINX_VERSION=1.31.6
+            UBUNTU_VERSION=24.04
+          tags: ngx-cache-purge-test:1.31.6-24.04
+          load: true
+          cache-from: type=gha,scope=valgrind
+          cache-to: type=gha,mode=max,scope=valgrind
+          provenance: false
+          sbom: false
+      - run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports test-valgrind
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: test-results-valgrind
+          path: t/test-results/
+
+  static-analysis:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: Cppcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build analysis image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: verify
+          build-args: |
+            NGINX_VERSION=1.31.6
+            UBUNTU_VERSION=24.04
+          tags: ngx-cache-purge-tools
+          load: true
+          cache-from: type=gha,scope=analysis
+          cache-to: type=gha,mode=max,scope=analysis
+          provenance: false
+          sbom: false
+      - name: Analyze module and included platform helpers
+        run: docker run --rm ngx-cache-purge-tools perl t/cppcheck.pl
+
+  semgrep-analysis:
+    needs: prepare
+    if: needs.prepare.outputs.run == 'true'
+    name: Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v7
+      - run: semgrep scan --config p/security-audit --config p/secrets --config p/c --error
+
+  publish-test-results:
+    name: Publish Test Results
+    runs-on: ubuntu-latest
+    needs: [prepare, test-matrix, build-compatibility, sanitizer, native-macos, native-windows, memory-leak-test]
+    if: always() && needs.prepare.outputs.run == 'true'
+    permissions:
+      checks: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          path: test-results
+          pattern: test-results-*
+      - uses: dorny/test-reporter@v1
+        if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        with:
+          name: Test Results
+          path: 'test-results/**/*.xml'
+          reporter: java-junit
+          fail-on-error: true
+
+  ci:
+    name: CI
+    runs-on: ubuntu-24.04
+    needs: [prepare, test-matrix, build-compatibility, sanitizer, native-macos, native-windows, memory-leak-test, static-analysis, semgrep-analysis, publish-test-results]
+    if: always()
+    steps:
+      - name: Require every selected check to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('| Check | Result |\n|---|---|\n')
+              for name, job in jobs.items():
+                  summary.write(f"| {name} | {job['result']} |\n")
+          failed = [name for name, job in jobs.items() if job['result'] in ('failure', 'cancelled')]
+          if jobs['prepare']['result'] != 'success':
+              failed.append('prepare')
+          elif jobs['prepare']['outputs'].get('run') == 'true':
+              for name, job in jobs.items():
+                  if name == 'memory-leak-test' and os.environ['EVENT_NAME'] != 'pull_request' and jobs['prepare']['outputs'].get('full') != 'true':
+                      continue
+                  if job['result'] != 'success':
+                      failed.append(name)
+          raise SystemExit(1 if failed else 0)
+          PYTHON
+
+  release-modules:
+    name: Rebuild check
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        nginx: ['1.30.6', '1.31.7']
+        platform:
+          - {arch: x86_64, runner: ubuntu-24.04}
+          - {arch: aarch64, runner: ubuntu-24.04-arm}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/apt-mirror
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev libssl-dev python3
+      - name: Build, load-test and package module
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+          MODULE_VERSION: ${{ github.ref_name }}
+        run: bash tools/build-release-module.sh
+      - name: Verify byte-for-byte rebuild
+        env:
+          NGINX_VERSION: ${{ matrix.nginx }}
+          MODULE_VERSION: ${{ github.ref_name }}
+        run: bash tools/verify-release-rebuild.sh
+      - name: Attest archive build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-module-${{ matrix.nginx }}-${{ matrix.platform.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  create-release:
+    name: Publish release with verified assets
+    needs: [ci, release-modules]
+    if: startsWith(github.ref, 'refs/tags/v4.') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-module-*
+          merge-multiple: true
+          path: dist
+      - name: Upload to draft, verify and publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bash tools/publish-release.sh

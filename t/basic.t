@@ -15,6 +15,8 @@ our $HttpConfig = qq{
         server 127.0.0.1:$port;
     }
 };
+our $RefreshHttpConfig = $HttpConfig
+    . "cache_purge_namespace refresh_if 1m $pwd/refresh-if-state;";
 
 $ENV{TEST_NGINX_SERVROOT} = server_root();
 no_long_string();
@@ -22,7 +24,7 @@ run_tests();
 
 __DATA__
 
-=== TEST 1: cache miss returns 412
+=== TEST 1: cache miss returns 200 no_match
 --- http_config eval: $::HttpConfig
 --- config
     location /cache {
@@ -36,7 +38,9 @@ __DATA__
     }
 --- request
 PURGE /cache/test
---- error_code: 412
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
 === TEST 2: cache setup then purge
 --- http_config eval: $::HttpConfig
@@ -118,9 +122,11 @@ PURGE /cache/test
     }
 --- request
 PURGE /purge/cache/test
---- error_code: 412
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
-=== TEST 6: wildcard partial purge — miss returns 412
+=== TEST 6: wildcard partial purge — miss returns 200 no_match
 --- http_config eval: $::HttpConfig
 --- config
     location /cache {
@@ -134,7 +140,9 @@ PURGE /purge/cache/test
     }
 --- request
 PURGE /cache/test*
---- error_code: 412
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
 === TEST 7: wildcard partial purge — hit returns 200
 # Regression test for the "always 412" bug: when matching files exist the
@@ -160,8 +168,8 @@ PURGE /cache/test*
 --- error_code eval
 [200, 200]
 
-=== TEST 8: wildcard partial purge — miss with legacy_status off returns 404
-# With cache_purge_legacy_status off, a wildcard miss must return 404 (not 412).
+=== TEST 8: wildcard partial purge — miss with legacy_status off returns 200 no_match
+# Both legacy flag values warn and use the v4 result contract.
 --- http_config eval: $::HttpConfig . "cache_purge_legacy_status off;"
 --- config
     location /cache {
@@ -175,11 +183,12 @@ PURGE /cache/test*
     }
 --- request
 PURGE /cache/no-such-entry*
---- error_code: 404
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
-=== TEST 9: exact-key miss with legacy_status off returns 404
-# Confirms ngx_http_cache_purge_not_found_code() is also respected by the
-# exact-key path (ngx_http_cache_purge_handler).
+=== TEST 9: exact-key miss with legacy_status off returns 200 no_match
+# The obsolete flag also leaves the exact-key result unchanged.
 --- http_config eval: $::HttpConfig . "cache_purge_legacy_status off;"
 --- config
     location /cache {
@@ -193,7 +202,9 @@ PURGE /cache/no-such-entry*
     }
 --- request
 PURGE /cache/no-such-entry
---- error_code: 404
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
 === TEST 10: purge_all on populated cache returns 200
 # prime two different URIs, then issue purge_all.
@@ -218,8 +229,8 @@ PURGE /cache/no-such-entry
 [200, 200, 200]
 
 === TEST 11: purge_all on empty cache still returns 200
-# purge_all is a zone-wide operation; even if nothing was cached the
-# semantics are "the zone is now empty" — always 200, never 412/404.
+# Drain the shared fixture cache first so randomized suite order cannot
+# leave entries from another test. The second purge must report no_match.
 --- http_config eval: $::HttpConfig
 --- config
     location /cache {
@@ -231,10 +242,12 @@ PURGE /cache/no-such-entry
     location /origin {
         return 200 "ok";
     }
---- request
-PURGE /cache/anything
---- response_body_like: purged
---- error_code: 200
+--- request eval
+["PURGE /cache/anything", "PURGE /cache/anything"]
+--- response_body_like eval
+[qr/"code":"(?:purged|no_match)"/, qr/"code":"no_match"/]
+--- error_code eval
+[200, 200]
 
 === TEST 12: wildcard glob-only (bare asterisk) matches all cached entries
 # A key of just "*" strips the trailing asterisk, leaving an empty prefix,
@@ -311,7 +324,7 @@ PURGE /cache/anything
 #
 # Sequence: GET warms the cache (rbtree node created), first PURGE finds
 # the node, deletes the primary file, and walks for variants (200), second
-# PURGE confirms the entry is gone (412).
+# PURGE confirms the entry is gone (no_match).
 --- http_config eval: $::HttpConfig . "    cache_purge_vary_aware on;\n"
 --- config
     location /cache {
@@ -327,7 +340,7 @@ PURGE /cache/anything
 --- request eval
 ["GET /cache/vary-doc", "PURGE /cache/vary-doc", "PURGE /cache/vary-doc"]
 --- error_code eval
-[200, 200, 412]
+[200, 200, 200]
 --- no_error_log
 [error]
 
@@ -425,9 +438,9 @@ X-Trigger-If: 1
 --- request eval
 ["GET /cache/if18", "PURGE /cache/if18", "PURGE /cache/if18"]
 --- error_code eval
-[200, 200, 412]
+[200, 200, 200]
 --- response_body eval
-["if-purge", qr/purged/i, qr/404|412/]
+["if-purge", qr/purged/i, qr/"code":"no_match"/]
 --- no_error_log
 [error]
 
@@ -500,7 +513,7 @@ X-Trigger-If: 1
 --- no_error_log
 [error]
 
-=== TEST 21: PURGE in a location without proxy_cache returns 404 (was segfault)
+=== TEST 21: PURGE in a location without proxy_cache returns 500 (was segfault)
 # The inline form is accepted in a location that has no proxy_cache, so
 # upstream.cache_zone and upstream.cache_value are both NULL at request
 # time.  Evaluating the NULL complex value crashed the worker.
@@ -515,7 +528,9 @@ X-Trigger-If: 1
     }
 --- request
 PURGE /nocache/t21
---- error_code: 404
+--- error_code: 500
+--- response_headers
+Cache-Purge-Code: cache_unavailable
 --- error_log
 no cache configured for this location
 --- no_error_log
@@ -533,7 +548,9 @@ no cache configured for this location
     }
 --- request
 PURGE /nocache/t22
---- error_code: 404
+--- error_code: 500
+--- response_headers
+Cache-Purge-Code: cache_unavailable
 --- error_log
 no cache configured for this location
 --- no_error_log
@@ -571,7 +588,7 @@ no cache configured for this location
     "GET /purge/cache/if23?cno=1"
 ]
 --- error_code eval
-[200, 200, 200, 200, 412]
+[200, 200, 200, 200, 200]
 --- no_error_log
 [alert]
 
@@ -594,8 +611,53 @@ no cache configured for this location
 --- request eval
 ["GET /cache/t24", "PURGE /cache/t24", "PURGE /cache/t24"]
 --- error_code eval
-[200, 200, 412]
+[200, 200, 200]
 --- response_body eval
-["inherited", qr/purged/i, qr/412/]
+["inherited", qr/purged/i, qr/"code":"no_match"/]
+--- no_error_log
+[alert]
+
+=== TEST 25: REFRESH capability and logical key survive an anonymous if location
+--- http_config eval: $::RefreshHttpConfig
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+    location /cache {
+        cache_purge_key refresh_if $uri;
+        proxy_cache cache_zone;
+        proxy_cache_key $cache_purge_key;
+        proxy_cache_valid 200 1m;
+        proxy_pass http://backend/origin;
+    }
+    location = /refresh {
+        set $selected /unused;
+        if ($arg_select = yes) { set $selected /cache/refresh25; }
+        cache_purge_key refresh_if $selected;
+        proxy_cache_refresh cache_zone $cache_purge_key;
+        cache_purge_refresh_profile /probe /cache;
+        allow 127.0.0.1; deny all;
+    }
+    location = /probe {
+        internal;
+        proxy_cache_purge off;
+        proxy_cache off;
+        proxy_intercept_errors off;
+        proxy_pass_request_headers off;
+        proxy_pass_request_body off;
+        proxy_method HEAD;
+        proxy_set_header Host origin.test;
+        proxy_set_header If-None-Match $cache_purge_refresh_etag;
+        proxy_set_header If-Modified-Since $cache_purge_refresh_last_modified;
+        proxy_pass http://backend/origin$cache_purge_refresh_uri;
+    }
+    location /origin {
+        if ($request_method = HEAD) { return 304; }
+        return 200 "if-refresh";
+    }
+--- request eval
+["GET /cache/refresh25", "REFRESH /refresh?select=yes", "GET /refresh?select=yes"]
+--- error_code eval
+[200, 200, 405]
+--- response_body eval
+["if-refresh", qr/"result":"kept"/, qr/405/]
 --- no_error_log
 [alert]

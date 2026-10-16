@@ -11,11 +11,10 @@ run_tests();
 
 __DATA__
 
-=== PERFORMANCE TEST 1: sync walk of 5000 files returns 412
-# Background queue OFF → sync path.  The partial walk visits every file
-# in the cache dir; the exact-key lookup for the literal key
-# "/purge/perf*" then finds nothing → 412.  The 412 is the expected
-# outcome; timing of the walk is what this test measures.
+=== PERFORMANCE TEST 1: sync walk skips 5000 non-cache files
+# Background queue OFF selects a synchronous walk. These synthetic names
+# and contents are not native cache entries, so completion returns no_match.
+# This is a traversal smoke test, not a deletion or latency benchmark.
 # NOTE: proxy_cache must NOT be in the same location as the 3-arg
 # proxy_cache_purge directive — the module rejects that combination.
 --- timeout: 60
@@ -39,7 +38,9 @@ __DATA__
     warn sprintf("Setup 5000 files in %.3fs\n", time() - $start);
 --- request
 PURGE /purge/perf*
---- error_code: 412
+--- error_code: 200
+--- response_headers
+Cache-Purge-Code: no_match
 
 === PERFORMANCE TEST 2: background queue throughput — 5 concurrent wildcard purges
 --- timeout: 30
@@ -114,4 +115,4 @@ PURGE /purge/perf*
 --- request
 PURGE /purge/throttle*
 --- error_code: 202
---- response_body_like: queued
+--- response_body_like: accepted

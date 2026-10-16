@@ -50,7 +50,7 @@ qr/invalid parameter.*expected.*html/
 
 === TEST 4a: Content-Type text/html for html response type
 # Separate-location syntax (proxy_cache_purge zone key) - no proxy_pass needed.
-# Background queue ON + wildcard URI -> 202, exercising send_response + Content-Type.
+# Background queue ON + wildcard URI -> 202, exercising send_result + Content-Type.
 --- http_config
     proxy_cache_path $TEST_NGINX_SERVROOT/cache keys_zone=ct_zone:1m;
     cache_purge_background_queue on;
@@ -76,7 +76,7 @@ PURGE /purge/test*
 --- response_headers
 Content-Type: application/json
 
-=== TEST 4c: Content-Type text/xml for xml response type
+=== TEST 4c: Content-Type application/xml for xml response type
 --- http_config
     proxy_cache_path $TEST_NGINX_SERVROOT/cache keys_zone=ct_zone:1m;
     cache_purge_background_queue on;
@@ -87,7 +87,7 @@ Content-Type: application/json
 PURGE /purge/test*
 --- error_code: 202
 --- response_headers
-Content-Type: text/xml
+Content-Type: application/xml
 
 === TEST 4d: Content-Type text/plain for text response type
 --- http_config
@@ -158,4 +158,4 @@ qr/is duplicate/
 PURGE /purge/test*
 --- error_code: 202
 --- response_headers
-Content-Type: text/xml
+Content-Type: application/xml
