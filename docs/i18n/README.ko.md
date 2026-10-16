@@ -42,6 +42,12 @@
 
 운영 환경에서는 유지보수 중인 NGINX 버전을 사용하세요. POSIX/UNIX가 주 대상이며 Windows 지원은 실험적입니다. 스레드는 선택 사항입니다. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## 배포판 패키지
+
+여러 배포판과 ports 프로젝트에서 이 포크를 패키지로 제공하지만, 반드시 v4인 것은 아닙니다. 설치 전에 패키지 버전과 NGINX ABI를 확인하세요. 자세한 내용은 [패키지 및 소스 목록](../DISTRIBUTIONS.md)을 참조하세요.
+
 <a id="installation"></a>
 
 ## 설치

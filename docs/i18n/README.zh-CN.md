@@ -42,6 +42,12 @@
 
 生产环境请使用仍受维护的 NGINX 版本。主要面向 POSIX/UNIX；Windows 支持为实验性。线程可选。 [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## 发行版软件包
+
+部分发行版和 ports 项目提供此分支的安装包，但不一定是 v4。安装前请核对软件包版本及 NGINX ABI 兼容性。详情参见[软件包及其来源](../DISTRIBUTIONS.md)。
+
 <a id="installation"></a>
 
 ## 安装

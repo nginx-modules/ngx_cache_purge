@@ -42,6 +42,12 @@ Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn 
 
 Trong môi trường sản xuất, hãy dùng bản NGINX còn được bảo trì. POSIX/UNIX là nền tảng chính; hỗ trợ Windows còn thử nghiệm. Luồng là tùy chọn. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Gói của các bản phân phối
+
+Một số bản phân phối và dự án ports đóng gói bản fork này, nhưng không nhất thiết là v4. Hãy kiểm tra phiên bản gói và ABI của NGINX trước khi cài đặt. Xem [danh sách gói và nguồn đóng gói](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Cài đặt

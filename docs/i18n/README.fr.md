@@ -42,6 +42,12 @@ Ces mécanismes se combinent : une invalidation par génération programme aussi
 
 En production, utilisez une version de NGINX encore maintenue. POSIX/UNIX est la plateforme principale ; Windows reste expérimental. Les threads sont facultatifs. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Paquets des distributions
+
+Plusieurs distributions et projets de ports proposent ce fork, mais pas nécessairement en v4. Avant l’installation, vérifiez la version du paquet et l’ABI de NGINX. Consultez les [paquets et leurs sources](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Installation

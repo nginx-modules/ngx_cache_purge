@@ -42,6 +42,12 @@ Mekanisme ini dapat digabungkan: pergantian generasi juga menjadwalkan pembersih
 
 Untuk produksi, gunakan rilis NGINX yang masih dipelihara. POSIX/UNIX merupakan target utama; dukungan Windows masih eksperimental. Thread bersifat opsional. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Paket distribusi
+
+Sejumlah distribusi dan proyek ports menyediakan paket untuk fork ini, tetapi belum tentu v4. Periksa versi paket dan ABI NGINX sebelum memasang. Lihat [daftar paket dan sumbernya](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Instalasi

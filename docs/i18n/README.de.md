@@ -42,6 +42,12 @@ Die Verfahren lassen sich kombinieren: Ein Generationswechsel plant ebenfalls ei
 
 Verwenden Sie im Produktivbetrieb eine gepflegte NGINX-Version. POSIX/UNIX ist die Hauptplattform; Windows wird experimentell unterstützt. Threads sind optional. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Pakete der Distributionen
+
+Mehrere Distributionen und Ports-Projekte paketieren diesen Fork, stellen jedoch nicht unbedingt v4 bereit. Prüfen Sie vor der Installation die Paketversion und die NGINX-ABI. Einzelheiten: [Distributionspakete und Paketquellen](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Installation

@@ -42,6 +42,12 @@ Los mecanismos se combinan: cambiar la generación también programa la limpieza
 
 En producción, use una versión de NGINX que siga recibiendo mantenimiento. POSIX/UNIX es la plataforma principal; Windows es experimental. Los hilos son opcionales. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Paquetes de distribuciones
+
+Varias distribuciones y proyectos de ports empaquetan este fork, pero no necesariamente v4. Antes de instalar, comprueba la versión del paquete y la ABI de NGINX. Consulta los [paquetes y sus fuentes](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Instalación

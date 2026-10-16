@@ -42,6 +42,12 @@ Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyr
 
 Üretimde bakımı sürdürülen bir NGINX sürümü kullanın. Ana hedef POSIX/UNIX’tir; Windows desteği deneyseldir. İş parçacıkları isteğe bağlıdır. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Dağıtım paketleri
+
+Bazı dağıtımlar ve ports projeleri bu fork için paketler sunar ancak bunlar mutlaka v4 değildir. Kurulumdan önce paket sürümünü ve NGINX ABI uyumluluğunu kontrol edin. [Paketler ve kaynakları](../DISTRIBUTIONS.md) bölümüne bakın.
+
 <a id="installation"></a>
 
 ## Kurulum

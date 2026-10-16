@@ -42,6 +42,12 @@ Mechanizmy można łączyć: zmiana generacji także planuje czyszczenie. Sama k
 
 W środowisku produkcyjnym używaj nadal utrzymywanej wersji NGINX. Główną platformą jest POSIX/UNIX; obsługa Windows jest eksperymentalna. Wątki są opcjonalne. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Pakiety dystrybucyjne
+
+Niektóre dystrybucje i projekty portów udostępniają pakiety tego forka, ale niekoniecznie w wersji v4. Przed instalacją sprawdź wersję pakietu i zgodność ABI NGINX. Zobacz [listę pakietów i ich źródeł](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Instalacja

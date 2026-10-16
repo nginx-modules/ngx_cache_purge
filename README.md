@@ -23,6 +23,14 @@ These settings combine: generation invalidation also schedules cleanup. The back
 
 Use a maintained NGINX release for production. POSIX/UNIX is the primary target; Windows is experimental. Threads are optional: without `--with-threads`, background walks run in small event-loop steps. See the [tested versions and platforms](t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Distribution packages
+
+Several distributions and ports projects package this fork, but their builds
+may use older versions rather than v4. Check the package version and NGINX ABI
+before installing. See the [distribution packages and sources](docs/DISTRIBUTIONS.md).
+
 ## Installation
 
 ```bash

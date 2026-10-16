@@ -42,6 +42,12 @@ Os mecanismos se combinam: a troca de geração também agenda a limpeza. A fila
 
 Em produção, use uma versão do NGINX que ainda receba manutenção. POSIX/UNIX é o alvo principal; o suporte ao Windows é experimental. Threads são opcionais. [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## Pacotes de distribuições
+
+Diversas distribuições e projetos de ports empacotam este fork, mas não necessariamente a v4. Antes de instalar, verifique a versão do pacote e a ABI do NGINX. Consulte os [pacotes e suas fontes](../DISTRIBUTIONS.md).
+
 <a id="installation"></a>
 
 ## Instalação

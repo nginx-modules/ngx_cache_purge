@@ -42,6 +42,12 @@
 
 本番環境には保守中の NGINX リリースを使用してください。主な対象は POSIX/UNIX で、Windows 対応は実験的です。スレッドは任意です。 [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
 
+<a id="distribution-packages"></a>
+
+## ディストリビューションのパッケージ
+
+複数のディストリビューションや ports プロジェクトがこのフォークをパッケージ化していますが、v4 とは限りません。導入前にパッケージのバージョンと NGINX ABI を確認してください。詳しくは[パッケージと提供元](../DISTRIBUTIONS.md)を参照してください。
+
 <a id="installation"></a>
 
 ## インストール
