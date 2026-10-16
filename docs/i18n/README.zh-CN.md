@@ -6,6 +6,23 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## 功能
+
+- **同一 location 内清理** — 使用专用 HTTP 方法（`PURGE`）和 IP 访问控制
+- **独立清理 location** — 通过 `proxy_cache_purge zone key` 指定正则捕获的键，无需 `proxy_pass`
+- **通配符／部分匹配** — 末尾的 `*` 触发缓存目录遍历并删除匹配条目
+- **`purge_all`** — 用一次请求删除缓存区内的全部条目
+- **后台队列** — 通过有预算限制的事件循环分片或可选的 NGINX 线程池延后遍历；批量大小和暂停时间可配置
+- **Vary 感知清理** — 精确键清理后，删除共享同一键的 gzip、Vary 等文件变体
+- **响应格式** — `json`（默认）、`html`、`xml`、`text`、`none`
+- **命名线程池** — 可继承的线程池选择；不支持线程的构建及 Windows 使用增量回退路径
+- **运行中任务去重** — 遍历期间收到重复请求时，索引中保留一个任务，最多预约一次后续重跑
+- **状态监控** — 按缓存提供队列、删除和 HIT/MISS 指标，读取时不获取共享队列互斥锁
+- **世代键** — 对精确键、前缀和命名空间执行失效，无需在 PURGE 请求中进行磁盘 I/O；迟到的旧写入仍不可访问
+- [向源站检查缓存内容（REFRESH）](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## 根据需求选择处理方式
@@ -17,7 +34,7 @@
 | 防止新请求使用旧内容，包括延迟写入的文件 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`；新请求使用新世代的键，文件随后清理 |
 | 检查源站内容是否变化 | 键世代 + `proxy_cache_refresh` + 内部配置位置 | `200`，附带逐条结果和续页信息；不会预热缓存 |
 
-这些机制可以组合使用：切换世代也会安排文件清理。仅开启后台队列无法防止延迟写入带来的旧内容。参见 [v4 示例](README.zh-CN.md#generation-and-refresh-example)、[普通 PURGE 示例](EXAMPLES.zh-CN.md#sample-configurations)及 [HTTP 响应说明](../HTTP_RESPONSES.md)（英文）。
+这些机制可以组合使用：切换世代也会安排文件清理。仅开启后台队列无法防止延迟写入带来的旧内容。参见 [v4 示例](README.zh-CN.md#generation-and-refresh-example)、[普通 PURGE 示例](#sample-configurations)及 [HTTP 响应说明](../HTTP_RESPONSES.md)（英文）。
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站表示发送 HEA
 | 内部失效／分配失败 | 保留；`invalidation_error` |
 | 页停止前未分派／未完成 | `undispatched`；游标不会越过该项 |
 
+<a id="sample-configurations"></a>
+
+## 配置示例
+
+前五个代码块分别是完整的 `nginx.conf` 配置示例，请选择其中一个。最后一个代码块用于在现有 `http` 配置中启用 Vary 处理。NGINX 在本机的 8080 端口接收请求；`catalog_backend` 是上游组名，应用地址为 `127.0.0.1:8081`。`shop.example.com` 是发送给应用的 HTTP Host。部署时请替换这些地址，并使用 NGINX 可写的缓存目录。
+
+<a id="basic--inline-purge-method"></a>
+
+### 基础 — 同一 location 的 PURGE 方法
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### 基础 — 独立清理 location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### 启用后台队列
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### 清理全部条目
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### JSON 响应及 location 级覆盖
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary 感知清理
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+清理一个键后，存储在其他文件路径的 gzip 和 Vary 变体也会自动删除。
+
 <a id="migration"></a>
 
 ## 迁移
@@ -191,11 +400,12 @@ REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站表示发送 HEA
 ## 文档
 
 - [指令参考](DIRECTIVES.zh-CN.md)
-- [更多配置示例](EXAMPLES.zh-CN.md)
-- [运行与故障排查（英文）](../OPERATIONS.md)
+- [更多配置示例](README.zh-CN.md#sample-configurations)
+- [运行与故障排查](OPERATIONS.zh-CN.md)
 - [HTTP 与 REFRESH 限制（英文）](../REFRESH.md)
-- [迁移到 v4（英文）](../MIGRATION.md)
+- [迁移到 v4](MIGRATION.zh-CN.md)
 - [实现架构（英文）](../ARCHITECTURE.md)
+- [测试](OPERATIONS.zh-CN.md#testing)
 - [开发与测试（英文）](../../t/TESTING.md)
 
 <a id="see-also"></a>

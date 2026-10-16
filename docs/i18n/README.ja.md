@@ -6,6 +6,23 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## 機能
+
+- **同一 location での PURGE** — 専用 HTTP メソッド（`PURGE`）と IP アクセス制御
+- **専用の PURGE location** — `proxy_cache_purge zone key` 構文で正規表現から取得したキーを指定し、`proxy_pass` なしで削除
+- **ワイルドカード／部分一致** — 末尾の `*` によりキャッシュディレクトリを走査し、一致するエントリを削除
+- **`purge_all`** — 1 回のリクエストでキャッシュゾーン内の全エントリを削除
+- **バックグラウンドキュー** — 作業量を制限したイベントループの走査、または NGINX スレッドプールによる遅延実行。バッチ数と待機時間を設定可能
+- **Vary 対応** — 完全一致 PURGE の後、同じキーを持つ gzip、Vary などのファイルバリアントも削除
+- **応答形式** — `json`（既定）、`html`、`xml`、`text`、`none`
+- **名前付きプール** — 継承可能なプール選択。スレッド非対応ビルドと Windows では段階的な走査に切り替え
+- **実行中タスクの重複排除** — 走査中に同じ PURGE を受けても、インデックス上の操作は 1 件で、次回の再走査は最大 1 件だけ予約
+- **ステータス** — キャッシュごとのキュー、削除、HIT/MISS メトリクスを、共有キューの mutex を取得せずに参照
+- **世代付きキー** — PURGE リクエスト内でディスク I/O を行わず、完全一致・プレフィックス・名前空間を無効化。古い書き込みが遅れて完了しても新規要求からは参照されません
+- [オリジンにキャッシュ内容を確認する（REFRESH）](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## 目的に応じた動作の選び方
@@ -17,7 +34,7 @@
 | 遅れて書き込まれたものも含め、古い内容を新しいリクエストで使わせない | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`。新しいキー世代を使用し、ファイルは後で削除 |
 | オリジンの変更を確認する | キー世代 + `proxy_cache_refresh` + 内部プロファイル | エントリごとの結果と継続情報を含む `200`。事前読み込みは行わない |
 
-これらは組み合わせて使えます。世代の切り替えでも削除処理が予約されます。キューだけでは遅延書き込みによる古い内容の再利用を防げません。 [v4 の例](README.ja.md#generation-and-refresh-example)、[PURGE の例](EXAMPLES.ja.md#sample-configurations)、[HTTP レスポンス](../HTTP_RESPONSES.md)（英語）を参照してください。
+これらは組み合わせて使えます。世代の切り替えでも削除処理が予約されます。キューだけでは遅延書き込みによる古い内容の再利用を防げません。 [v4 の例](README.ja.md#generation-and-refresh-example)、[PURGE の例](#sample-configurations)、[HTTP レスポンス](../HTTP_RESPONSES.md)（英語）を参照してください。
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH は保存済みの ETag と Last-Modified を使い、同じオリジン
 | 内部の無効化／割り当て失敗 | 保持。`invalidation_error` |
 | ページ停止までに未開始／未完了 | `undispatched`。カーソルはその項目を越えない |
 
+<a id="sample-configurations"></a>
+
+## 設定例
+
+最初の5つのコードブロックは、それぞれ独立した完全な `nginx.conf` の設定例です。最後のブロックは、既存の `http` セクションに Vary の処理を追加します。NGINX はローカルのポート8080でリクエストを受け付けます。`catalog_backend` は、`127.0.0.1:8081` で動作するアプリケーションの upstream グループ名です。`shop.example.com` はアプリケーションに送る HTTP Host です。実際の環境に合わせてアドレスと、NGINX が書き込めるキャッシュディレクトリを変更してください。
+
+<a id="basic--inline-purge-method"></a>
+
+### 基本 — 同一 location で PURGE
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### 基本 — 専用 PURGE location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### バックグラウンドキューの有効化
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### 全エントリの削除
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### location ごとに上書きする JSON 応答
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary 対応の PURGE
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+キーを削除すると、別のファイルパスにある gzip と Vary のバリアントも自動で削除します。
+
 <a id="migration"></a>
 
 ## 移行
@@ -191,11 +400,12 @@ SHM レイアウト変更には完全再起動が必要です。メソッド／A
 ## ドキュメント
 
 - [ディレクティブ一覧](DIRECTIVES.ja.md)
-- [その他の設定例](EXAMPLES.ja.md)
-- [運用とトラブル対応（英語）](../OPERATIONS.md)
+- [その他の設定例](README.ja.md#sample-configurations)
+- [運用とトラブル対応](OPERATIONS.ja.md)
 - [HTTP と REFRESH の制約（英語）](../REFRESH.md)
-- [v4 への移行（英語）](../MIGRATION.md)
+- [v4 への移行](MIGRATION.ja.md)
 - [実装アーキテクチャ（英語）](../ARCHITECTURE.md)
+- [テスト](OPERATIONS.ja.md#testing)
 - [開発とテスト（英語）](../../t/TESTING.md)
 
 <a id="see-also"></a>

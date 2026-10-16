@@ -6,6 +6,23 @@ NGINX-Modul zum Entfernen von Einträgen aus `FastCGI`-, `proxy`-, `SCGI`- und `
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## Funktionen
+
+- **Inline-Purge** — eigene HTTP-Methode (`PURGE`) mit IP-Zugriffskontrolle
+- **Eigene Purge-Location** — Syntax `proxy_cache_purge zone key` für per regulärem Ausdruck erfasste Schlüssel, ohne `proxy_pass`
+- **Platzhalter / Teilabgleich** — ein abschließendes `*` durchsucht das Cache-Verzeichnis und entfernt passende Einträge
+- **`purge_all`** — entfernt mit einer Anfrage alle Einträge einer Cache-Zone
+- **Hintergrundwarteschlange** — verzögerter Durchlauf in begrenzten Event-Loop-Schritten oder einem optionalen NGINX-Thread-Pool; konfigurierbare Auftragsgruppen und Pausen
+- **Vary-Unterstützung** — entfernt nach einem exakten Purge auch Dateivarianten mit demselben Schlüssel, etwa gzip- und Vary-Varianten
+- **Antwortformate** — `json` (Standard), `html`, `xml`, `text`, `none`
+- **Benannte Pools** — vererbbare Pool-Auswahl; inkrementelle Ausführung ohne Thread-Unterstützung und unter Windows
+- **Deduplizierung aktiver Aufträge** — eine indexierte Operation mit höchstens einem vorgemerkten Wiederholungsdurchlauf für während des Durchlaufs eintreffende Purges
+- **Status** — Warteschlangen-, Lösch- und HIT/MISS-Metriken je Cache, ohne den gemeinsamen Warteschlangen-Mutex beim Lesen zu sperren
+- **Generationsschlüssel** — Invalidierung einzelner Schlüssel, von Präfixen und Namespaces ohne Datenträger-I/O im PURGE-Request; späte alte Schreibvorgänge bleiben unerreichbar
+- [Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## Das passende Verhalten wählen
@@ -17,7 +34,7 @@ NGINX-Modul zum Entfernen von Einträgen aus `FastCGI`-, `proxy`-, `SCGI`- und `
 | Alte Inhalte für neue Anfragen sperren, auch bei verspäteten Schreibvorgängen | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; neue Schlüsselgeneration, Dateilöschung folgt |
 | Änderungen beim Ursprungsserver prüfen | Generationen + `proxy_cache_refresh` + internes Profil | `200` mit Ergebnissen pro Eintrag und Fortsetzung; kein Vorbefüllen |
 
-Die Verfahren lassen sich kombinieren: Ein Generationswechsel plant ebenfalls eine Bereinigung ein. Die Warteschlange allein schützt nicht vor verspäteten Schreibvorgängen. Siehe [v4-Beispiel](README.de.md#generation-and-refresh-example), [PURGE-Beispiele](EXAMPLES.de.md#sample-configurations) und [HTTP-Antworten](../HTTP_RESPONSES.md) (Englisch).
+Die Verfahren lassen sich kombinieren: Ein Generationswechsel plant ebenfalls eine Bereinigung ein. Die Warteschlange allein schützt nicht vor verspäteten Schreibvorgängen. Siehe [v4-Beispiel](README.de.md#generation-and-refresh-example), [PURGE-Beispiele](#sample-configurations) und [HTTP-Antworten](../HTTP_RESPONSES.md) (Englisch).
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH sendet HEAD für dieselbe Darstellung am Ursprung und nutzt gespeicherte
 | Interner Invalidierungs-/Speicherfehler | Behalten; `invalidation_error` |
 | Vor Seitenende nicht gestartet/abgeschlossen | `undispatched`; Cursor bleibt davor |
 
+<a id="sample-configurations"></a>
+
+## Beispielkonfigurationen
+
+Die ersten fünf Blöcke sind jeweils vollständige, alternative `nginx.conf`-Beispiele. Der letzte Block ergänzt die Vary-Behandlung in einem vorhandenen `http`-Abschnitt. NGINX nimmt lokale Anfragen auf Port 8080 an; `catalog_backend` bezeichnet die Upstream-Gruppe für die Anwendung unter `127.0.0.1:8081`. `shop.example.com` ist der an die Anwendung gesendete HTTP-Host. Passen Sie die Adressen und das für NGINX beschreibbare Cache-Verzeichnis an Ihre Umgebung an.
+
+<a id="basic--inline-purge-method"></a>
+
+### Basis — Inline-Purge-Methode
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Basis — separate Purge-Location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Aktivierte Hintergrundwarteschlange
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Alle Einträge löschen
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### JSON-Antworten mit Überschreibung je Location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Purge mit Vary-Unterstützung
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Nach dem Purge eines Schlüssels werden auch seine gzip- und Vary-Varianten an anderen Dateipfaden automatisch entfernt.
+
 <a id="migration"></a>
 
 ## Migration
@@ -191,11 +400,12 @@ REFRESH sendet HEAD für dieselbe Darstellung am Ursprung und nutzt gespeicherte
 ## Dokumentation
 
 - [Direktivenreferenz](DIRECTIVES.de.md)
-- [Weitere Konfigurationsbeispiele](EXAMPLES.de.md)
-- [Betrieb und Fehlerbehebung (Englisch)](../OPERATIONS.md)
+- [Weitere Konfigurationsbeispiele](README.de.md#sample-configurations)
+- [Betrieb und Fehlerbehebung](OPERATIONS.de.md)
 - [HTTP und REFRESH-Grenzen (Englisch)](../REFRESH.md)
-- [Migration auf v4 (Englisch)](../MIGRATION.md)
+- [Migration auf v4](MIGRATION.de.md)
 - [Implementierungsarchitektur (Englisch)](../ARCHITECTURE.md)
+- [Tests](OPERATIONS.de.md#testing)
 - [Entwicklung und Tests (Englisch)](../../t/TESTING.md)
 
 <a id="see-also"></a>

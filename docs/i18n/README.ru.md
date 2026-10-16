@@ -6,6 +6,23 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## Возможности
+
+- **Очистка в обслуживающем location** — отдельный HTTP-метод (`PURGE`) с контролем доступа по IP
+- **Отдельный location для очистки** — синтаксис зоны и ключа `proxy_cache_purge zone key` для очистки по ключу из захватов регулярного выражения без `proxy_pass`
+- **Маска / частичная очистка** — завершающий `*` запускает обход каталога кэша и удаление совпадающих записей
+- **`purge_all`** — удаление всех записей зоны кэша одним запросом
+- **Фоновая очередь** — отложенный обход ограниченными шагами цикла событий или через необязательный пул потоков NGINX; настраиваемые группы задач и паузы
+- **Учёт Vary** — после очистки точного ключа удаляются все файловые варианты с тем же ключом, включая gzip и варианты заголовка Vary
+- **Форматы ответа** — `json` (по умолчанию), `html`, `xml`, `text`, `none`
+- **Именованные пулы** — наследуемый выбор пула с инкрементальным выполнением в сборках без потоков и на Windows
+- **Дедупликация активных задач** — одна индексируемая операция и не более одного ожидающего повторного прохода для PURGE, поступивших во время обхода
+- **Статус** — метрики очереди, удаления и HIT/MISS для каждого кэша без захвата общего mutex очереди при чтении
+- **Ключи поколений** — инвалидация точного ключа, префикса или пространства имён без дискового I/O в пути обработки запроса; поздние старые записи остаются недоступными
+- [Проверка кэша у источника (REFRESH)](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## Как выбрать режим
@@ -17,7 +34,7 @@
 | Не выдавать старое содержимое новым запросам, включая позднюю запись файла | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; новые запросы используют новое поколение ключа, файлы удаляются позже |
 | Проверить, изменилось ли содержимое proxy-кэша у источника | Поколения ключей + `proxy_cache_refresh` + внутренний профиль | `200` с результатом по каждой записи и продолжением; пустой кэш не заполняется |
 
-Эти настройки сочетаются: смена поколения тоже ставит очистку в очередь. Одного включения фоновой очереди недостаточно для защиты от поздних записей. Начните с [примера v4](README.ru.md#generation-and-refresh-example) или [обычного PURGE](EXAMPLES.ru.md#sample-configurations). Перед реализацией клиента изучите [контракт HTTP-ответов](../HTTP_RESPONSES.md) (на английском).
+Эти настройки сочетаются: смена поколения тоже ставит очистку в очередь. Одного включения фоновой очереди недостаточно для защиты от поздних записей. Начните с [примера v4](README.ru.md#generation-and-refresh-example) или [обычного PURGE](#sample-configurations). Перед реализацией клиента изучите [контракт HTTP-ответов](../HTTP_RESPONSES.md) (на английском).
 
 <a id="compatibility"></a>
 
@@ -154,7 +171,7 @@ PURGE /images/header*
 
 Используйте поколения ключей, если после завершения PURGE новые запросы уже не должны получать устаревший ответ. Запрос к источнику, начавшийся раньше, может завершиться позже, но его запись со старым поколением не станет HIT для новых запросов. Файлы удаляются отдельно.
 
-Пространство имён объединяет ключи с общими правилами инвалидации. Сохраняйте каталог его состояния вместе с кешем между перезапусками. Общее пространство имён распространяет инвалидацию на несколько путей кеша; физическая очистка относится только к указанному пути. См. [эксплуатацию](../OPERATIONS.md) (на английском).
+Пространство имён объединяет ключи с общими правилами инвалидации. Сохраняйте каталог его состояния вместе с кешем между перезапусками. Общее пространство имён распространяет инвалидацию на несколько путей кеша; физическая очистка относится только к указанному пути. См. [эксплуатацию](OPERATIONS.ru.md) (на английском).
 
 <a id="conditional-refresh"></a>
 
@@ -176,11 +193,203 @@ REFRESH не загружает новое тело, не прогревает �
 | Ошибка смены поколения или выделения памяти | Сохраняет запись: `invalidation_error`. |
 | Выбранная работа не завершена | Учитывает её в `undispatched`; продолжение не пропускает эту запись. |
 
+<a id="sample-configurations"></a>
+
+## Примеры конфигурации
+
+Первые пять блоков — отдельные полные примеры `nginx.conf`. Последний блок добавляет обработку Vary в существующую секцию `http`. NGINX принимает локальные запросы на порту 8080; `catalog_backend` — имя группы с приложением по адресу `127.0.0.1:8081`. `shop.example.com` — его домен в заголовке HTTP Host. Замените адреса и каталог кеша своими; каталог должен быть доступен для записи.
+
+<a id="basic--inline-purge-method"></a>
+
+### Базовая — встроенный метод очистки
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Базовая — отдельный location очистки
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Включённая фоновая очередь
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Очистка всех записей
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Ответы JSON с переопределением в location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Очистка с учётом Vary
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+После очистки ключа автоматически удаляются все его gzip- и Vary-варианты по другим файловым путям.
+
 <a id="migration"></a>
 
 ## Миграция
 
-В v4 JSON используется по умолчанию, а отсутствие записи возвращает `200 no_match`. `cache_purge_legacy_status` только предупреждает и не меняет ответы. Обновите клиентов; при изменении структуры общей памяти выполните полный перезапуск. Поколения ключей включаются явно и меняют имена файлов кеша. См. [переход на v4](../MIGRATION.md) (на английском).
+В v4 JSON используется по умолчанию, а отсутствие записи возвращает `200 no_match`. `cache_purge_legacy_status` только предупреждает и не меняет ответы. Обновите клиентов; при изменении структуры общей памяти выполните полный перезапуск. Поколения ключей включаются явно и меняют имена файлов кеша. См. [переход на v4](MIGRATION.ru.md) (на английском).
 
 <a id="security"></a>
 
@@ -195,11 +404,12 @@ REFRESH не загружает новое тело, не прогревает �
 ## Документация
 
 - [Справочник директив](DIRECTIVES.ru.md)
-- [Другие примеры конфигурации](EXAMPLES.ru.md)
-- [Эксплуатация и устранение неполадок](../OPERATIONS.md)
+- [Другие примеры конфигурации](README.ru.md#sample-configurations)
+- [Эксплуатация и устранение неполадок](OPERATIONS.ru.md)
 - [HTTP-ответы и ограничения REFRESH](../REFRESH.md)
-- [Переход на v4](../MIGRATION.md)
+- [Переход на v4](MIGRATION.ru.md)
 - [Архитектура реализации](../ARCHITECTURE.md)
+- [Тестирование](OPERATIONS.ru.md#testing)
 - [Разработка и тесты](../../t/TESTING.md)
 
 <a id="see-also"></a>

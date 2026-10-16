@@ -6,6 +6,23 @@ Mô-đun NGINX dùng để xóa mục trong bộ nhớ đệm `FastCGI`, `proxy`
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## Tính năng
+
+- **Xóa tại location phục vụ** — phương thức HTTP riêng (`PURGE`) với kiểm soát IP
+- **Location xóa riêng** — cú pháp vùng/khóa `proxy_cache_purge zone key`, dùng khóa bắt bởi biểu thức chính quy mà không cần `proxy_pass`
+- **Ký tự đại diện / xóa một phần** — `*` cuối khóa duyệt thư mục và xóa mục khớp
+- **`purge_all`** — xóa toàn bộ vùng trong một yêu cầu
+- **Hàng đợi nền** — duyệt trì hoãn theo lát vòng lặp sự kiện giới hạn hoặc pool luồng NGINX tùy chọn; cấu hình được lô và khoảng nghỉ
+- **Nhận biết Vary** — sau xóa khóa chính xác, xóa các biến thể tệp gzip/Vary cùng khóa
+- **Định dạng phản hồi** — `json` (mặc định), `html`, `xml`, `text`, `none`
+- **Pool có tên** — lựa chọn được kế thừa, chuyển sang xử lý từng bước khi không có luồng hoặc trên Windows
+- **Khử trùng lặp tác vụ đang chạy** — một thao tác có chỉ mục và tối đa một lượt chạy lại chờ cho yêu cầu đến trong lúc duyệt
+- **Trạng thái** — số liệu hàng đợi, xóa và HIT/MISS theo cache, đọc không khóa mutex dùng chung
+- **Khóa thế hệ** — vô hiệu hóa chính xác, theo tiền tố hoặc không gian tên mà không thực hiện I/O đĩa trong đường xử lý yêu cầu; bản ghi cũ hoàn tất muộn vẫn không truy cập được
+- [Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## Chọn cách xử lý phù hợp
@@ -17,7 +34,7 @@ Mô-đun NGINX dùng để xóa mục trong bộ nhớ đệm `FastCGI`, `proxy`
 | Không cho yêu cầu mới dùng nội dung cũ, kể cả tệp được ghi muộn | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; dùng thế hệ khóa mới, xóa tệp sau |
 | Kiểm tra thay đổi tại máy chủ gốc | Thế hệ khóa + `proxy_cache_refresh` + hồ sơ nội bộ | `200` kèm kết quả từng mục và thông tin tiếp tục; không nạp sẵn nội dung |
 
-Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn tệp. Chỉ bật hàng đợi không ngăn được tác động của việc ghi muộn. Xem [ví dụ v4](README.vi.md#generation-and-refresh-example), [ví dụ PURGE](EXAMPLES.vi.md#sample-configurations) và [phản hồi HTTP](../HTTP_RESPONSES.md) (tiếng Anh).
+Có thể kết hợp các cơ chế: đổi thế hệ cũng lên lịch dọn tệp. Chỉ bật hàng đợi không ngăn được tác động của việc ghi muộn. Xem [ví dụ v4](README.vi.md#generation-and-refresh-example), [ví dụ PURGE](#sample-configurations) và [phản hồi HTTP](../HTTP_RESPONSES.md) (tiếng Anh).
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH gửi HEAD cho cùng dạng biểu diễn tại nguồn, dùng ETag và 
 | Lỗi nội bộ vô hiệu hóa/cấp phát | Giữ; `invalidation_error` |
 | Chưa gửi/xong khi trang dừng | `undispatched`; con trỏ không vượt qua |
 
+<a id="sample-configurations"></a>
+
+## Cấu hình mẫu
+
+Năm khối đầu là các ví dụ `nginx.conf` hoàn chỉnh và độc lập. Khối cuối bổ sung xử lý Vary vào phần `http` hiện có. NGINX nhận kết nối cục bộ trên cổng 8080; `catalog_backend` là tên nhóm upstream của ứng dụng tại `127.0.0.1:8081`. `shop.example.com` là giá trị HTTP Host gửi đến ứng dụng. Hãy thay các địa chỉ và chọn thư mục bộ nhớ đệm mà NGINX có quyền ghi.
+
+<a id="basic--inline-purge-method"></a>
+
+### Cơ bản — phương thức xóa trong location phục vụ
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Cơ bản — location xóa riêng
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Bật hàng đợi nền
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Xóa mọi mục
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Phản hồi JSON với ghi đè theo location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Xóa nhận biết Vary
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Sau xóa khóa, mọi biến thể gzip/Vary ở đường dẫn khác cũng tự động bị xóa.
+
 <a id="migration"></a>
 
 ## Chuyển đổi
@@ -191,11 +400,12 @@ Thay đổi cấu trúc SHM cần khởi động lại hoàn toàn. Cú pháp ph
 ## Tài liệu
 
 - [Tham chiếu chỉ thị](DIRECTIVES.vi.md)
-- [Ví dụ cấu hình khác](EXAMPLES.vi.md)
-- [Vận hành và xử lý sự cố (tiếng Anh)](../OPERATIONS.md)
+- [Ví dụ cấu hình khác](README.vi.md#sample-configurations)
+- [Vận hành và xử lý sự cố](OPERATIONS.vi.md)
 - [HTTP và giới hạn REFRESH (tiếng Anh)](../REFRESH.md)
-- [Chuyển sang v4 (tiếng Anh)](../MIGRATION.md)
+- [Chuyển sang v4](MIGRATION.vi.md)
 - [Kiến trúc triển khai (tiếng Anh)](../ARCHITECTURE.md)
+- [Kiểm thử](OPERATIONS.vi.md#testing)
 - [Phát triển và kiểm thử (tiếng Anh)](../../t/TESTING.md)
 
 <a id="see-also"></a>

@@ -6,6 +6,23 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## Özellikler
+
+- **Yerinde temizleme** — IP erişim denetimli özel HTTP yöntemi (`PURGE`)
+- **Ayrı temizleme location’ı** — `proxy_pass` olmadan, düzenli ifadeyle yakalanan anahtarlar için bölge/anahtar sözdizimi `proxy_cache_purge zone key`
+- **Joker / kısmi temizleme** — sondaki `*`, önbellek dizinini gezerek eşleşenleri siler
+- **`purge_all`** — bir istekte bölgedeki tüm kayıtları siler
+- **Arka plan kuyruğu** — sınırlı olay döngüsü dilimleri veya isteğe bağlı NGINX iş parçacığı havuzunda ertelenmiş tarama; ayarlanabilir görev grupları ve beklemeler
+- **Vary desteği** — tam anahtar temizliğinden sonra aynı anahtarlı gzip/Vary dosya çeşitlerini de siler
+- **Yanıt biçimleri** — `json` (varsayılan), `html`, `xml`, `text`, `none`
+- **Adlandırılmış havuzlar** — miras alınan seçim; iş parçacıksız derlemelerde ve Windows’ta artımlı yürütme
+- **Etkin görev tekilleştirmesi** — bir indeksli işlem ve tarama sırasında gelen tekrarlar için en fazla bir bekleyen yeniden tarama
+- **Durum** — ortak kuyruk mutex’ini almadan okunan, önbellek bazında kuyruk, silme ve HIT/MISS ölçümleri
+- **Nesil anahtarları** — isteğin işlenme yolunda disk G/Ç’si olmadan tam anahtar, önek ve ad alanı geçersizleştirmesi; geç tamamlanan eski yazmalar erişilemez kalır
+- [Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## Gereken davranışı seçin
@@ -17,7 +34,7 @@
 | Geç yazılan dosyalar dahil eski içeriği yeni isteklere kapatmak | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; yeni anahtar nesli kullanılır, dosyalar sonra silinir |
 | Kaynak sunucudaki değişiklikleri denetlemek | Nesiller + `proxy_cache_refresh` + dahili profil | `200`, kayıt başına sonuç ve devam bilgisi; önbelleği önceden doldurmaz |
 
-Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyruk tek başına geç yazmalara karşı koruma sağlamaz. [v4 örneğine](README.tr.md#generation-and-refresh-example), [PURGE örneklerine](EXAMPLES.tr.md#sample-configurations) ve [HTTP yanıtlarına](../HTTP_RESPONSES.md) (İngilizce) bakın.
+Bu mekanizmalar birlikte çalışır: nesil değişimi de temizlik planlar. Kuyruk tek başına geç yazmalara karşı koruma sağlamaz. [v4 örneğine](README.tr.md#generation-and-refresh-example), [PURGE örneklerine](#sample-configurations) ve [HTTP yanıtlarına](../HTTP_RESPONSES.md) (İngilizce) bakın.
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH, önbellekteki ETag ve Last-Modified değerleriyle aynı kaynak gösteri
 | İç geçersizleştirme/ayırma hatası | Koru; `invalidation_error` |
 | Sayfa durmadan gönderilemeyen/bitmeyen iş | `undispatched`; imleç üzerinden geçmez |
 
+<a id="sample-configurations"></a>
+
+## Yapılandırma örnekleri
+
+İlk beş blok, birbirinden bağımsız ve eksiksiz `nginx.conf` örnekleridir. Son blok, mevcut `http` bölümüne Vary desteği ekler. NGINX yerel bağlantıları 8080 portunda kabul eder; `catalog_backend`, `127.0.0.1:8081` adresindeki uygulamanın upstream grubunun adıdır. `shop.example.com`, uygulamaya gönderilen HTTP Host değeridir. Adresleri ve NGINX’in yazabildiği önbellek dizinini kendi ortamınıza göre değiştirin.
+
+<a id="basic--inline-purge-method"></a>
+
+### Temel — yerinde temizleme yöntemi
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### Temel — ayrı temizleme location’ı
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### Arka plan kuyruğu açık
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### Tüm girdileri temizleme
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Location bazında değiştirilebilen JSON yanıtları
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary destekli temizleme
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+Anahtar temizlenince farklı yollardaki tüm gzip ve Vary çeşitleri otomatik silinir.
+
 <a id="migration"></a>
 
 ## Geçiş
@@ -191,11 +400,12 @@ SHM yapısı değişiklikleri tam yeniden başlatma gerektirir. Yöntem/ACL söz
 ## Belgeler
 
 - [Yönerge başvurusu](DIRECTIVES.tr.md)
-- [Diğer yapılandırma örnekleri](EXAMPLES.tr.md)
-- [İşletim ve sorun giderme (İngilizce)](../OPERATIONS.md)
+- [Diğer yapılandırma örnekleri](README.tr.md#sample-configurations)
+- [İşletim ve sorun giderme](OPERATIONS.tr.md)
 - [HTTP ve REFRESH sınırları (İngilizce)](../REFRESH.md)
-- [v4 geçişi (İngilizce)](../MIGRATION.md)
+- [v4 geçişi](MIGRATION.tr.md)
 - [Uygulama mimarisi (İngilizce)](../ARCHITECTURE.md)
+- [Testler](OPERATIONS.tr.md#testing)
 - [Geliştirme ve testler (İngilizce)](../../t/TESTING.md)
 
 <a id="see-also"></a>

@@ -6,6 +6,23 @@
 
 [English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
 
+<a id="features"></a>
+
+## 기능
+
+- **인라인 삭제** — IP 접근 제어를 적용하는 전용 HTTP 메서드(`PURGE`)
+- **별도 삭제 location** — `proxy_pass` 없이 정규식으로 캡처한 키를 삭제하는 영역/키 구문 `proxy_cache_purge zone key`
+- **와일드카드 / 부분 삭제** — 끝의 `*`로 캐시 디렉터리를 순회하여 일치하는 항목 삭제
+- **`purge_all`** — 요청 하나로 캐시 영역의 모든 항목 삭제
+- **백그라운드 큐** — 제한된 이벤트 루프 조각 또는 선택적 NGINX 스레드 풀로 지연 순회; 작업 배치와 대기 시간 설정 가능
+- **Vary 인식 삭제** — 정확한 키 삭제 후 같은 키를 공유하는 gzip/Vary 파일 변형도 삭제
+- **응답 형식** — `json`(기본값), `html`, `xml`, `text`, `none`
+- **이름 있는 실행 풀** — 풀 선택 상속, 스레드 없는 빌드와 Windows에서는 점진적 실행
+- **활성 작업 중복 제거** — 인덱스 작업 하나와, 순회 중 받은 반복 삭제에 대해 최대 하나의 대기 재실행
+- **상태** — 공유 큐 뮤텍스를 잡지 않고 읽는 캐시별 큐, 삭제, HIT/MISS 지표
+- **세대 키** — 요청 처리 경로의 디스크 I/O 없이 정확한 키·접두사·네임스페이스 무효화; 늦게 끝난 이전 쓰기는 접근 불가 상태 유지
+- [원본 서버에서 캐시 내용 확인하기 (REFRESH)](#conditional-refresh)
+
 <a id="choosing-a-mode"></a>
 
 ## 목적에 맞는 동작 선택
@@ -17,7 +34,7 @@
 | 늦게 기록된 파일을 포함해 이전 내용을 새 요청에서 사용하지 못하게 차단 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; 새 키 세대를 사용하고 파일은 나중에 삭제 |
 | 원본 내용의 변경 여부 확인 | 키 세대 + `proxy_cache_refresh` + 내부 프로필 | 항목별 결과와 이어서 처리할 정보를 담은 `200`; 캐시를 미리 채우지 않음 |
 
-이 기능들은 함께 사용할 수 있습니다. 세대 변경도 파일 정리를 예약합니다. 큐만으로는 늦은 쓰기로 이전 내용이 다시 사용되는 문제를 막을 수 없습니다. [v4 예제](README.ko.md#generation-and-refresh-example), [PURGE 예제](EXAMPLES.ko.md#sample-configurations), [HTTP 응답](../HTTP_RESPONSES.md) (영문)을 참고하세요.
+이 기능들은 함께 사용할 수 있습니다. 세대 변경도 파일 정리를 예약합니다. 큐만으로는 늦은 쓰기로 이전 내용이 다시 사용되는 문제를 막을 수 없습니다. [v4 예제](README.ko.md#generation-and-refresh-example), [PURGE 예제](#sample-configurations), [HTTP 응답](../HTTP_RESPONSES.md) (영문)을 참고하세요.
 
 <a id="compatibility"></a>
 
@@ -172,6 +189,198 @@ REFRESH는 저장된 ETag와 Last-Modified로 동일한 원본 표현에 HEAD를
 | 내부 무효화/할당 오류 | 유지; `invalidation_error` |
 | 페이지 정지 전 제출/완료되지 않은 작업 | `undispatched`; 커서가 이를 넘지 않음 |
 
+<a id="sample-configurations"></a>
+
+## 설정 예제
+
+처음 다섯 코드 블록은 각각 독립적인 전체 `nginx.conf` 설정 예입니다. 마지막 블록은 기존 `http` 영역에 Vary 처리를 추가합니다. NGINX는 로컬 포트 8080에서 요청을 받습니다. catalog_backend는 127.0.0.1:8081에서 실행되는 애플리케이션의 업스트림 그룹 이름이며, shop.example.com은 애플리케이션에 전달하는 HTTP Host입니다. 배포 환경에 맞게 주소와 NGINX가 쓸 수 있는 캐시 디렉터리를 변경하세요.
+
+<a id="basic--inline-purge-method"></a>
+
+### 기본 — 인라인 삭제 메서드
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/images/logo.png'
+# 200 — entry purged
+# 200 + Cache-Purge-Code: no_match
+# 403 — client IP not in the allowed list
+```
+
+<a id="basic--separate-purge-location"></a>
+
+### 기본 — 별도 삭제 location
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass      http://catalog_backend;
+            proxy_cache     main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key "$host$uri$is_args$args";
+        }
+
+        # Capture the cache key from the URI and pass it to the zone/key form.
+        # No proxy_pass or proxy_cache required in this location.
+        location ~ ^/purge(/.*) {
+            allow             127.0.0.1;
+            deny              all;
+            proxy_cache_purge main "$host$1$is_args$args";
+        }
+    }
+}
+```
+
+<a id="background-queue-enabled"></a>
+
+### 백그라운드 큐 활성화
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+    cache_purge_queue_size        2048;
+    cache_purge_batch_size        20;
+    cache_purge_throttle_ms       10ms;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+    }
+}
+```
+
+<a id="purge-all-entries"></a>
+
+### 전체 항목 삭제
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location /content {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE purge_all from 127.0.0.1;
+        }
+    }
+}
+```
+
+```bash
+curl -i -X PURGE -H 'Host: shop.example.com' \
+  'http://127.0.0.1:8080/content/anything'
+# 200 — walk completed; inspect error_log for file errors
+```
+
+<a id="json-responses-with-per-location-override"></a>
+
+### Location별로 재정의하는 JSON 응답
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    cache_purge_background_queue on;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        # Default for all locations in this server.
+        cache_purge_response_type json;
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+            proxy_cache_purge PURGE from 127.0.0.1;
+        }
+
+        location /admin/purge {
+            allow 127.0.0.1;
+            deny  all;
+            # Override to plain text for scripting
+            cache_purge_response_type text;
+            proxy_cache_purge         main "$arg_key";
+        }
+    }
+}
+```
+
+<a id="vary-aware-purge"></a>
+
+### Vary 인식 삭제
+
+```nginx
+http {
+    cache_purge_vary_aware on;
+    gzip_vary              on;
+}
+```
+
+키를 삭제하면 다른 파일 경로에 저장된 모든 gzip/Vary 변형도 자동으로 삭제됩니다.
+
 <a id="migration"></a>
 
 ## 마이그레이션
@@ -191,11 +400,12 @@ SHM 구조 변경은 전체 재시작이 필요합니다. 메서드/ACL 구문�
 ## 문서
 
 - [지시어 참고 문서](DIRECTIVES.ko.md)
-- [추가 설정 예제](EXAMPLES.ko.md)
-- [운영과 문제 해결 (영문)](../OPERATIONS.md)
+- [추가 설정 예제](README.ko.md#sample-configurations)
+- [운영과 문제 해결](OPERATIONS.ko.md)
 - [HTTP와 REFRESH 제한 (영문)](../REFRESH.md)
-- [v4 이전 안내 (영문)](../MIGRATION.md)
+- [v4 이전 안내](MIGRATION.ko.md)
 - [구현 구조 (영문)](../ARCHITECTURE.md)
+- [테스트](OPERATIONS.ko.md#testing)
 - [개발과 테스트 (영문)](../../t/TESTING.md)
 
 <a id="see-also"></a>

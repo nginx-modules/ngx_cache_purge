@@ -405,7 +405,7 @@ jobs:
           PYTHON
 
   release-modules:
-    name: Rebuild check · NGINX ${{ matrix.nginx }} · ${{ matrix.platform.arch }}
+    name: Rebuild check
     permissions:
       contents: read
       id-token: write
