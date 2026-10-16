@@ -82,7 +82,7 @@ jobs:
           tags: ngx-cache-purge-test:${{ matrix.nginx }}-${{ matrix.ubuntu }}
           load: true
           cache-from: type=gha,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
-          cache-to: type=gha,mode=max,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,scope=integration-{0}-{1}', matrix.nginx, matrix.ubuntu) || '' }}
           provenance: false
           sbom: false
       - name: Run every TAP suite and write JUnit from this run
@@ -92,6 +92,7 @@ jobs:
         with:
           name: test-results-integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
           path: t/test-results/
+          retention-days: 7
 
   build-compatibility:
     needs: prepare
@@ -126,7 +127,7 @@ jobs:
           tags: ngx-cache-purge-verify:${{ matrix.nginx }}-24.04
           load: true
           cache-from: type=gha,scope=verify-${{ matrix.nginx }}
-          cache-to: type=gha,mode=max,scope=verify-${{ matrix.nginx }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,scope=verify-{0}', matrix.nginx) || '' }}
           provenance: false
           sbom: false
       - name: Strict debug/release module builds, native helpers and runtime regressions
@@ -151,6 +152,7 @@ jobs:
         with:
           name: test-results-build-${{ matrix.nginx }}
           path: t/test-results/
+          retention-days: 7
 
   sanitizer:
     needs: prepare
@@ -181,8 +183,7 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-verify:1.31.6-24.04
           load: true
-          cache-from: type=gha,scope=sanitizer
-          cache-to: type=gha,mode=max,scope=sanitizer
+          cache-from: type=gha,scope=verify-1.31.6
           provenance: false
           sbom: false
       - name: Run pooled native and runtime checks under sanitizers
@@ -199,6 +200,7 @@ jobs:
         with:
           name: test-results-sanitizer
           path: t/test-results/
+          retention-days: 7
 
   native-macos:
     needs: prepare
@@ -225,6 +227,7 @@ jobs:
         with:
           name: test-results-macos
           path: t/test-results/
+          retention-days: 7
 
   native-windows:
     needs: prepare
@@ -270,6 +273,7 @@ jobs:
         with:
           name: test-results-windows-${{ matrix.arch }}
           path: t/test-results/windows/
+          retention-days: 7
 
   memory-leak-test:
     needs: prepare
@@ -299,8 +303,7 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-test:1.31.6-24.04
           load: true
-          cache-from: type=gha,scope=valgrind
-          cache-to: type=gha,mode=max,scope=valgrind
+          cache-from: type=gha,scope=integration-1.31.6-24.04
           provenance: false
           sbom: false
       - run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports test-valgrind
@@ -309,6 +312,7 @@ jobs:
         with:
           name: test-results-valgrind
           path: t/test-results/
+          retention-days: 7
 
   static-analysis:
     needs: prepare
@@ -334,8 +338,7 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-tools
           load: true
-          cache-from: type=gha,scope=analysis
-          cache-to: type=gha,mode=max,scope=analysis
+          cache-from: type=gha,scope=verify-1.31.6
           provenance: false
           sbom: false
       - name: Analyze module and included platform helpers
@@ -450,6 +453,7 @@ jobs:
           name: release-module-${{ matrix.nginx }}-${{ matrix.platform.arch }}
           path: dist/*
           if-no-files-found: error
+          retention-days: 3
 
   create-release:
     name: Publish release with verified assets

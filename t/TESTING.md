@@ -346,6 +346,21 @@ Use that check for branch protection. The release job requires it to succeed.
 Matrix groups allow at most two simultaneous jobs; a new run cancels an older
 run for the same PR/ref, except tags. Separate groups can still run concurrently.
 
+BuildKit caches use the GitHub Actions backend with `mode=min`. Only workflows
+running on `main` export cache entries; pull requests, maintenance branches,
+and tag builds restore eligible caches without creating new ones. Scopes are
+shared by target and NGINX/Ubuntu version: Valgrind imports the same image as
+the 1.31.6 integration job, and sanitizer/Cppcheck import the 1.31.6 verify
+image. Cache availability still follows GitHub's branch-access rules: a cache
+from `main` is not necessarily accessible when `main` is not the repository's
+default branch or the PR base branch.
+
+JUnit artifacts expire after 7 days, and intermediate release-module artifacts
+after 3 days. Published GitHub Release assets are independent of these
+short-lived workflow artifacts. Cache retention and repository size limits
+cannot be enforced by this workflow; configure them in repository Actions
+settings (typically 7 days and 10 GB) if needed.
+
 The local APT composite action pins `vegardit/fast-apt-mirror.sh` 1.4.5 by full
 commit SHA. It selects a runner mirror, then passes the validated URL and CA
 bundle through BuildKit secrets so Ubuntu containers use the selected archive
