@@ -16,6 +16,7 @@ for changes and [distribution packages](#distribution-packages) for packaged bui
 - [Features](#features)
 - [Compatibility](#compatibility)
 - [Distribution packages](#distribution-packages)
+- [Binary release archives](#binary-release-archives)
 - [Build from source](#build-from-source)
 - [Directives](#directives)
 - [Partial key purge](#partial-key-purge)
@@ -85,6 +86,14 @@ modules may depend on a specific NGINX version or ABI, and 2.x packages do not
 provide the background queue directives introduced in 3.x.
 
 ---
+
+### Binary release archives
+
+Git tags use the `3.0.x` format without a `v` prefix. The release
+workflow publishes provenance-attested dynamic-module archives for the
+pinned NGINX versions and architectures after repeat-build and integrity
+checks. See [binary module compatibility and verification](docs/BINARY_MODULES.md)
+before loading an archive on a different NGINX installation.
 
 ### Build from source
 

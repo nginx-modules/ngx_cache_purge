@@ -13,6 +13,6 @@ A clear description of what the problem or limitation is.
 A clear and concise description of what you want to happen.
 
 ### Target Version
-- [ ] `master` (v4)
-- [ ] Requires backporting to `releases/3.0`
-- [ ] Requires backporting to `releases/2.5`
+- [ ] `main` (v4)
+- [ ] Requires backporting to `releases/stable-3.0`
+- [ ] Requires backporting to `releases/stable-2.5`

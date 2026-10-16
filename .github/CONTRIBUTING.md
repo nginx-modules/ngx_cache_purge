@@ -6,16 +6,16 @@ Thank you for contributing! To maintain a clean workflow, please follow our bran
 
 ## 📌 Branching Model & Workflow
 
-* **`master` Branch:** 
-  All active development, new features (currently targeting **v4**), and major updates must be submitted against `master`.
+* **`main` Branch:**
+  All active development, new features (currently targeting **v4**), and major updates must be submitted against `main`.
 * **Release / Maintenance Branches:** 
   Older versions are frozen into dedicated release branches:
-  * **`releases/3.0`** (v3.0.x releases)
-  * **`releases/2.5`** (v2.5.x releases)
+  * **`releases/stable-3.0`** (v3.0.x releases)
+  * **`releases/stable-2.5`** (v2.5.x releases)
   
 * **Backport Policy:**
-  * Features are implemented and stabilized on `master` first.
-  * Backporting to maintenance branches (`releases/3.0` or `releases/2.5`) is evaluated and handled after landing on `master`.
+  * Features are implemented and stabilized on `main` first.
+  * Backporting to maintenance branches (`releases/stable-3.0` or `releases/stable-2.5`) is evaluated and handled after landing on `main`.
   * **Do not submit new feature PRs directly to release branches** without prior maintainer approval.
 
 ---

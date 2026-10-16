@@ -8,32 +8,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 ARG NGINX_VERSION=1.24.0
 ENV NGINX_VERSION=${NGINX_VERSION}
 
-# Prioritized mirrors
-ARG UBUNTU_MIRROR=azure
-RUN . /etc/os-release && \
-    \
-    # Resolve mirror URL from ARG
-    case "${UBUNTU_MIRROR}" in \
-        azure)   MIRROR_URL="http://azure.archive.ubuntu.com/ubuntu/" ;; \
-        kernel)  MIRROR_URL="http://mirrors.kernel.org/ubuntu/" ;; \
-        *)       echo "Unknown UBUNTU_MIRROR: ${UBUNTU_MIRROR}"; exit 1 ;; \
-    esac && \
-    \
-    # 1. Identify the active config file (Standard vs 24.04+ DEB822 format)
-    if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
-        TARGET="/etc/apt/sources.list.d/ubuntu.sources"; \
-        # For 24.04+, replace URIs with selected mirror
-        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
-        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
-    else \
-        TARGET="/etc/apt/sources.list"; \
-        # For 22.04 and below, replace URIs with selected mirror
-        sed -i "s|http://archive.ubuntu.com/ubuntu/|${MIRROR_URL}|g"  "$TARGET"; \
-        sed -i "s|http://security.ubuntu.com/ubuntu/|${MIRROR_URL}|g" "$TARGET"; \
-    fi
+RUN printf '%s\n' 'Acquire::Retries "3";' \
+        'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+        > /etc/apt/apt.conf.d/80-network-retries
 
 # Install dependencies
-RUN apt-get update && apt-get install -y \
+RUN --mount=type=secret,id=apt_mirror \
+    --mount=type=secret,id=apt_ca,mode=0444 \
+    if [ -s /run/secrets/apt_mirror ]; then \
+        mirror="$(cat /run/secrets/apt_mirror)"; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sources=/etc/apt/sources.list.d/ubuntu.sources; \
+        else sources=/etc/apt/sources.list; fi; \
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|$mirror|g" "$sources"; \
+    fi && \
+    ca_option="" && \
+    if [ -s /run/secrets/apt_ca ]; then \
+        ca_option="-o Acquire::https::CaInfo=/run/secrets/apt_ca"; \
+    fi && \
+    apt-get $ca_option update && apt-get $ca_option install -y \
+    ca-certificates \
     build-essential \
     libpcre3-dev \
     libssl-dev \
@@ -60,7 +54,7 @@ RUN cpanm --notest \
     TAP::Formatter::JUnit
 
 # Download and extract nginx
-RUN wget http://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
+RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
     && tar xzf nginx-${NGINX_VERSION}.tar.gz \
     && rm nginx-${NGINX_VERSION}.tar.gz
 

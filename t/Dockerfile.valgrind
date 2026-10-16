@@ -1,0 +1,52 @@
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+ARG NGINX_VERSION=1.26.3
+ENV NGINX_VERSION=${NGINX_VERSION}
+
+RUN printf '%s\n' 'Acquire::Retries "3";' \
+        'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+        > /etc/apt/apt.conf.d/80-network-retries
+
+RUN --mount=type=secret,id=apt_mirror \
+    --mount=type=secret,id=apt_ca,mode=0444 \
+    if [ -s /run/secrets/apt_mirror ]; then \
+        mirror="$(cat /run/secrets/apt_mirror)"; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sources=/etc/apt/sources.list.d/ubuntu.sources; \
+        else sources=/etc/apt/sources.list; fi; \
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|$mirror|g" "$sources"; \
+    fi && \
+    ca_option="" && \
+    if [ -s /run/secrets/apt_ca ]; then \
+        ca_option="-o Acquire::https::CaInfo=/run/secrets/apt_ca"; \
+    fi && \
+    apt-get $ca_option update && apt-get $ca_option install -y \
+    ca-certificates build-essential libpcre3-dev libssl-dev zlib1g-dev \
+    libgd-dev libgeoip-dev libxml2-dev libxslt1-dev \
+    valgrind wget curl git perl cpanminus \
+    && rm -rf /var/lib/apt/lists/* \
+    && cpanm --notest Test::Nginx Test::More Test::Base \
+       Test::LongString List::MoreUtils IO::Socket::SSL
+
+RUN wget https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz \
+    && tar xzf nginx-${NGINX_VERSION}.tar.gz \
+    && rm nginx-${NGINX_VERSION}.tar.gz
+
+WORKDIR /src
+COPY . .
+
+RUN cd /nginx-${NGINX_VERSION} && \
+    ./configure \
+        --sbin-path=/usr/sbin/nginx \
+        --add-module=/src \
+        --with-http_ssl_module \
+        --with-debug && \
+    make && make install
+
+RUN mkdir -p /var/cache/nginx/client_temp \
+    /var/cache/nginx/proxy_temp \
+    /var/cache/nginx/fastcgi_temp \
+    /var/cache/nginx/uwsgi_temp \
+    /var/cache/nginx/scgi_temp
+
+CMD ["prove", "-v", "t/memory.t"]

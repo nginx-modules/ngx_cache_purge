@@ -91,6 +91,31 @@ on nginx ≥ 1.27:
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`) runs the full matrix
-automatically on push / PR. `CHANGELOG.md` is generated from git commits
-in the `create-release` job — no static `CHANGES` file is maintained.
+GitHub Actions (`.github/workflows/build-test-release.yml`) runs the
+existing five TAP suites across the pinned NGINX and Ubuntu matrix on
+branch pushes and pull requests. Valgrind, Cppcheck, Semgrep and the
+performance benchmark remain required checks. The `CI` job aggregates
+their results before allowing a release build.
+
+A manual `workflow_dispatch` run exercises the stable-3.0 workflow
+without publishing a release. GitHub schedules only workflows on the
+default branch, so maintenance-branch CI is not independently scheduled.
+Pushing an existing `3.0.*` tag (for example `3.0.5` or
+`3.0.5-rc.1` without `v`) triggers release builds and publication after
+all required checks succeed. The tagged commit must belong to
+`releases/stable-3.0`; creating a GitHub Release manually does not
+trigger this workflow.
+
+The APT mirror selector (`vegardit/fast-apt-mirror.sh@v1`) configures the
+runner and passes a validated archive URL to BuildKit as a secret.
+Container builds fall back to the Ubuntu distribution mirrors if no
+valid mirror is selected. Cache scopes are specific to the 3.0 build
+matrix, use `mode=min`, and are written only by
+`releases/stable-3.0`. Pull requests and tags may read accessible
+caches but do not write new ones. GitHub enforces cache retention and
+storage limits in repository Actions settings.
+
+Test artifacts expire after 7 days and intermediate release archives
+after 3 days. Published release assets remain available independently
+of these artifacts. See [dynamic-module release archives](../docs/BINARY_MODULES.md)
+for compatibility, repeatability, attestations and immutable publishing.

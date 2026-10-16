@@ -1,0 +1,365 @@
+name: ngx_cache_purge · Build, Test & Release
+
+on:
+  push:
+    branches: [ main, 'releases/**', 'dev/**' ]
+    tags: ['3.0.*']
+  pull_request:
+    branches: [ main, 'releases/**', 'dev/**' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  DOCKER_BUILDKIT: 1
+
+jobs:
+  prepare:
+    name: Validate release ref
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+    - name: Verify release tag and branch
+      if: startsWith(github.ref, 'refs/tags/')
+      env:
+        RELEASE_TAG: ${{ github.ref_name }}
+      run: |
+        if [[ ! "$RELEASE_TAG" =~ ^3\.0\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+          echo 'Invalid release tag: expected 3.0.x[-prerelease]' >&2
+          exit 1
+        fi
+        git fetch --quiet origin '+refs/heads/releases/stable-3.0:refs/remotes/origin/releases/stable-3.0'
+        if ! git merge-base --is-ancestor "${GITHUB_SHA}^{commit}" origin/releases/stable-3.0; then
+          echo 'The release tag must reference a commit on releases/stable-3.0' >&2
+          exit 1
+        fi
+
+  test-matrix:
+    name: Integration tests
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        nginx_version: ['1.26.3', '1.28.2', '1.29.6']
+        ubuntu_version: ['20.04', '24.04']
+        include:
+          - nginx_version: '1.20.2'
+            ubuntu_version: '20.04'
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - uses: ./.github/actions/apt-mirror
+      id: apt
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Build test image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: t/Dockerfile
+        secrets: ${{ steps.apt.outputs.buildkit_secret }}
+        secret-files: |
+          apt_ca=/etc/ssl/certs/ca-certificates.crt
+        build-args: |
+          NGINX_VERSION=${{ matrix.nginx_version }}
+          UBUNTU_VERSION=${{ matrix.ubuntu_version }}
+        tags: ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
+        load: true
+        cache-from: type=gha,scope=v3-integration-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
+        cache-to: ${{ github.ref == 'refs/heads/releases/stable-3.0' && format('type=gha,mode=min,scope=v3-integration-{0}-{1}', matrix.nginx_version, matrix.ubuntu_version) || '' }}
+        provenance: false
+        sbom: false
+
+    - name: Run basic tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/basic.t
+
+    - name: Run background queue tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/background_queue.t
+
+    - name: Run configuration tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/config.t
+
+    - name: Run memory leak tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/memory.t
+
+    - name: Run performance tests
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          prove -v t/performance.t
+
+    - name: Generate test reports
+      if: always()
+      run: |
+        docker run --rm -v $PWD:/src \
+          ngx-cache-purge-test:${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }} \
+          bash -c "prove --formatter=TAP::Formatter::JUnit -v t/ \
+            > /src/test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}.xml" \
+        || true
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}
+        path: test-results-${{ matrix.nginx_version }}-${{ matrix.ubuntu_version }}.xml
+        retention-days: 7
+
+  memory-leak-test:
+    name: Memory Leak Analysis
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - uses: ./.github/actions/apt-mirror
+      id: apt
+
+    - uses: docker/setup-buildx-action@v4
+
+    - name: Build debug image with Valgrind
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: t/Dockerfile.valgrind
+        load: true
+        tags: ngx-cache-purge-valgrind
+        secrets: ${{ steps.apt.outputs.buildkit_secret }}
+        secret-files: |
+          apt_ca=/etc/ssl/certs/ca-certificates.crt
+        cache-from: type=gha,scope=v3-valgrind
+        cache-to: ${{ github.ref == 'refs/heads/releases/stable-3.0' && 'type=gha,mode=min,scope=v3-valgrind' || '' }}
+        provenance: false
+        sbom: false
+
+    - name: Run memory leak tests with Valgrind
+      run: |
+        docker run --rm -v $PWD:/src ngx-cache-purge-valgrind
+
+  static-analysis:
+    name: Cppcheck
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - uses: ./.github/actions/apt-mirror
+
+    - name: Run static analysis with Cppcheck
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck
+        cppcheck --enable=all --inconclusive --std=c89 \
+          --suppress=missingIncludeSystem \
+          --error-exitcode=1 \
+          ngx_cache_purge_module.c
+
+  semgrep-analysis:
+    name: Semgrep
+    needs: prepare
+    runs-on: ubuntu-24.04
+    container:
+      image: semgrep/semgrep
+    if: github.actor != 'dependabot[bot]'
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Run security scan
+      run: |
+        semgrep scan \
+          --config p/security-audit \
+          --config p/secrets \
+          --config p/c \
+          --error
+
+  performance-benchmark:
+    name: Performance Benchmark
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - uses: ./.github/actions/apt-mirror
+      id: apt
+
+    - uses: docker/setup-buildx-action@v4
+
+    - name: Build test image
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: t/Dockerfile
+        build-args: |
+          NGINX_VERSION=1.26.3
+          UBUNTU_VERSION=24.04
+        secrets: ${{ steps.apt.outputs.buildkit_secret }}
+        secret-files: |
+          apt_ca=/etc/ssl/certs/ca-certificates.crt
+        tags: ngx-cache-purge-perf
+        load: true
+        cache-from: type=gha,scope=v3-integration-1.26.3-24.04
+        provenance: false
+        sbom: false
+
+    - name: Run performance benchmarks
+      run: |
+        docker run --rm -v $PWD:/src ngx-cache-purge-perf \
+          bash -c "
+            echo 'Performance Test: Large Cache Purge'
+            mkdir -p cache/test
+            for i in \$(seq 1 10000); do
+              echo 'test content' > cache/test/file_\$i.cache
+            done
+            time prove -v t/performance.t
+          "
+
+  publish-test-results:
+    name: Publish Test Results
+    runs-on: ubuntu-24.04
+    needs: [prepare, test-matrix, memory-leak-test]
+    if: always() && needs.prepare.result == 'success'
+    permissions:
+      checks: write
+      contents: read
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+
+    - name: Download test artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: test-results
+        pattern: test-results-*
+        merge-multiple: true
+
+    - name: Publish test results
+      uses: dorny/test-reporter@v1
+      if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+      with:
+        name: Test Results
+        path: 'test-results/**/*.xml'
+        reporter: java-junit
+        fail-on-error: false
+
+  ci:
+    name: CI
+    runs-on: ubuntu-24.04
+    needs: [prepare, test-matrix, memory-leak-test, static-analysis, semgrep-analysis, performance-benchmark, publish-test-results]
+    if: always()
+    steps:
+    - name: Require required checks to pass
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+        ACTOR: ${{ github.actor }}
+      run: |
+        python3 - <<'PYTHON'
+        import json, os
+        results = json.loads(os.environ['RESULTS'])
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+            summary.write('| Check | Result |\n|---|---|\n')
+            for name, job in results.items():
+                summary.write(f"| {name} | {job['result']} |\n")
+        skipped = {'semgrep-analysis'} if os.environ['ACTOR'] == 'dependabot[bot]' else set()
+        failed = [name for name, job in results.items()
+                  if job['result'] != 'success' and not (name in skipped and job['result'] == 'skipped')]
+        raise SystemExit(1 if failed else 0)
+        PYTHON
+
+  release-modules:
+    name: Rebuild check
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/3.0.') && github.event_name == 'push'
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        nginx: ['1.28.2', '1.29.6']
+        platform:
+          - {arch: x86_64, runner: ubuntu-24.04}
+          - {arch: aarch64, runner: ubuntu-24.04-arm}
+    steps:
+    - uses: actions/checkout@v7
+    - uses: ./.github/actions/apt-mirror
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential libpcre2-dev zlib1g-dev libssl-dev python3
+    - name: Build and load-test module
+      env:
+        NGINX_VERSION: ${{ matrix.nginx }}
+        MODULE_VERSION: ${{ github.ref_name }}
+      run: bash tools/build-release-module.sh
+    - name: Verify byte-for-byte rebuild
+      env:
+        NGINX_VERSION: ${{ matrix.nginx }}
+        MODULE_VERSION: ${{ github.ref_name }}
+      run: bash tools/verify-release-rebuild.sh
+    - name: Attest archive build provenance
+      uses: actions/attest@v4
+      with:
+        subject-path: |
+          dist/*.tar.gz
+          dist/*.zip
+    - uses: actions/upload-artifact@v7
+      with:
+        name: release-module-${{ matrix.nginx }}-${{ matrix.platform.arch }}
+        path: dist/*
+        if-no-files-found: error
+        retention-days: 3
+
+  create-release:
+    name: Publish verified release
+    needs: [ci, release-modules]
+    if: startsWith(github.ref, 'refs/tags/3.0.') && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/checkout@v7
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-module-*
+        merge-multiple: true
+        path: dist
+    - name: Upload to draft, verify and publish
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GH_REPO: ${{ github.repository }}
+        RELEASE_TAG: ${{ github.ref_name }}
+      run: bash tools/publish-release.sh
