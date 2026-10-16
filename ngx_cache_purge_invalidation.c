@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026 Denis Denisov
+ * Copyright (C) 2026 Denys Denysov
  * Distributed under the same BSD license as ngx_cache_purge_module.c.
  */
 #include <ngx_config.h>

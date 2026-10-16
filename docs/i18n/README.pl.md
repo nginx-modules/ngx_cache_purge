@@ -1,10 +1,24 @@
-<a id="ngx_cache_purge"></a>
 
-# ngx_cache_purge
 
-Moduł NGINX do usuwania wpisów z pamięci podręcznej `FastCGI`, `proxy`, `SCGI` i `uWSGI`. W v4 generacje kluczy uniemożliwiają nowym żądaniom użycie starych wpisów jeszcze przed usunięciem plików. REFRESH sprawdza na serwerze źródłowym, czy zawartość pamięci proxy się zmieniła. Obie funkcje wymagają jawnej konfiguracji. Składnia PURGE pozostaje dostępna, lecz odpowiedzi HTTP się zmieniają: zobacz [migrację](README.pl.md#migration).
+<a id="contents"></a>
 
-[English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
+## Spis treści
+
+- [Możliwości](#features)
+- [Zgodność](#compatibility)
+- [Pakiety dystrybucyjne](#distribution-packages)
+- [Instalacja](#installation)
+- [Wybór sposobu działania](#choosing-a-mode)
+- [Użytkowanie](#usage)
+- [Usuwanie według części klucza](#partial-key-purge)
+- [Invalidacja generacji](#generation-invalidation)
+- **REFRESH** — [Sprawdzanie pamięci podręcznej na serwerze źródłowym (REFRESH)](#conditional-refresh)
+- [Bezpieczeństwo](#security)
+- [Migracja](#migration)
+- [Przetłumaczone przykłady konfiguracji](#localized-examples)
+- [Dokumentacja](#documentation)
+- [Zobacz też](#see-also)
+- [Licencja](#license)
 
 <a id="features"></a>
 
@@ -22,19 +36,6 @@ Moduł NGINX do usuwania wpisów z pamięci podręcznej `FastCGI`, `proxy`, `SCG
 - **Status** — metryki kolejki, usuwania i HIT/MISS na cache, odczytywane bez mutexu kolejki
 - **Klucze generacji** — invalidacja dokładna, prefiksowa i przestrzeni nazw bez dyskowego I/O w ścieżce żądania; późne stare zapisy pozostają niedostępne
 - [Sprawdzanie pamięci podręcznej na serwerze źródłowym (REFRESH)](#conditional-refresh)
-
-<a id="choosing-a-mode"></a>
-
-## Wybór sposobu działania
-
-| Cel | Konfiguracja | Znaczenie odpowiedzi |
-|---|---|---|
-| Usunąć nieaktualne wpisy i zaczekać na próbę usunięcia | PURGE bez kolejki w tle | `200 purged` lub `200 no_match`; przy błędzie 4xx/5xx |
-| Zaplanować czyszczenie prefiksu lub całej pamięci podręcznej | PURGE z `cache_purge_background_queue on` | `202 accepted`; stare wpisy mogą być nadal dostępne do czasu czyszczenia |
-| Wykluczyć stare dane z nowych żądań, także po opóźnionym zapisie | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; nowa generacja klucza, pliki usuwane później |
-| Sprawdzić zmiany na serwerze źródłowym | Generacje + `proxy_cache_refresh` + profil wewnętrzny | `200` z wynikami dla wpisów i kontynuacją; bez wstępnego zapełniania |
-
-Mechanizmy można łączyć: zmiana generacji także planuje czyszczenie. Sama kolejka nie chroni przed opóźnionym zapisem. Zobacz [przykład v4](README.pl.md#generation-and-refresh-example), [przykłady PURGE](#sample-configurations) i [odpowiedzi HTTP](../HTTP_RESPONSES.md) (po angielsku).
 
 <a id="compatibility"></a>
 
@@ -68,9 +69,92 @@ make modules
 
 Użyj kodu źródłowego tej samej wersji NGINX, która jest zainstalowana na serwerze. `--with-compat` nie gwarantuje zgodności między dowolnymi wersjami NGINX ani bibliotekami C. Zobacz [moduły dynamiczne i archiwa wydań](../BINARY_MODULES.md) (po angielsku).
 
+<a id="choosing-a-mode"></a>
+
+## Wybór sposobu działania
+
+| Cel | Konfiguracja | Znaczenie odpowiedzi |
+|---|---|---|
+| Usunąć nieaktualne wpisy i zaczekać na próbę usunięcia | PURGE bez kolejki w tle | `200 purged` lub `200 no_match`; przy błędzie 4xx/5xx |
+| Zaplanować czyszczenie prefiksu lub całej pamięci podręcznej | PURGE z `cache_purge_background_queue on` | `202 accepted`; stare wpisy mogą być nadal dostępne do czasu czyszczenia |
+| Wykluczyć stare dane z nowych żądań, także po opóźnionym zapisie | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; nowa generacja klucza, pliki usuwane później |
+| Sprawdzić zmiany na serwerze źródłowym | Generacje + `proxy_cache_refresh` + profil wewnętrzny | `200` z wynikami dla wpisów i kontynuacją; bez wstępnego zapełniania |
+
+Mechanizmy można łączyć: zmiana generacji także planuje czyszczenie. Sama kolejka nie chroni przed opóźnionym zapisem. Zobacz [przykład v4](#localized-examples), [przykłady PURGE](#localized-examples) i [odpowiedzi HTTP](../HTTP_RESPONSES.md) (po angielsku).
+
+<a id="usage"></a>
+
+## Użytkowanie
+
+[→ Przetłumaczone przykłady konfiguracji](#localized-examples)
+
+
+<a id="partial-key-purge"></a>
+
+## Usuwanie według części klucza
+
+Dodaj `*` do **obliczonego klucza pamięci podręcznej**, aby dopasować prefiks bez rozróżniania wielkości liter. Klucze dokładne i Vary nadal ją rozróżniają. Prefiks fizycznego czyszczenia może mieć do 511 bajtów bez końcowej `*`. Dłuższy prefiks powoduje jeden wpis w dzienniku i `400 invalid_selector` bez przeglądania plików.
+
+Z `cache_purge_key` dopasowanie dotyczy wyrażenia logicznego, maksymalnie 8096 bajtów z końcową `*`.
+
+Dla wyrażenia kończącego się `$uri` to żądanie wybiera prefiks URI:
+
+```http
+PURGE /images/header*
+```
+
+Gwiazdka musi kończyć obliczony klucz, nie tylko ścieżkę URI. Uwzględnij parametry lub zmienne na końcu `proxy_cache_key`. Samo `*` przechodzi wszystkie kwalifikujące się wpisy.
+
+<a id="generation-invalidation"></a>
+
+## Invalidacja generacji
+
+Generacje kluczy blokują nowym żądaniom dostęp do starej treści po PURGE, także gdy wcześniejsza odpowiedź zostanie zapisana później. Pliki są usuwane osobno. Przestrzeń nazw współdzieli reguły unieważniania; zachowaj jej katalog stanu między restartami.
+
+<a id="conditional-refresh"></a>
+
+## Sprawdzanie pamięci podręcznej na serwerze źródłowym (REFRESH)
+
+REFRESH wysyła HEAD dla tej samej reprezentacji na serwerze źródłowym, używając zapisanych ETag i Last-Modified. Jeśli karta produktu jest już nieaktualna, użyj PURGE. REFRESH nie pobiera nowej treści, nie wypełnia pustej pamięci podręcznej i nie przedłuża TTL. [HTTP / REFRESH](../REFRESH.md).
+
+| Surowy wynik źródła | Działanie / wynik |
+|---|---|
+| `304` | Zachowaj; `kept` |
+| `200`, `404`, `410` | Warunkowa invalidacja generacji i odroczone czyszczenie; `invalidated` |
+| Inny status | Zachowaj; `upstream_status` |
+| Brak statusu / błąd transportu | Zachowaj; `transport_error` |
+| Metadane Vary | Bez HEAD; `skipped_vary` |
+| Błędne mapowanie lub profil | Zachowaj; `skipped_profile` |
+| Generacja zmieniona w międzyczasie | Bez nowej invalidacji; `raced_replaced` |
+| Wewnętrzny błąd invalidacji/alokacji | Zachowaj; `invalidation_error` |
+| Praca niezgłoszona/nieukończona do zatrzymania strony | `undispatched`; kursor jej nie przekracza |
+
+<a id="security"></a>
+
+## Bezpieczeństwo
+
+- Ogranicz endpointy PURGE przez `allow` / `deny` lub wcześniejsze uwierzytelnianie. Nigdy nie wystawiaj publicznie.
+- Dobierz `cache_purge_queue_size` do ruchu, ograniczając SHM przy zalewie żądań.
+- Rozważ `limit_req` dla purgi niezależnie od zwykłego ruchu.
+
+<a id="migration"></a>
+
+## Migracja
+
+Zmiany struktury SHM wymagają pełnego restartu. Składnia metoda/ACL i obsługa protokołów pozostają dostępne. v4 domyślnie używa JSON, zgodnych kodów w nagłówku i treści oraz `200 no_match` przy braku wpisu. `cache_purge_legacy_status` powoduje tylko ostrzeżenie. Dostosuj klientów do [kontraktu HTTP](../HTTP_RESPONSES.md). Pojemność obejmuje przydzielone zadania; przeciążone żądanie czeka na przyjęcie. Aktywne duplikaty mogą zaplanować kolejny przebieg.
+
+<a id="localized-examples"></a>
+
+## Przetłumaczone przykłady konfiguracji
+
+Kompletne przykłady obejmują katalog produktów z REFRESH oraz typowe konfiguracje PURGE. [Przykłady konfiguracji w języku angielskim](../EXAMPLES.md).
+
+<details>
+<summary>Przetłumaczone przykłady konfiguracji — 7 przykładów</summary>
+
 <a id="generation-and-refresh-example"></a>
 
-## Przykład: katalog produktów
+### Przykład: katalog produktów
 
 Ten kompletny przykład nasłuchuje lokalnie na porcie 8080 i przekazuje żądania do aplikacji na porcie 8081. Aplikacja musi udostępniać `/products/42` z Host `shop.example.com`. Zmień adres, domenę oraz zapisywalne katalogi pamięci podręcznej i stanu.
 
@@ -155,55 +239,15 @@ curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
   'http://127.0.0.1:8080/admin/refresh'
 ```
 
-<a id="partial-key-purge"></a>
-
-## Usuwanie według części klucza
-
-Dodaj `*` do **obliczonego klucza pamięci podręcznej**, aby dopasować prefiks bez rozróżniania wielkości liter. Klucze dokładne i Vary nadal ją rozróżniają. Prefiks fizycznego czyszczenia może mieć do 511 bajtów bez końcowej `*`. Dłuższy prefiks powoduje jeden wpis w dzienniku i `400 invalid_selector` bez przeglądania plików.
-
-Z `cache_purge_key` dopasowanie dotyczy wyrażenia logicznego, maksymalnie 8096 bajtów z końcową `*`.
-
-Dla wyrażenia kończącego się `$uri` to żądanie wybiera prefiks URI:
-
-```http
-PURGE /images/header*
-```
-
-Gwiazdka musi kończyć obliczony klucz, nie tylko ścieżkę URI. Uwzględnij parametry lub zmienne na końcu `proxy_cache_key`. Samo `*` przechodzi wszystkie kwalifikujące się wpisy.
-
-<a id="generation-invalidation"></a>
-
-## Invalidacja generacji
-
-Generacje kluczy blokują nowym żądaniom dostęp do starej treści po PURGE, także gdy wcześniejsza odpowiedź zostanie zapisana później. Pliki są usuwane osobno. Przestrzeń nazw współdzieli reguły unieważniania; zachowaj jej katalog stanu między restartami.
-
-<a id="conditional-refresh"></a>
-
-## Sprawdzanie pamięci podręcznej na serwerze źródłowym (REFRESH)
-
-REFRESH wysyła HEAD dla tej samej reprezentacji na serwerze źródłowym, używając zapisanych ETag i Last-Modified. Jeśli karta produktu jest już nieaktualna, użyj PURGE. REFRESH nie pobiera nowej treści, nie wypełnia pustej pamięci podręcznej i nie przedłuża TTL. [HTTP / REFRESH](../REFRESH.md).
-
-| Surowy wynik źródła | Działanie / wynik |
-|---|---|
-| `304` | Zachowaj; `kept` |
-| `200`, `404`, `410` | Warunkowa invalidacja generacji i odroczone czyszczenie; `invalidated` |
-| Inny status | Zachowaj; `upstream_status` |
-| Brak statusu / błąd transportu | Zachowaj; `transport_error` |
-| Metadane Vary | Bez HEAD; `skipped_vary` |
-| Błędne mapowanie lub profil | Zachowaj; `skipped_profile` |
-| Generacja zmieniona w międzyczasie | Bez nowej invalidacji; `raced_replaced` |
-| Wewnętrzny błąd invalidacji/alokacji | Zachowaj; `invalidation_error` |
-| Praca niezgłoszona/nieukończona do zatrzymania strony | `undispatched`; kursor jej nie przekracza |
-
 <a id="sample-configurations"></a>
 
-## Przykładowe konfiguracje
+### Przykładowe konfiguracje
 
 Pierwszych pięć bloków to odrębne, kompletne przykłady `nginx.conf`. Ostatni dodaje obsługę Vary do istniejącej sekcji `http`. NGINX przyjmuje lokalne połączenia na porcie 8080; `catalog_backend` to nazwa grupy upstream z aplikacją pod adresem `127.0.0.1:8081`. `shop.example.com` jest wartością nagłówka HTTP Host wysyłanego do aplikacji. Dostosuj adresy i wybierz katalog pamięci podręcznej, w którym NGINX może zapisywać pliki.
 
 <a id="basic--inline-purge-method"></a>
 
-### Podstawowa — metoda PURGE w tej samej lokalizacji
+#### Podstawowa — metoda PURGE w tej samej lokalizacji
 
 ```nginx
 events {}
@@ -238,7 +282,7 @@ curl -i -X PURGE -H 'Host: shop.example.com' \
 
 <a id="basic--separate-purge-location"></a>
 
-### Podstawowa — oddzielna lokalizacja PURGE
+#### Podstawowa — oddzielna lokalizacja PURGE
 
 ```nginx
 events {}
@@ -272,7 +316,7 @@ http {
 
 <a id="background-queue-enabled"></a>
 
-### Włączona kolejka w tle
+#### Włączona kolejka w tle
 
 ```nginx
 events {}
@@ -304,7 +348,7 @@ http {
 
 <a id="purge-all-entries"></a>
 
-### Usuwanie wszystkich wpisów
+#### Usuwanie wszystkich wpisów
 
 ```nginx
 events {}
@@ -337,7 +381,7 @@ curl -i -X PURGE -H 'Host: shop.example.com' \
 
 <a id="json-responses-with-per-location-override"></a>
 
-### JSON z nadpisaniem na poziomie location
+#### JSON z nadpisaniem na poziomie location
 
 ```nginx
 events {}
@@ -376,7 +420,7 @@ http {
 
 <a id="vary-aware-purge"></a>
 
-### Usuwanie z obsługą Vary
+#### Usuwanie z obsługą Vary
 
 ```nginx
 http {
@@ -387,26 +431,14 @@ http {
 
 Po usunięciu klucza automatycznie usuwa się też wszystkie warianty gzip/Vary z innych ścieżek.
 
-<a id="migration"></a>
-
-## Migracja
-
-Zmiany struktury SHM wymagają pełnego restartu. Składnia metoda/ACL i obsługa protokołów pozostają dostępne. v4 domyślnie używa JSON, zgodnych kodów w nagłówku i treści oraz `200 no_match` przy braku wpisu. `cache_purge_legacy_status` powoduje tylko ostrzeżenie. Dostosuj klientów do [kontraktu HTTP](../HTTP_RESPONSES.md). Pojemność obejmuje przydzielone zadania; przeciążone żądanie czeka na przyjęcie. Aktywne duplikaty mogą zaplanować kolejny przebieg.
-
-<a id="security"></a>
-
-## Bezpieczeństwo
-
-- Ogranicz endpointy PURGE przez `allow` / `deny` lub wcześniejsze uwierzytelnianie. Nigdy nie wystawiaj publicznie.
-- Dobierz `cache_purge_queue_size` do ruchu, ograniczając SHM przy zalewie żądań.
-- Rozważ `limit_req` dla purgi niezależnie od zwykłego ruchu.
+</details>
 
 <a id="documentation"></a>
 
 ## Dokumentacja
 
 - [Opis dyrektyw](DIRECTIVES.pl.md)
-- [Dalsze przykłady konfiguracji](README.pl.md#sample-configurations)
+- [Dalsze przykłady konfiguracji](#localized-examples)
 - [Eksploatacja i diagnostyka](OPERATIONS.pl.md)
 - [HTTP i ograniczenia REFRESH (angielski)](../REFRESH.md)
 - [Migracja do v4](MIGRATION.pl.md)
@@ -429,7 +461,7 @@ Zmiany struktury SHM wymagają pełnego restartu. Składnia metoda/ACL i obsług
 ```
 Copyright (c) 2009-2014, FRiCKLE <info@frickle.com>
 Copyright (c) 2009-2014, Piotr Sikora <piotr.sikora@frickle.com>
-Copyright (C) 2016-2026, Denis Denisov
+Copyright (C) 2016-2026, Denys Denysov
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions

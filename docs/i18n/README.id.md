@@ -1,10 +1,24 @@
-<a id="ngx_cache_purge"></a>
 
-# ngx_cache_purge
 
-Modul NGINX untuk menghapus entri cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`. Pada v4, generasi kunci mencegah permintaan baru memakai entri lama sebelum berkasnya dihapus. REFRESH memeriksa ke server asal apakah isi cache proxy telah berubah. Kedua fitur perlu dikonfigurasi secara eksplisit. Sintaks PURGE tetap tersedia, tetapi respons HTTP berubah; lihat [migrasi](README.id.md#migration).
+<a id="contents"></a>
 
-[English](../../README.md) · [简体中文](README.zh-CN.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Português (Brasil)](README.pt-BR.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md) · [Türkçe](README.tr.md) · [Polski](README.pl.md) · [Bahasa Indonesia](README.id.md) · [Tiếng Việt](README.vi.md) · [Українська](README.uk.md) · [فارسی](README.fa.md) · [Русский](README.ru.md)
+## Daftar isi
+
+- [Fitur](#features)
+- [Kompatibilitas](#compatibility)
+- [Paket distribusi](#distribution-packages)
+- [Instalasi](#installation)
+- [Pilih perilaku yang diperlukan](#choosing-a-mode)
+- [Penggunaan](#usage)
+- [Penghapusan berdasarkan sebagian kunci](#partial-key-purge)
+- [Invalidasi generasi](#generation-invalidation)
+- **REFRESH** — [Memeriksa cache ke server asal (REFRESH)](#conditional-refresh)
+- [Keamanan](#security)
+- [Migrasi](#migration)
+- [Contoh konfigurasi terjemahan](#localized-examples)
+- [Dokumentasi](#documentation)
+- [Lihat juga](#see-also)
+- [Lisensi](#license)
 
 <a id="features"></a>
 
@@ -22,19 +36,6 @@ Modul NGINX untuk menghapus entri cache `FastCGI`, `proxy`, `SCGI`, dan `uWSGI`.
 - **Status** — metrik antrean, penghapusan, dan HIT/MISS per cache tanpa mengambil mutex antrean saat membaca
 - **Kunci generasi** — invalidasi tepat, prefiks, atau namespace tanpa I/O disk pada jalur permintaan; penulisan lama yang terlambat tetap tak terjangkau
 - [Memeriksa cache ke server asal (REFRESH)](#conditional-refresh)
-
-<a id="choosing-a-mode"></a>
-
-## Pilih perilaku yang diperlukan
-
-| Tujuan | Konfigurasi | Arti respons |
-|---|---|---|
-| Menghapus entri usang dan menunggu upaya penghapusan | PURGE tanpa antrean latar belakang | `200 purged` atau `200 no_match`; 4xx/5xx jika gagal |
-| Menjadwalkan pembersihan berdasarkan prefiks atau seluruh cache | PURGE dengan `cache_purge_background_queue on` | `202 accepted`; entri lama masih dapat disajikan selama menunggu |
-| Mencegah permintaan baru memakai konten lama, termasuk hasil penulisan terlambat | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; generasi kunci baru, berkas dihapus kemudian |
-| Memeriksa perubahan di server asal | Generasi + `proxy_cache_refresh` + profil internal | `200` dengan hasil per entri dan kelanjutan; tidak mengisi cache lebih dahulu |
-
-Mekanisme ini dapat digabungkan: pergantian generasi juga menjadwalkan pembersihan. Antrean saja tidak melindungi dari penulisan terlambat. Lihat [contoh v4](README.id.md#generation-and-refresh-example), [contoh PURGE](#sample-configurations), dan [respons HTTP](../HTTP_RESPONSES.md) (bahasa Inggris).
 
 <a id="compatibility"></a>
 
@@ -68,9 +69,92 @@ make modules
 
 Gunakan kode sumber yang sesuai dengan versi NGINX di server. `--with-compat` tidak menjamin kompatibilitas antarsemua versi NGINX atau pustaka C. Lihat [modul dinamis dan arsip rilis](../BINARY_MODULES.md) (bahasa Inggris).
 
+<a id="choosing-a-mode"></a>
+
+## Pilih perilaku yang diperlukan
+
+| Tujuan | Konfigurasi | Arti respons |
+|---|---|---|
+| Menghapus entri usang dan menunggu upaya penghapusan | PURGE tanpa antrean latar belakang | `200 purged` atau `200 no_match`; 4xx/5xx jika gagal |
+| Menjadwalkan pembersihan berdasarkan prefiks atau seluruh cache | PURGE dengan `cache_purge_background_queue on` | `202 accepted`; entri lama masih dapat disajikan selama menunggu |
+| Mencegah permintaan baru memakai konten lama, termasuk hasil penulisan terlambat | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`; generasi kunci baru, berkas dihapus kemudian |
+| Memeriksa perubahan di server asal | Generasi + `proxy_cache_refresh` + profil internal | `200` dengan hasil per entri dan kelanjutan; tidak mengisi cache lebih dahulu |
+
+Mekanisme ini dapat digabungkan: pergantian generasi juga menjadwalkan pembersihan. Antrean saja tidak melindungi dari penulisan terlambat. Lihat [contoh v4](#localized-examples), [contoh PURGE](#localized-examples), dan [respons HTTP](../HTTP_RESPONSES.md) (bahasa Inggris).
+
+<a id="usage"></a>
+
+## Penggunaan
+
+[→ Contoh konfigurasi terjemahan](#localized-examples)
+
+
+<a id="partial-key-purge"></a>
+
+## Penghapusan berdasarkan sebagian kunci
+
+Tambahkan `*` pada **kunci cache yang sudah dievaluasi** untuk mencocokkan prefiks tanpa membedakan huruf besar/kecil. Kunci tepat dan Vary tetap peka huruf besar/kecil. Prefiks pembersihan fisik maksimal 511 byte, tidak termasuk `*` terakhir. Prefiks yang lebih panjang dicatat sekali dan menghasilkan `400 invalid_selector` tanpa menelusuri berkas.
+
+Dengan `cache_purge_key`, pencocokan memakai ekspresi logis dan menerima hingga 8096 byte, termasuk `*` akhir.
+
+Untuk ekspresi yang berakhir `$uri`, permintaan ini memilih prefiks URI:
+
+```http
+PURGE /images/header*
+```
+
+Bintang harus menjadi byte terakhir kunci yang dievaluasi, bukan sekadar jalur URI. Perhitungkan query string atau akhiran variabel di `proxy_cache_key`. Kunci `*` saja menelusuri semua entri yang memenuhi syarat.
+
+<a id="generation-invalidation"></a>
+
+## Invalidasi generasi
+
+Generasi kunci mencegah permintaan baru memakai konten lama setelah PURGE, termasuk respons lama yang baru selesai ditulis. Berkas dihapus secara terpisah. Namespace berbagi aturan invalidasi; pertahankan direktori statusnya saat memulai ulang.
+
+<a id="conditional-refresh"></a>
+
+## Memeriksa cache ke server asal (REFRESH)
+
+REFRESH mengirim HEAD ke representasi sumber yang sama dengan ETag dan Last-Modified tersimpan. Jika halaman produk sudah pasti usang, gunakan PURGE. REFRESH tidak mengunduh isi baru, mengisi cache kosong, atau memperpanjang TTL. [HTTP / REFRESH](../REFRESH.md).
+
+| Hasil origin mentah | Tindakan / hasil |
+|---|---|
+| `304` | Pertahankan; `kept` |
+| `200`, `404`, `410` | Invalidasi generasi bersyarat dan pembersihan tertunda; `invalidated` |
+| Status lain | Pertahankan; `upstream_status` |
+| Tanpa status / gagal transport | Pertahankan; `transport_error` |
+| Metadata Vary | Tanpa HEAD; `skipped_vary` |
+| Pemetaan/profil tidak valid | Pertahankan; `skipped_profile` |
+| Generasi sudah diganti | Tanpa invalidasi baru; `raced_replaced` |
+| Kegagalan internal invalidasi/alokasi | Pertahankan; `invalidation_error` |
+| Pekerjaan belum dikirim/selesai saat halaman berhenti | `undispatched`; kursor tidak melewatinya |
+
+<a id="security"></a>
+
+## Keamanan
+
+- Batasi endpoint purge dengan `allow` / `deny` atau lapisan autentikasi sebelumnya. Jangan buka untuk publik.
+- Atur `cache_purge_queue_size` sesuai lalu lintas untuk membatasi SHM saat banjir permintaan.
+- Pertimbangkan `limit_req` agar laju purge dibatasi terpisah dari lalu lintas biasa.
+
+<a id="migration"></a>
+
+## Migrasi
+
+Perubahan struktur SHM memerlukan restart penuh. Sintaks metode/ACL dan handler protokol tetap tersedia. v4 memakai JSON secara default, kode hasil yang sama pada header dan isi, serta `200 no_match` untuk entri yang tidak ada. `cache_purge_legacy_status` hanya menghasilkan peringatan. Perbarui klien sesuai [kontrak HTTP](../HTTP_RESPONSES.md). Kapasitas mencakup tugas yang sudah ditetapkan; kelebihan beban menunggu penerimaan. Duplikat aktif dapat menjadwalkan penelusuran ulang.
+
+<a id="localized-examples"></a>
+
+## Contoh konfigurasi terjemahan
+
+Contoh lengkap mencakup katalog produk dengan REFRESH dan konfigurasi PURGE dasar. [Contoh konfigurasi bahasa Inggris](../EXAMPLES.md).
+
+<details>
+<summary>Contoh konfigurasi terjemahan — 7 contoh</summary>
+
 <a id="generation-and-refresh-example"></a>
 
-## Contoh: katalog produk
+### Contoh: katalog produk
 
 Contoh lengkap ini mendengarkan port lokal 8080 dan meneruskan permintaan ke aplikasi pada port 8081. Aplikasi harus melayani `/products/42` dengan Host `shop.example.com`. Sesuaikan alamat, domain, serta direktori cache dan status yang dapat ditulis.
 
@@ -155,55 +239,15 @@ curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
   'http://127.0.0.1:8080/admin/refresh'
 ```
 
-<a id="partial-key-purge"></a>
-
-## Penghapusan berdasarkan sebagian kunci
-
-Tambahkan `*` pada **kunci cache yang sudah dievaluasi** untuk mencocokkan prefiks tanpa membedakan huruf besar/kecil. Kunci tepat dan Vary tetap peka huruf besar/kecil. Prefiks pembersihan fisik maksimal 511 byte, tidak termasuk `*` terakhir. Prefiks yang lebih panjang dicatat sekali dan menghasilkan `400 invalid_selector` tanpa menelusuri berkas.
-
-Dengan `cache_purge_key`, pencocokan memakai ekspresi logis dan menerima hingga 8096 byte, termasuk `*` akhir.
-
-Untuk ekspresi yang berakhir `$uri`, permintaan ini memilih prefiks URI:
-
-```http
-PURGE /images/header*
-```
-
-Bintang harus menjadi byte terakhir kunci yang dievaluasi, bukan sekadar jalur URI. Perhitungkan query string atau akhiran variabel di `proxy_cache_key`. Kunci `*` saja menelusuri semua entri yang memenuhi syarat.
-
-<a id="generation-invalidation"></a>
-
-## Invalidasi generasi
-
-Generasi kunci mencegah permintaan baru memakai konten lama setelah PURGE, termasuk respons lama yang baru selesai ditulis. Berkas dihapus secara terpisah. Namespace berbagi aturan invalidasi; pertahankan direktori statusnya saat memulai ulang.
-
-<a id="conditional-refresh"></a>
-
-## Memeriksa cache ke server asal (REFRESH)
-
-REFRESH mengirim HEAD ke representasi sumber yang sama dengan ETag dan Last-Modified tersimpan. Jika halaman produk sudah pasti usang, gunakan PURGE. REFRESH tidak mengunduh isi baru, mengisi cache kosong, atau memperpanjang TTL. [HTTP / REFRESH](../REFRESH.md).
-
-| Hasil origin mentah | Tindakan / hasil |
-|---|---|
-| `304` | Pertahankan; `kept` |
-| `200`, `404`, `410` | Invalidasi generasi bersyarat dan pembersihan tertunda; `invalidated` |
-| Status lain | Pertahankan; `upstream_status` |
-| Tanpa status / gagal transport | Pertahankan; `transport_error` |
-| Metadata Vary | Tanpa HEAD; `skipped_vary` |
-| Pemetaan/profil tidak valid | Pertahankan; `skipped_profile` |
-| Generasi sudah diganti | Tanpa invalidasi baru; `raced_replaced` |
-| Kegagalan internal invalidasi/alokasi | Pertahankan; `invalidation_error` |
-| Pekerjaan belum dikirim/selesai saat halaman berhenti | `undispatched`; kursor tidak melewatinya |
-
 <a id="sample-configurations"></a>
 
-## Contoh konfigurasi
+### Contoh konfigurasi
 
 Lima blok pertama merupakan contoh `nginx.conf` lengkap yang berdiri sendiri. Blok terakhir menambahkan penanganan Vary ke bagian `http` yang sudah ada. NGINX menerima koneksi lokal pada port 8080; `catalog_backend` adalah nama grup upstream untuk aplikasi di `127.0.0.1:8081`. `shop.example.com` adalah nilai HTTP Host yang dikirim ke aplikasi. Sesuaikan alamat dan gunakan direktori cache yang dapat ditulis oleh NGINX.
 
 <a id="basic--inline-purge-method"></a>
 
-### Dasar — metode purge inline
+#### Dasar — metode purge inline
 
 ```nginx
 events {}
@@ -238,7 +282,7 @@ curl -i -X PURGE -H 'Host: shop.example.com' \
 
 <a id="basic--separate-purge-location"></a>
 
-### Dasar — location purge terpisah
+#### Dasar — location purge terpisah
 
 ```nginx
 events {}
@@ -272,7 +316,7 @@ http {
 
 <a id="background-queue-enabled"></a>
 
-### Antrean latar diaktifkan
+#### Antrean latar diaktifkan
 
 ```nginx
 events {}
@@ -304,7 +348,7 @@ http {
 
 <a id="purge-all-entries"></a>
 
-### Menghapus semua entri
+#### Menghapus semua entri
 
 ```nginx
 events {}
@@ -337,7 +381,7 @@ curl -i -X PURGE -H 'Host: shop.example.com' \
 
 <a id="json-responses-with-per-location-override"></a>
 
-### Respons JSON dengan pengaturan per location
+#### Respons JSON dengan pengaturan per location
 
 ```nginx
 events {}
@@ -376,7 +420,7 @@ http {
 
 <a id="vary-aware-purge"></a>
 
-### Purge sadar Vary
+#### Purge sadar Vary
 
 ```nginx
 http {
@@ -387,26 +431,14 @@ http {
 
 Setelah kunci dihapus, semua varian gzip/Vary pada jalur berbeda ikut dihapus otomatis.
 
-<a id="migration"></a>
-
-## Migrasi
-
-Perubahan struktur SHM memerlukan restart penuh. Sintaks metode/ACL dan handler protokol tetap tersedia. v4 memakai JSON secara default, kode hasil yang sama pada header dan isi, serta `200 no_match` untuk entri yang tidak ada. `cache_purge_legacy_status` hanya menghasilkan peringatan. Perbarui klien sesuai [kontrak HTTP](../HTTP_RESPONSES.md). Kapasitas mencakup tugas yang sudah ditetapkan; kelebihan beban menunggu penerimaan. Duplikat aktif dapat menjadwalkan penelusuran ulang.
-
-<a id="security"></a>
-
-## Keamanan
-
-- Batasi endpoint purge dengan `allow` / `deny` atau lapisan autentikasi sebelumnya. Jangan buka untuk publik.
-- Atur `cache_purge_queue_size` sesuai lalu lintas untuk membatasi SHM saat banjir permintaan.
-- Pertimbangkan `limit_req` agar laju purge dibatasi terpisah dari lalu lintas biasa.
+</details>
 
 <a id="documentation"></a>
 
 ## Dokumentasi
 
 - [Referensi direktif](DIRECTIVES.id.md)
-- [Contoh konfigurasi lainnya](README.id.md#sample-configurations)
+- [Contoh konfigurasi lainnya](#localized-examples)
 - [Operasi dan pemecahan masalah](OPERATIONS.id.md)
 - [HTTP dan batas REFRESH (Inggris)](../REFRESH.md)
 - [Migrasi ke v4](MIGRATION.id.md)
@@ -429,7 +461,7 @@ Perubahan struktur SHM memerlukan restart penuh. Sintaks metode/ACL dan handler 
 ```
 Copyright (c) 2009-2014, FRiCKLE <info@frickle.com>
 Copyright (c) 2009-2014, Piotr Sikora <piotr.sikora@frickle.com>
-Copyright (C) 2016-2026, Denis Denisov
+Copyright (C) 2016-2026, Denys Denysov
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions

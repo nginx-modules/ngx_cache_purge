@@ -2,7 +2,7 @@
 
 # Directives
 
-### `proxy_cache_purge`
+## `proxy_cache_purge`
 
 ```
 Syntax:  proxy_cache_purge on | off;
@@ -16,7 +16,7 @@ Context: http, server, location
 
 **Separate-location form** (zone and key arguments) — allowed only inside a purge location (typically a regex location capturing the cache key). Looks up the cache zone by name and purges the compiled key expression. This form is incompatible with `proxy_cache` and `proxy_pass` in the same location.
 
-### `fastcgi_cache_purge`
+## `fastcgi_cache_purge`
 
 ```
 Syntax:  fastcgi_cache_purge on | off;
@@ -28,7 +28,7 @@ Context: http, server, location
 
 Equivalent to `proxy_cache_purge` but for FastCGI cache zones configured with `fastcgi_cache` / `fastcgi_cache_path`.
 
-### `scgi_cache_purge`
+## `scgi_cache_purge`
 
 ```
 Syntax:  scgi_cache_purge on | off;
@@ -40,7 +40,7 @@ Context: http, server, location
 
 Equivalent to `proxy_cache_purge` but for SCGI cache zones configured with `scgi_cache` / `scgi_cache_path`.
 
-### `uwsgi_cache_purge`
+## `uwsgi_cache_purge`
 
 ```
 Syntax:  uwsgi_cache_purge on | off;
@@ -52,7 +52,7 @@ Context: http, server, location
 
 Equivalent to `proxy_cache_purge` but for uWSGI cache zones configured with `uwsgi_cache` / `uwsgi_cache_path`.
 
-### `cache_purge_response_type`
+## `cache_purge_response_type`
 
 ```
 Syntax:  cache_purge_response_type json | html | xml | text | none;
@@ -64,7 +64,7 @@ Selects the successful PURGE body format. `Cache-Purge-Code` and the body result
 
 `none` suppresses PURGE bodies: completed success becomes `204`, accepted work stays `202`, and errors retain 4xx/5xx. Status and REFRESH keep structured JSON. See the [HTTP contract](HTTP_RESPONSES.md) for the catalog, fields, examples and limits.
 
-### `cache_purge_background_queue`
+## `cache_purge_background_queue`
 
 ```
 Syntax:  cache_purge_background_queue on | off;
@@ -80,7 +80,7 @@ If the queue is full or a task allocation fails, the request stays open until ad
 
 See [execution model](ARCHITECTURE.md#execution-model) for threads, reload and shutdown. For this flag and `cache_purge_vary_aware`, a repeated directive keeps the last value. `cache_purge_legacy_status` is obsolete and ignored. Invalid flag values are rejected.
 
-### `cache_purge_queue_size`
+## `cache_purge_queue_size`
 
 ```
 Syntax:  cache_purge_queue_size <number>;
@@ -97,7 +97,7 @@ Declaring a namespace also creates the task queue.
 
 Zone size includes task storage, path metadata and aligned worker metrics. It depends on the build and number of cache paths; see [memory sizing](OPERATIONS.md#memory-sizing).
 
-### `cache_purge_thread_pool`
+## `cache_purge_thread_pool`
 
 ```
 Syntax:  cache_purge_thread_pool <name>;
@@ -117,7 +117,7 @@ http {
 
 NGINX validates named pools and delivers completion through the native task event. No private thread-pool layout or completion queue is copied. Custom pool names must exist when threads are supported. Without thread support or on Windows the directive is accepted and execution uses bounded event-loop slices. A full selected pool delays execution; it does not move I/O back into the event loop. Dedicated pools add thread stacks and context-switch costs.
 
-### `cache_purge_batch_size`
+## `cache_purge_batch_size`
 
 ```
 Syntax:  cache_purge_batch_size <number>;
@@ -131,7 +131,7 @@ Maximum tasks processed by each worker between throttle pauses. Progress is reta
 
 This controls tasks, not files or callback duration. Lower values introduce more pauses between tasks; they do not interrupt an active threaded walk. Use it together with `cache_purge_throttle_ms` when tuning disk load.
 
-### `cache_purge_throttle_ms`
+## `cache_purge_throttle_ms`
 
 ```
 Syntax:  cache_purge_throttle_ms <time>;
@@ -146,7 +146,7 @@ An idle worker checks again after ten times this interval. Incomplete slices and
 
 Admission, pool pressure and delayed cleanup retries use 10 ms polling.
 
-### `cache_purge_queue_status`
+## `cache_purge_queue_status`
 
 ```
 Syntax:  cache_purge_queue_status <cache_path>;
@@ -220,7 +220,7 @@ Cumulative counters saturate at the unsigned 64-bit maximum, survive ordinary re
 
 HIT/MISS observation counts only main requests with a native cache decision. A missing upstream, cache status zero, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED are excluded from this ratio. Ordinary uncached requests do not become MISS. Monitoring alone can create the SHM zone even with background purging off. On 32-bit systems, queue age covers intervals below about 24.9 days; a negative signed clock difference is reported as zero.
 
-### `cache_purge_legacy_status`
+## `cache_purge_legacy_status`
 
 ```
 Syntax:  cache_purge_legacy_status on | off;
@@ -230,7 +230,7 @@ Context: http
 
 Accepted for configuration migration only. Both values emit a warning and have no effect. Remove the directive; invalid values still fail validation. A synchronous miss returns `200 no_match`; accepted physical cleanup returns `202 accepted`; published generation invalidation returns `200 invalidated`. The former `412`/`404` switch is gone. See the [HTTP contract](HTTP_RESPONSES.md).
 
-### `cache_purge_vary_aware`
+## `cache_purge_vary_aware`
 
 ```
 Syntax:  cache_purge_vary_aware on | off;
@@ -244,7 +244,7 @@ Disabled by default because each exact purge adds a full directory walk. Enable 
 
 Generation invalidation covers every representation of the logical key without this option.
 
-### `cache_purge_namespace`
+## `cache_purge_namespace`
 
 ```text
 Syntax:  cache_purge_namespace <name> <size> <state-directory>;
@@ -258,7 +258,7 @@ The state directory stores small marker files that distinguish full restarts. Ke
 
 An ordinary reload retains the namespace state. Changing its size or path, or removing the namespace, requires a full restart.
 
-### `cache_purge_key`
+## `cache_purge_key`
 
 ```text
 Syntax:  cache_purge_key <namespace> "<logical-key-expression>";
@@ -268,7 +268,7 @@ Context: http, server, location
 
 Binds the location to an existing namespace and exposes `$cache_purge_key`. Set the entire `proxy_cache_key`, `fastcgi_cache_key`, `scgi_cache_key` or `uwsgi_cache_key` to that variable, including the corresponding separate PURGE location. A PURGE whose expanded native key differs from the generated key fails with `500` instead of claiming strict invalidation. Do not refer to `$cache_purge_key` inside its own logical expression. Logical keys have a maximum of 8096 bytes. Bind only participating locations when other locations need legacy semantics; there is no `off` form to cancel an inherited binding.
 
-### `proxy_cache_refresh`
+## `proxy_cache_refresh`
 
 ```text
 Syntax:  proxy_cache_refresh <zone> "<native-key-expression>";
@@ -278,7 +278,7 @@ Context: location
 
 Creates an explicit main-request-only REFRESH endpoint; other methods return `405`. It requires a `cache_purge_key` binding, `$cache_purge_key` as its native expression, and a refresh profile. The expanded logical key selects an exact key, a trailing-`*` prefix or `*` for the namespace in this cache path. Protect the location with core access/authentication rules. Only proxy caches support REFRESH; PURGE remains available for all four protocols.
 
-### `cache_purge_refresh_profile`
+## `cache_purge_refresh_profile`
 
 ```text
 Syntax:  cache_purge_refresh_profile <internal-uri> <logical-key-prefix>;
@@ -294,7 +294,7 @@ Set `If-None-Match` to exactly `$cache_purge_refresh_etag` and `If-Modified-Sinc
 
 The module validates the actual target before access checks, including after internal redirects. It does not infer a host from a key or search for `://`. The administrator remains responsible for correct mapping. Vary entries are skipped because their original request headers are unavailable.
 
-### `cache_purge_refresh_timeout`
+## `cache_purge_refresh_timeout`
 
 ```text
 Syntax:  cache_purge_refresh_timeout <time>;

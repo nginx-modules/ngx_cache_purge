@@ -6,7 +6,7 @@
 
 <a id="proxy_cache_purge"></a>
 
-### `proxy_cache_purge`
+## `proxy_cache_purge`
 
 ```
 Syntax:  proxy_cache_purge on | off;
@@ -22,7 +22,7 @@ Context: http, server, location
 
 <a id="fastcgi_cache_purge"></a>
 
-### `fastcgi_cache_purge`
+## `fastcgi_cache_purge`
 
 ```
 Syntax:  fastcgi_cache_purge on | off;
@@ -36,7 +36,7 @@ Context: http, server, location
 
 <a id="scgi_cache_purge"></a>
 
-### `scgi_cache_purge`
+## `scgi_cache_purge`
 
 ```
 Syntax:  scgi_cache_purge on | off;
@@ -50,7 +50,7 @@ Context: http, server, location
 
 <a id="uwsgi_cache_purge"></a>
 
-### `uwsgi_cache_purge`
+## `uwsgi_cache_purge`
 
 ```
 Syntax:  uwsgi_cache_purge on | off;
@@ -64,7 +64,7 @@ Context: http, server, location
 
 <a id="cache_purge_response_type"></a>
 
-### `cache_purge_response_type`
+## `cache_purge_response_type`
 
 ```
 Syntax:  cache_purge_response_type json | html | xml | text | none;
@@ -79,7 +79,7 @@ Context: http, server, location
 
 <a id="cache_purge_background_queue"></a>
 
-### `cache_purge_background_queue`
+## `cache_purge_background_queue`
 
 ```
 Syntax:  cache_purge_background_queue on | off;
@@ -97,7 +97,7 @@ Context: http
 
 <a id="cache_purge_queue_size"></a>
 
-### `cache_purge_queue_size`
+## `cache_purge_queue_size`
 
 ```
 Syntax:  cache_purge_queue_size <number>;
@@ -116,7 +116,7 @@ Context: http
 
 <a id="cache_purge_thread_pool"></a>
 
-### `cache_purge_thread_pool`
+## `cache_purge_thread_pool`
 
 ```
 Syntax:  cache_purge_thread_pool <name>;
@@ -138,7 +138,7 @@ NGINX проверяет именованные пулы и сообщает о 
 
 <a id="cache_purge_batch_size"></a>
 
-### `cache_purge_batch_size`
+## `cache_purge_batch_size`
 
 ```
 Syntax:  cache_purge_batch_size <number>;
@@ -154,7 +154,7 @@ Context: http
 
 <a id="cache_purge_throttle_ms"></a>
 
-### `cache_purge_throttle_ms`
+## `cache_purge_throttle_ms`
 
 ```
 Syntax:  cache_purge_throttle_ms <time>;
@@ -171,7 +171,7 @@ Context: http
 
 <a id="cache_purge_queue_status"></a>
 
-### `cache_purge_queue_status`
+## `cache_purge_queue_status`
 
 ```
 Syntax:  cache_purge_queue_status <cache_path>;
@@ -247,7 +247,7 @@ HIT/MISS учитывает только основные запросы с ре
 
 <a id="cache_purge_legacy_status"></a>
 
-### `cache_purge_legacy_status`
+## `cache_purge_legacy_status`
 
 ```
 Syntax:  cache_purge_legacy_status on | off;
@@ -259,7 +259,7 @@ Context: http
 
 <a id="cache_purge_vary_aware"></a>
 
-### `cache_purge_vary_aware`
+## `cache_purge_vary_aware`
 
 ```
 Syntax:  cache_purge_vary_aware on | off;
@@ -275,7 +275,7 @@ Context: http
 
 <a id="cache_purge_namespace"></a>
 
-### `cache_purge_namespace`
+## `cache_purge_namespace`
 
 ```text
 Syntax:  cache_purge_namespace <name> <size> <state-directory>;
@@ -291,7 +291,7 @@ Context: http
 
 <a id="cache_purge_key"></a>
 
-### `cache_purge_key`
+## `cache_purge_key`
 
 ```text
 Syntax:  cache_purge_key <namespace> "<logical-key-expression>";
@@ -303,7 +303,7 @@ Context: http, server, location
 
 <a id="proxy_cache_refresh"></a>
 
-### `proxy_cache_refresh`
+## `proxy_cache_refresh`
 
 ```text
 Syntax:  proxy_cache_refresh <zone> "<native-key-expression>";
@@ -315,7 +315,7 @@ Context: location
 
 <a id="cache_purge_refresh_profile"></a>
 
-### `cache_purge_refresh_profile`
+## `cache_purge_refresh_profile`
 
 ```text
 Syntax:  cache_purge_refresh_profile <internal-uri> <logical-key-prefix>;
@@ -333,7 +333,7 @@ Context: location
 
 <a id="cache_purge_refresh_timeout"></a>
 
-### `cache_purge_refresh_timeout`
+## `cache_purge_refresh_timeout`
 
 ```text
 Syntax:  cache_purge_refresh_timeout <time>;

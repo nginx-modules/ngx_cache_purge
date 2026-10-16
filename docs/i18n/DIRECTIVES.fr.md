@@ -6,7 +6,7 @@
 
 <a id="proxy_cache_purge"></a>
 
-### `proxy_cache_purge`
+## `proxy_cache_purge`
 
 ```
 Syntax:  proxy_cache_purge on | off;
@@ -22,7 +22,7 @@ Context: http, server, location
 
 <a id="fastcgi_cache_purge"></a>
 
-### `fastcgi_cache_purge`
+## `fastcgi_cache_purge`
 
 ```
 Syntax:  fastcgi_cache_purge on | off;
@@ -36,7 +36,7 @@ Context: http, server, location
 
 <a id="scgi_cache_purge"></a>
 
-### `scgi_cache_purge`
+## `scgi_cache_purge`
 
 ```
 Syntax:  scgi_cache_purge on | off;
@@ -50,7 +50,7 @@ Context: http, server, location
 
 <a id="uwsgi_cache_purge"></a>
 
-### `uwsgi_cache_purge`
+## `uwsgi_cache_purge`
 
 ```
 Syntax:  uwsgi_cache_purge on | off;
@@ -64,7 +64,7 @@ Context: http, server, location
 
 <a id="cache_purge_response_type"></a>
 
-### `cache_purge_response_type`
+## `cache_purge_response_type`
 
 ```
 Syntax:  cache_purge_response_type json | html | xml | text | none;
@@ -78,7 +78,7 @@ Choisit le format des réponses PURGE réussies ; JSON est utilisé par défaut.
 
 <a id="cache_purge_background_queue"></a>
 
-### `cache_purge_background_queue`
+## `cache_purge_background_queue`
 
 ```
 Syntax:  cache_purge_background_queue on | off;
@@ -96,7 +96,7 @@ Pour cet indicateur et `cache_purge_vary_aware`, la dernière valeur déclarée 
 
 <a id="cache_purge_queue_size"></a>
 
-### `cache_purge_queue_size`
+## `cache_purge_queue_size`
 
 ```
 Syntax:  cache_purge_queue_size <number>;
@@ -115,7 +115,7 @@ La zone inclut tâches, métadonnées de chemins et métriques alignées des wor
 
 <a id="cache_purge_thread_pool"></a>
 
-### `cache_purge_thread_pool`
+## `cache_purge_thread_pool`
 
 ```
 Syntax:  cache_purge_thread_pool <name>;
@@ -137,7 +137,7 @@ NGINX valide les pools et signale la fin par l’événement natif de tâche ; a
 
 <a id="cache_purge_batch_size"></a>
 
-### `cache_purge_batch_size`
+## `cache_purge_batch_size`
 
 ```
 Syntax:  cache_purge_batch_size <number>;
@@ -153,7 +153,7 @@ Contrôle des tâches, pas des fichiers ni la durée des callbacks. Réduire ajo
 
 <a id="cache_purge_throttle_ms"></a>
 
-### `cache_purge_throttle_ms`
+## `cache_purge_throttle_ms`
 
 ```
 Syntax:  cache_purge_throttle_ms <time>;
@@ -170,7 +170,7 @@ Admission, saturation du pool et reprises différées sont sondées toutes les 1
 
 <a id="cache_purge_queue_status"></a>
 
-### `cache_purge_queue_status`
+## `cache_purge_queue_status`
 
 ```
 Syntax:  cache_purge_queue_status <cache_path>;
@@ -246,7 +246,7 @@ HIT/MISS compte uniquement les requêtes principales avec décision native. Upst
 
 <a id="cache_purge_legacy_status"></a>
 
-### `cache_purge_legacy_status`
+## `cache_purge_legacy_status`
 
 ```
 Syntax:  cache_purge_legacy_status on | off;
@@ -258,7 +258,7 @@ Directive obsolète, acceptée uniquement pour la migration des configurations. 
 
 <a id="cache_purge_vary_aware"></a>
 
-### `cache_purge_vary_aware`
+## `cache_purge_vary_aware`
 
 ```
 Syntax:  cache_purge_vary_aware on | off;
@@ -274,7 +274,7 @@ L’invalidation par générations couvre toutes les représentations de la clé
 
 <a id="cache_purge_namespace"></a>
 
-### `cache_purge_namespace`
+## `cache_purge_namespace`
 
 ```text
 Syntax:  cache_purge_namespace <name> <size> <state-directory>;
@@ -286,7 +286,7 @@ Déclare un espace de générations avant ses liaisons aux locations. Nom de 1�
 
 <a id="cache_purge_key"></a>
 
-### `cache_purge_key`
+## `cache_purge_key`
 
 ```text
 Syntax:  cache_purge_key <namespace> "<logical-key-expression>";
@@ -298,7 +298,7 @@ Lie le location à un espace existant et expose `$cache_purge_key`. Cette variab
 
 <a id="proxy_cache_refresh"></a>
 
-### `proxy_cache_refresh`
+## `proxy_cache_refresh`
 
 ```text
 Syntax:  proxy_cache_refresh <zone> "<native-key-expression>";
@@ -310,7 +310,7 @@ Crée un endpoint REFRESH explicite réservé aux requêtes principales ; autres
 
 <a id="cache_purge_refresh_profile"></a>
 
-### `cache_purge_refresh_profile`
+## `cache_purge_refresh_profile`
 
 ```text
 Syntax:  cache_purge_refresh_profile <internal-uri> <logical-key-prefix>;
@@ -324,7 +324,7 @@ Configurez `proxy_intercept_errors off` dans la sonde ; une interception hérit�
 
 <a id="cache_purge_refresh_timeout"></a>
 
-### `cache_purge_refresh_timeout`
+## `cache_purge_refresh_timeout`
 
 ```text
 Syntax:  cache_purge_refresh_timeout <time>;

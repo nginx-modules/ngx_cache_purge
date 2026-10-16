@@ -8,7 +8,7 @@
 
 <a id="proxy_cache_purge"></a>
 
-### `proxy_cache_purge`
+## `proxy_cache_purge`
 
 <div dir="ltr">
 
@@ -28,7 +28,7 @@ Context: http, server, location
 
 <a id="fastcgi_cache_purge"></a>
 
-### `fastcgi_cache_purge`
+## `fastcgi_cache_purge`
 
 <div dir="ltr">
 
@@ -46,7 +46,7 @@ Context: http, server, location
 
 <a id="scgi_cache_purge"></a>
 
-### `scgi_cache_purge`
+## `scgi_cache_purge`
 
 <div dir="ltr">
 
@@ -64,7 +64,7 @@ Context: http, server, location
 
 <a id="uwsgi_cache_purge"></a>
 
-### `uwsgi_cache_purge`
+## `uwsgi_cache_purge`
 
 <div dir="ltr">
 
@@ -82,7 +82,7 @@ Context: http, server, location
 
 <a id="cache_purge_response_type"></a>
 
-### `cache_purge_response_type`
+## `cache_purge_response_type`
 
 <div dir="ltr">
 
@@ -100,7 +100,7 @@ Context: http, server, location
 
 <a id="cache_purge_background_queue"></a>
 
-### `cache_purge_background_queue`
+## `cache_purge_background_queue`
 
 <div dir="ltr">
 
@@ -122,7 +122,7 @@ Context: http
 
 <a id="cache_purge_queue_size"></a>
 
-### `cache_purge_queue_size`
+## `cache_purge_queue_size`
 
 <div dir="ltr">
 
@@ -145,7 +145,7 @@ Context: http
 
 <a id="cache_purge_thread_pool"></a>
 
-### `cache_purge_thread_pool`
+## `cache_purge_thread_pool`
 
 <div dir="ltr">
 
@@ -175,7 +175,7 @@ NGINX مخزن‌های نام‌دار را اعتبارسنجی می‌کند 
 
 <a id="cache_purge_batch_size"></a>
 
-### `cache_purge_batch_size`
+## `cache_purge_batch_size`
 
 <div dir="ltr">
 
@@ -195,7 +195,7 @@ Context: http
 
 <a id="cache_purge_throttle_ms"></a>
 
-### `cache_purge_throttle_ms`
+## `cache_purge_throttle_ms`
 
 <div dir="ltr">
 
@@ -216,7 +216,7 @@ Context: http
 
 <a id="cache_purge_queue_status"></a>
 
-### `cache_purge_queue_status`
+## `cache_purge_queue_status`
 
 <div dir="ltr">
 
@@ -304,7 +304,7 @@ location = /cache_purge_queue_status {
 
 <a id="cache_purge_legacy_status"></a>
 
-### `cache_purge_legacy_status`
+## `cache_purge_legacy_status`
 
 <div dir="ltr">
 
@@ -320,7 +320,7 @@ Context: http
 
 <a id="cache_purge_vary_aware"></a>
 
-### `cache_purge_vary_aware`
+## `cache_purge_vary_aware`
 
 <div dir="ltr">
 
@@ -340,7 +340,7 @@ Context: http
 
 <a id="cache_purge_namespace"></a>
 
-### `cache_purge_namespace`
+## `cache_purge_namespace`
 
 <div dir="ltr">
 
@@ -356,7 +356,7 @@ Context: http
 
 <a id="cache_purge_key"></a>
 
-### `cache_purge_key`
+## `cache_purge_key`
 
 <div dir="ltr">
 
@@ -372,7 +372,7 @@ location را به یک فضای نام موجود متصل می‌کند و `$c
 
 <a id="proxy_cache_refresh"></a>
 
-### `proxy_cache_refresh`
+## `proxy_cache_refresh`
 
 <div dir="ltr">
 
@@ -388,7 +388,7 @@ Context: location
 
 <a id="cache_purge_refresh_profile"></a>
 
-### `cache_purge_refresh_profile`
+## `cache_purge_refresh_profile`
 
 <div dir="ltr">
 
@@ -406,7 +406,7 @@ Context: location
 
 <a id="cache_purge_refresh_timeout"></a>
 
-### `cache_purge_refresh_timeout`
+## `cache_purge_refresh_timeout`
 
 <div dir="ltr">
 

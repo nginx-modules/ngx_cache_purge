@@ -6,7 +6,7 @@
 
 <a id="proxy_cache_purge"></a>
 
-### `proxy_cache_purge`
+## `proxy_cache_purge`
 
 ```
 Syntax:  proxy_cache_purge on | off;
@@ -22,7 +22,7 @@ Context: http, server, location
 
 <a id="fastcgi_cache_purge"></a>
 
-### `fastcgi_cache_purge`
+## `fastcgi_cache_purge`
 
 ```
 Syntax:  fastcgi_cache_purge on | off;
@@ -36,7 +36,7 @@ Entspricht `proxy_cache_purge` für FastCGI-Zonen, die mit `fastcgi_cache` / `fa
 
 <a id="scgi_cache_purge"></a>
 
-### `scgi_cache_purge`
+## `scgi_cache_purge`
 
 ```
 Syntax:  scgi_cache_purge on | off;
@@ -50,7 +50,7 @@ Entspricht `proxy_cache_purge` für SCGI-Zonen, die mit `scgi_cache` / `scgi_cac
 
 <a id="uwsgi_cache_purge"></a>
 
-### `uwsgi_cache_purge`
+## `uwsgi_cache_purge`
 
 ```
 Syntax:  uwsgi_cache_purge on | off;
@@ -64,7 +64,7 @@ Entspricht `proxy_cache_purge` für uWSGI-Zonen, die mit `uwsgi_cache` / `uwsgi_
 
 <a id="cache_purge_response_type"></a>
 
-### `cache_purge_response_type`
+## `cache_purge_response_type`
 
 ```
 Syntax:  cache_purge_response_type json | html | xml | text | none;
@@ -78,7 +78,7 @@ Wählt das Format erfolgreicher PURGE-Antworten; Standard ist JSON. `Cache-Purge
 
 <a id="cache_purge_background_queue"></a>
 
-### `cache_purge_background_queue`
+## `cache_purge_background_queue`
 
 ```
 Syntax:  cache_purge_background_queue on | off;
@@ -96,7 +96,7 @@ Für diesen Schalter und `cache_purge_vary_aware` gilt der zuletzt deklarierte W
 
 <a id="cache_purge_queue_size"></a>
 
-### `cache_purge_queue_size`
+## `cache_purge_queue_size`
 
 ```
 Syntax:  cache_purge_queue_size <number>;
@@ -115,7 +115,7 @@ Die Zonengröße umfasst Auftragsspeicher, Pfadmetadaten und ausgerichtete Worke
 
 <a id="cache_purge_thread_pool"></a>
 
-### `cache_purge_thread_pool`
+## `cache_purge_thread_pool`
 
 ```
 Syntax:  cache_purge_thread_pool <name>;
@@ -137,7 +137,7 @@ NGINX validiert benannte Pools und meldet Abschlüsse über das native Task-Even
 
 <a id="cache_purge_batch_size"></a>
 
-### `cache_purge_batch_size`
+## `cache_purge_batch_size`
 
 ```
 Syntax:  cache_purge_batch_size <number>;
@@ -153,7 +153,7 @@ Gesteuert werden Aufträge, nicht Dateien oder Callback-Dauer. Kleinere Werte er
 
 <a id="cache_purge_throttle_ms"></a>
 
-### `cache_purge_throttle_ms`
+## `cache_purge_throttle_ms`
 
 ```
 Syntax:  cache_purge_throttle_ms <time>;
@@ -170,7 +170,7 @@ Aufnahme-, Pool- und verzögerte Löschwiederholungen werden im Abstand von 10 m
 
 <a id="cache_purge_queue_status"></a>
 
-### `cache_purge_queue_status`
+## `cache_purge_queue_status`
 
 ```
 Syntax:  cache_purge_queue_status <cache_path>;
@@ -246,7 +246,7 @@ HIT/MISS berücksichtigt nur Hauptanfragen mit nativer Cache-Entscheidung. Fehle
 
 <a id="cache_purge_legacy_status"></a>
 
-### `cache_purge_legacy_status`
+## `cache_purge_legacy_status`
 
 ```
 Syntax:  cache_purge_legacy_status on | off;
@@ -258,7 +258,7 @@ Veraltete Direktive, die nur zur Konfigurationsmigration akzeptiert wird. Beide 
 
 <a id="cache_purge_vary_aware"></a>
 
-### `cache_purge_vary_aware`
+## `cache_purge_vary_aware`
 
 ```
 Syntax:  cache_purge_vary_aware on | off;
@@ -274,7 +274,7 @@ Die Generationsinvalidierung erfasst ohne diese Option alle Repräsentationen de
 
 <a id="cache_purge_namespace"></a>
 
-### `cache_purge_namespace`
+## `cache_purge_namespace`
 
 ```text
 Syntax:  cache_purge_namespace <name> <size> <state-directory>;
@@ -286,7 +286,7 @@ Deklariert einen Generations-Namespace vor seiner Bindung in Locations. Namen be
 
 <a id="cache_purge_key"></a>
 
-### `cache_purge_key`
+## `cache_purge_key`
 
 ```text
 Syntax:  cache_purge_key <namespace> "<logical-key-expression>";
@@ -298,7 +298,7 @@ Bindet die Location an einen vorhandenen Namespace und stellt `$cache_purge_key`
 
 <a id="proxy_cache_refresh"></a>
 
-### `proxy_cache_refresh`
+## `proxy_cache_refresh`
 
 ```text
 Syntax:  proxy_cache_refresh <zone> "<native-key-expression>";
@@ -310,7 +310,7 @@ Erzeugt einen expliziten REFRESH-Endpunkt nur für Hauptrequests; andere Methode
 
 <a id="cache_purge_refresh_profile"></a>
 
-### `cache_purge_refresh_profile`
+## `cache_purge_refresh_profile`
 
 ```text
 Syntax:  cache_purge_refresh_profile <internal-uri> <logical-key-prefix>;
@@ -324,7 +324,7 @@ In der Probe-Location `proxy_intercept_errors off` setzen; geerbtes Intercepting
 
 <a id="cache_purge_refresh_timeout"></a>
 
-### `cache_purge_refresh_timeout`
+## `cache_purge_refresh_timeout`
 
 ```text
 Syntax:  cache_purge_refresh_timeout <time>;
