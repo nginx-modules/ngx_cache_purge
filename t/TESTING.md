@@ -315,7 +315,7 @@ builds. The commands and triggers are described below.
 
 ## Platform jobs and CI
 
-All jobs live in `.github/workflows/build-test-release.yml`:
+Build, runtime and release jobs live in `.github/workflows/build-test-release.yml`:
 
 | Job | Environment | Checks |
 |---|---|---|
@@ -414,6 +414,67 @@ A configured matrix entry is not evidence of a passing run. Record the source
 version, compiler, flags, load and environment exceptions with each result.
 Native BSD, interprocess crash recovery, shared-slab fault injection and
 sustained storage-latency measurements remain separate qualification work.
+
+### PVS-Studio
+
+`.github/workflows/pvs-studio.yml` runs a separate PVS-Studio check on pushes
+to `main`, `releases/**` and `dev/**`, weekly on the default branch, and through
+manual dispatch on branches. Pull requests and tags do not run this check.
+README, `docs/`, license and issue/PR-template-only branch changes skip it;
+Scheduled runs and manual dispatch on branches still run the check. Add
+**Actions secrets** `PVS_STUDIO_LICENSE_NAME` and
+`PVS_STUDIO_LICENSE_KEY` in the repository or its `PVS-Studio` environment
+using a valid PVS-Studio license. Missing credentials
+fail the check with a setup message. Dependabot runs skip the job because they
+cannot receive these secrets. Merged changes are analyzed on the branch push.
+
+The `pvs-studio` stage in `t/Dockerfile` installs PVS-Studio from its signed APT
+repository in a minimal Ubuntu image with GCC, Perl, zlib and tracing tools.
+Its source entry keeps `arch` and `signed-by` in one APT options block;
+the vendor's source list is not rewritten. An offline regression uses APT's
+parser to validate the generated entry without installing the analyzer.
+It omits the integration image's Clang, Valgrind and Perl test dependencies.
+Module sources are not copied into the image, so edits do not invalidate the
+analyzer installation or NGINX download layers. The `test-pvs` Compose service
+configures the license and NGINX 1.31.6 with threads and debug enabled, then
+traces the module's compiler commands inside Docker.
+Only this service adds `SYS_PTRACE` for the build tracer. License credentials
+are passed at runtime and are never included in image layers or build caches.
+The checkout is mounted read-only; sources, build outputs and the license live
+in the disposable container. Reports are written to `t/test-results/pvs-studio/`.
+
+Rewrite and basic-auth modules are disabled, matching the Cppcheck
+configuration; all four cache protocol integrations remain enabled. Analysis
+excludes the NGINX source/build directory and retains this module's sources
+and headers. `t/pvs_targets.pl` reads `CACHE_PURGE_SRCS` from `config` and finds
+each module object in NGINX's generated Makefile. Only those objects are
+rebuilt (currently seven); NGINX core compilation and linking are unnecessary
+for this analysis. Missing or ambiguous targets fail the run. The build is
+forced so cached objects cannot escape analysis, including after header edits.
+
+The raw log and high/medium general-analysis (`GA:1,2`) task-list and SARIF
+reports are retained for 7 days. Before generating SARIF, the converter writes
+JSON with paths relative to `/src`, following the PVS-Studio GitHub Actions
+guide; container paths therefore map to the checked-out repository. SARIF is
+also uploaded to GitHub code scanning;
+the repository must have code scanning available. Findings are advisory during
+initial adoption, while installation, compilation, analysis, conversion and
+upload failures fail the workflow. This separate check is not part of the
+existing `CI` release gate. Review the first report before making it required
+or introducing a findings baseline.
+
+To run locally, export `LICENSE_NAME` and `LICENSE_KEY`
+in your shell, then use the same container service as CI:
+
+```sh
+make test-pvs
+```
+
+No host PVS-Studio or NGINX installation is needed. Archive or remove previous
+`t/test-results/pvs-studio/` reports before rerunning; the script requires an
+empty directory to prevent stale results from being mistaken for a successful
+retry. See the [PVS-Studio GitHub Actions guide](https://pvs-studio.com/en/docs/manual/6579/)
+and [official Makefile tracing examples](https://github.com/viva64/pvs-studio-makefile-examples).
 
 ## Test design
 

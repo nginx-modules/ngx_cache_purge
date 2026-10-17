@@ -69,6 +69,27 @@ services:
     <<: *verify-base
     command: ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx", "--threads", "--sanitize", "--workers", "16", "--files", "16384"]
 
+  test-pvs:
+    image: ngx-cache-purge-pvs:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
+    build:
+      context: ..
+      dockerfile: t/Dockerfile
+      target: pvs-studio
+      args:
+        NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+        UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
+    volumes:
+      - ..:/src:ro
+      - ./test-results:/reports
+    # The build tracer needs ptrace only in this analysis container.
+    cap_add:
+      - SYS_PTRACE
+    environment:
+      LICENSE_NAME: ${LICENSE_NAME:-}
+      LICENSE_KEY: ${LICENSE_KEY:-}
+      PVS_JOBS: ${PVS_JOBS:-2}
+    command: ["bash", "t/pvs_studio.sh"]
+
   test-valgrind:
     <<: *test-base
     environment:

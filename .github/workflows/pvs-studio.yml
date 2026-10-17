@@ -1,0 +1,90 @@
+name: PVS-Studio
+
+on:
+  push:
+    branches: [ main, 'releases/**', 'dev/**' ]
+    paths-ignore:
+      - 'README*.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'COPYING'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/PULL_REQUEST_TEMPLATE/**'
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: PVS-Studio / NGINX 1.31.6
+    # Analyze branches only, including manual runs; Dependabot lacks secrets.
+    if: github.ref_type == 'branch' && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-24.04
+    environment: PVS-Studio
+    timeout-minutes: 30
+    env:
+      NGINX_VERSION: '1.31.6'
+      UBUNTU_VERSION: '24.04'
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Require PVS-Studio license secrets
+        env:
+          LICENSE_NAME: ${{ secrets.PVS_STUDIO_LICENSE_NAME }}
+          LICENSE_KEY: ${{ secrets.PVS_STUDIO_LICENSE_KEY }}
+        run: |
+          if [ -z "$LICENSE_NAME" ] || [ -z "$LICENSE_KEY" ]; then
+            echo '::error::Set repository Actions secrets PVS_STUDIO_LICENSE_NAME and PVS_STUDIO_LICENSE_KEY.'
+            exit 1
+          fi
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build PVS-Studio image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          file: t/Dockerfile
+          target: pvs-studio
+          build-args: |
+            NGINX_VERSION=1.31.6
+            UBUNTU_VERSION=24.04
+          tags: ngx-cache-purge-pvs:1.31.6-24.04
+          load: true
+          cache-from: type=gha,scope=pvs-1.31.6
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,scope=pvs-1.31.6' || '' }}
+          provenance: false
+          sbom: false
+      - name: Trace build and analyze module in Docker
+        id: analysis
+        env:
+          LICENSE_NAME: ${{ secrets.PVS_STUDIO_LICENSE_NAME }}
+          LICENSE_KEY: ${{ secrets.PVS_STUDIO_LICENSE_KEY }}
+        run: docker compose -f t/docker-compose.test.yml run --rm test-pvs
+      - name: Upload analysis reports
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: pvs-studio-nginx-1.31.6
+          path: t/test-results/pvs-studio/
+          retention-days: 7
+      - name: Publish code scanning results
+        uses: github/codeql-action/upload-sarif@v4
+        if: ${{ !cancelled() && steps.analysis.outcome == 'success' }}
+        with:
+          sarif_file: t/test-results/pvs-studio/pvs-studio.sarif
+          category: pvs-studio

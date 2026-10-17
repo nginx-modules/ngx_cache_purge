@@ -6,7 +6,7 @@ COMPOSE_CMD = $(COMPOSE) -f docker-compose.test.yml
 export NGINX_VERSION UBUNTU_VERSION
 
 SUITES = test-basic test-queue test-config test-memory test-performance test-native test-runtime test-valgrind
-.PHONY: help build test test-all $(SUITES) test-verify test-sanitize test-compat test-version shell clean
+.PHONY: help build test test-all $(SUITES) test-verify test-sanitize test-pvs test-compat test-version shell clean
 
 help:
 	@echo "Container test commands (NGINX_VERSION=$(NGINX_VERSION))"
@@ -16,6 +16,7 @@ help:
 	@echo "  $(SUITES)"
 	@echo "  test-verify    Strict builds plus native and runtime tests"
 	@echo "  test-sanitize  ASan/UBSan, threads, 16 workers, 16384 files"
+	@echo "  test-pvs       PVS-Studio analysis (requires license environment variables)"
 	@echo "  test-compat    Full suite on 1.20.2, 1.26.3, 1.28.3, 1.30.5, 1.31.6"
 	@echo "  test-version VERSION=x.y.z"
 	@echo "  shell          Open the integration container"
@@ -33,7 +34,7 @@ test-all: build
 $(SUITES): build
 	$(COMPOSE_CMD) run --rm $@
 
-test-verify test-sanitize:
+test-verify test-sanitize test-pvs:
 	$(COMPOSE_CMD) build $@
 	$(COMPOSE_CMD) run --rm $@
 

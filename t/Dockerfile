@@ -79,6 +79,50 @@ ENV NGINX_SOURCE=/opt/nginx \
 FROM source AS verify
 CMD ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx"]
 
+# The analyzer needs only GCC, Perl, zlib and tracing tools. Keep its dependency
+# and NGINX layers independent of module edits and the full integration toolbox.
+FROM ubuntu:${UBUNTU_VERSION} AS pvs-studio
+ENV DEBIAN_FRONTEND=noninteractive
+RUN printf '%s\n' 'Acquire::Retries "3";' \
+        'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+        > /etc/apt/apt.conf.d/80-network-retries
+RUN --mount=type=secret,id=apt_mirror \
+    --mount=type=secret,id=apt_ca,mode=0444 \
+    if [ -s /run/secrets/apt_mirror ]; then \
+        mirror="$(cat /run/secrets/apt_mirror)"; \
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sources=/etc/apt/sources.list.d/ubuntu.sources; \
+        else sources=/etc/apt/sources.list; fi; \
+        sed -i "s|http://archive.ubuntu.com/ubuntu/|$mirror|g" "$sources"; \
+    fi && \
+    ca_option="" && \
+    if [ -s /run/secrets/apt_ca ]; then \
+        ca_option="-o Acquire::https::CaInfo=/run/secrets/apt_ca"; \
+        export CURL_CA_BUNDLE=/run/secrets/apt_ca; \
+    fi && \
+    apt-get $ca_option update && apt-get $ca_option install -y --no-install-recommends \
+        build-essential ca-certificates curl gnupg perl strace zlib1g-dev && \
+    curl --fail --location --retry 2 --connect-timeout 20 --max-time 180 \
+        https://files.pvs-studio.com/etc/pubkey.txt -o /tmp/pvs-studio.asc && \
+    gpg --batch --yes --dearmor --output /usr/share/keyrings/pvs-studio.gpg /tmp/pvs-studio.asc && \
+    printf '%s\n' \
+        'deb [arch=amd64 signed-by=/usr/share/keyrings/pvs-studio.gpg] https://files.pvs-studio.com/deb viva64-release pvs-studio' \
+        > /etc/apt/sources.list.d/pvs-studio.list && \
+    apt-get $ca_option update && apt-get $ca_option install -y --no-install-recommends pvs-studio && \
+    rm -f /tmp/pvs-studio.asc && rm -rf /var/lib/apt/lists/*
+COPY t/download.sh /usr/local/bin/download-source
+ARG NGINX_VERSION=1.31.6
+RUN mkdir -p /opt/nginx && \
+    sh /usr/local/bin/download-source "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" /tmp/nginx.tar.gz && \
+    tar -xzf /tmp/nginx.tar.gz --strip-components=1 -C /opt/nginx && \
+    rm /tmp/nginx.tar.gz
+ENV NGINX_SOURCE=/opt/nginx \
+    PVS_REPORT_DIR=/reports/pvs-studio
+WORKDIR /src
+# The module and runner scripts are supplied by Compose's read-only bind mount.
+# License credentials are configured only in the disposable runtime container.
+CMD ["bash", "t/pvs_studio.sh"]
+
 FROM source AS integration
 # Build nginx with the module
 RUN cd /opt/nginx && \
