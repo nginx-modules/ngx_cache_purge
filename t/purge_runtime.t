@@ -275,6 +275,28 @@ sub status {
     return $v;
 }
 
+# One namespace from the status "namespaces" list.
+sub namespace_view {
+    my ($s, $name) = @_;
+    my $v = status($s);
+    ok($v->{namespaces_complete}, 'status lists every namespace');
+    my ($ns) = grep { $_->{name} eq $name } @{ $v->{namespaces} };
+    die "namespace $name missing from status" unless $ns;
+    return $ns;
+}
+
+# The classification documented in docs/OPERATIONS.md: what a tool reading
+# cache files can conclude from the status view and a file's KEY line alone.
+sub classify_generation_file {
+    my ($key, $view) = @_;
+    return 'legacy'
+        unless $key =~ /^p4:([A-Za-z0-9_-]{1,32}):(\d{10}):([0-9A-Fa-f]{16}):/;
+    my ($name, $epoch, $generation) = ($1, $2, lc $3);
+    return 'unknown' unless $name eq $view->{name};
+    return 'stale' if $epoch ne $view->{epoch} || $generation lt $view->{baseline};
+    return $view->{rules} ? 'unknown' : 'live';
+}
+
 sub drain {
     my ($s) = @_;
     await(sub { my $v = status($s); !$v->{cache}{pending}{total} && !$v->{cache}{active} },
@@ -725,9 +747,22 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     warm($s);
     my ($old) = grep { $_->[1] =~ m{/cache/warm$} } cached_entries($s);
     ok($old, 'native cache key includes the namespace');
+    my $view = namespace_view($s, 'objects');
+    like($view->{epoch}, qr/^\d{10}\z/, 'status reports the namespace epoch');
+    is($view->{baseline}, '0000000000000001', 'fresh namespace baseline');
+    is($view->{serial}, '0000000000000001', 'fresh namespace serial');
+    ok(!$view->{rules}, 'fresh namespace has no per-key rules');
+    is(classify_generation_file($old->[1], $view), 'live',
+       'a file of the live generation is certainly live');
     my $r = request($s, '/cache/warm', 'PURGE');
     is($r->{status}, 200, 'logical invalidation returns 200');
     is(decode_json($r->{content})->{code}, 'invalidated', 'response states logical completion');
+    $view = namespace_view($s, 'objects');
+    ok($view->{rules}, 'exact invalidation registers a per-key rule');
+    is($view->{baseline}, '0000000000000001', 'exact invalidation keeps the baseline');
+    is($view->{serial}, '0000000000000002', 'exact invalidation advances the serial');
+    is(classify_generation_file($old->[1], $view), 'unknown',
+       'with per-key rules a file at the baseline is not claimed live or stale');
     ok(-e $old->[0], 'old file still exists while the executor is delayed');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'new request cannot hit old generation');
     await(sub { (request($s, '/cache/warm')->{headers}{'x-cache'} || '') eq 'HIT' }, 'new generation did not warm');
@@ -736,12 +771,26 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     is(request($s, '/cache/*', 'PURGE')->{status}, 200, 'prefix generation invalidated');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'prefix invalidation affects exact lookups');
     is(request($s, '/all', 'PURGE')->{status}, 200, 'namespace baseline invalidated');
+    $view = namespace_view($s, 'objects');
+    is($view->{baseline}, $view->{serial}, 'namespace invalidation raises the baseline to the serial');
+    ok(!$view->{rules}, 'namespace invalidation discards the per-key rules');
+    my @earlier = cached_entries($s);
+    ok(scalar @earlier, 'physical files remain while cleanup is delayed');
+    is_deeply([ grep { classify_generation_file($_->[1], $view) ne 'stale' } @earlier ], [],
+              'after a namespace invalidation every earlier file is certainly stale');
     my $before = status($s)->{cache}{logical}{invalidations};
     is($before, 3, 'logical invalidations have a separate metric');
     reload_server($s);
     is(status($s)->{cache}{logical}{invalidations}, $before, 'reload preserves namespace and counters');
+    is_deeply(namespace_view($s, 'objects'), $view, 'reload preserves the generation state');
     stop_server($s);
     $s = start_server('strict', strict => 1, throttle => '60s');
+    my $restarted = namespace_view($s, 'objects');
+    isnt($restarted->{epoch}, $view->{epoch}, 'full restart creates a new epoch');
+    is($restarted->{baseline}, '0000000000000001', 'full restart starts from a fresh baseline');
+    my @carried = cached_entries($s);
+    is_deeply([ grep { classify_generation_file($_->[1], $restarted) ne 'stale' } @carried ], [],
+              'every file of the previous epoch is certainly stale after a restart');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'full restart never reuses a persisted epoch');
     stop_server($s);
 };

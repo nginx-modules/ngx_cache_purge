@@ -210,6 +210,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Integer / passes | Additional passes scheduled because cleanup failed |
 | `cleanup.exhausted` | Integer / tasks | Cleanup tasks retired after three failed retries |
 
+`namespaces` lists every `cache_purge_namespace` in the configuration, whichever cache this location selects, because the generation state of a namespace is shared by every cache path that uses it. Each entry is one consistent snapshot of that namespace:
+
+| Field | Type / unit | Meaning |
+|---|---|---|
+| `name` | String | Namespace name, as it appears in the `p4:<name>:` prefix of a generation cache key |
+| `epoch` | String / 10 digits | Epoch of the running namespace state; a full restart starts a new one |
+| `baseline` | String / 16 lowercase hex digits | Live generation of every key that no rule has raised; a namespace-wide invalidation sets it to `serial` |
+| `serial` | String / 16 lowercase hex digits | Counter of published invalidations in this epoch, starting at 1; it changes with every one |
+| `rules` | Boolean | `true` while an exact or prefix invalidation is active, until the next namespace-wide invalidation (shared-memory pressure can broaden an invalidation to the whole namespace as well) |
+
+`baseline` and `serial` use the 16-digit form of the generation in a cache key, so they compare as plain strings. `namespaces_complete` is `false` when the list was cut short to fit the reply; treat a namespace missing from an incomplete list as unknown. See [reading cache files in generation mode](OPERATIONS.md#reading-cache-files) for how to use these fields.
+
 `pending.full` counts full-cache operations. A wildcard whose key is `*` is a separate operation type. `active` includes pool waiters; active tasks are excluded from `queue.size` and `pending.total` but occupy admission capacity.
 
 For a coalesced namespace sweep, `pending.full` reflects the first accepted task classification. REFRESH scans/probes are not included in the purge queue depth or deletion error counters. A rotated delayed retry can make `wait_time` a sampled head age rather than the maximum pending age.
