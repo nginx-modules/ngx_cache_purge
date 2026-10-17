@@ -882,7 +882,7 @@ ngx_http_cache_refresh_guard(ngx_http_request_t *r)
     ngx_http_cache_refresh_t *job;
     ngx_keyval_t *headers;
     ngx_str_t method;
-    ngx_uint_t i, host, etag, modified;
+    ngx_uint_t i, nheaders, host, etag, modified;
     const char *reason;
 
     if (r->post_subrequest == NULL
@@ -946,8 +946,13 @@ ngx_http_cache_refresh_guard(ngx_http_request_t *r)
         goto invalid;
     }
     host = etag = modified = 0;
-    headers = proxy->headers_source != NULL ? proxy->headers_source->elts : NULL;
-    for (i = 0; headers != NULL && i < proxy->headers_source->nelts; i++) {
+    headers = NULL;
+    nheaders = 0;
+    if (proxy->headers_source != NULL) {
+        headers = proxy->headers_source->elts;
+        nheaders = proxy->headers_source->nelts;
+    }
+    for (i = 0; headers != NULL && i < nheaders; i++) {
         /* No client-controlled representation headers may leak into HEAD.
          * Only the two dedicated conditional getters may be dynamic. */
         if (ngx_strchr(headers[i].value.data, '$') != NULL

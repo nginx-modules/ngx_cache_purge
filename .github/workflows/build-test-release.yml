@@ -1,4 +1,4 @@
-name: ngx_cache_purge · Build, Test & Release
+name: Build, Test & Release
 
 on:
   push:

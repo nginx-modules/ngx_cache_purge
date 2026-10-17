@@ -278,16 +278,16 @@ ngx_http_cache_purge_walk_step(ngx_http_cache_purge_cursor_t *cursor,
 
         rc = ngx_http_cache_purge_de_info(&cursor->path, &frame->dir,
                                          &failed_op);
-        if (rc != NGX_OK) {
-            if (rc == NGX_ERROR) {
-                err = ngx_errno;
-                if (err != NGX_ENOENT) {
-                    ctx->scan_errors++;
-                    ngx_log_error(NGX_LOG_CRIT, ctx->log, err,
-                                  "ngx_cache_purge: %s \"%V\" failed",
-                                  failed_op, &cursor->path);
-                }
+        if (rc == NGX_ERROR) {
+            err = ngx_errno;
+            if (err != NGX_ENOENT) {
+                ctx->scan_errors++;
+                ngx_log_error(NGX_LOG_CRIT, ctx->log, err,
+                              "ngx_cache_purge: %s \"%V\" failed",
+                              failed_op, &cursor->path);
             }
+        }
+        if (rc != NGX_OK) {
             continue;
         }
 
