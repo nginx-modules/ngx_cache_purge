@@ -10,6 +10,26 @@ Use generation keys when newly arriving requests must stop using stale content a
 
 A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
 
+<a id="reading-cache-files"></a>
+
+### Reading cache files in generation mode
+
+A tool that reads cache files itself (a cache browser, a preloader, a usage report) cannot tell stale files from live ones by looking at the directory: after an invalidation both exist until cleanup removes the old ones, and a key that was invalidated but not yet requested again has only a stale file. The `KEY:` line of a generation file is `p4:<namespace>:<epoch>:<generation>:<logical key>`, and the [status endpoint](DIRECTIVES.md#cache_purge_queue_status) reports the namespace state needed to judge it. A file is stale when its epoch differs from the live epoch or its generation is below the live generation of its logical key; this is the test the cleanup applies. The live generation of a key is `baseline`, unless an exact or prefix invalidation raised it, and the status reply does not list those rules.
+
+| Status of the file's namespace | Verdict |
+|---|---|
+| File epoch differs from `epoch` | stale |
+| File generation is below `baseline` | stale |
+| `rules` is `false` and the generation is not below `baseline` | live |
+| `rules` is `true` and the generation is not below `baseline` | unknown |
+| Namespace missing from the list, or `namespaces_complete` is `false` | unknown |
+
+An unknown file can still be settled from the files alone in one case: if another file has the same namespace, epoch and logical key and a higher generation, the lower one is stale, because the live generation of a key never decreases within an epoch. Treat everything else as unknown; do not guess live or stale.
+
+Invalidations can land while a scan runs. Read the status before and after the scan and discard the verdicts when `epoch`, `baseline` or `serial` changed. `epoch` values are not ordered; compare them only for equality.
+
+Do not use an idle cleanup queue as a replacement for these verdicts. A request that began before an invalidation can still write an old-generation file after the cleanup of that invalidation has finished, and that file stays until a later cleanup or until `inactive` expires it. Cleanup also addresses only the cache path of the purge location, while a namespace can be shared by several cache paths.
+
 <a id="performance-tuning"></a>
 
 ## Performance tuning

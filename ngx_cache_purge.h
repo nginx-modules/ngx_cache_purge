@@ -22,7 +22,11 @@
 #define NGX_CACHE_PURGE_THROTTLE_MS_DEFAULT  10  /* milliseconds */
 #define NGX_CACHE_PURGE_KEY_MAX_LEN          512
 #define NGX_CACHE_PURGE_ENTRY_KEY_MAX        8192
-#define NGX_CACHE_PURGE_STATUS_BODY_MAX      2048
+#define NGX_CACHE_PURGE_STATUS_BODY_MAX      8192
+/* Widest "namespaces" entry (32-byte name) and the closing text after the
+ * last entry; the list stops early and says so instead of failing the reply. */
+#define NGX_CACHE_PURGE_STATUS_NS_MAX        160
+#define NGX_CACHE_PURGE_STATUS_NS_TAIL       48
 #define NGX_CACHE_PURGE_SHM_VERSION          7
 #define NGX_CACHE_PURGE_REFRESH_BATCH        32
 #define NGX_CACHE_PURGE_REFRESH_PROBES       16
