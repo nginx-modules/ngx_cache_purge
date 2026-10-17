@@ -86,6 +86,11 @@ sub config {
     my $namespace = $s->{strict}
         ? "cache_purge_namespace objects 1m $s->{root}/purge-state;\n"
           . "cache_purge_key objects $logical;" : '';
+    # Unused extra namespaces with the longest allowed name (32 bytes). They only
+    # exist to make the status "namespaces" list outgrow its reply buffer.
+    $namespace .= join '', map {
+        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state;", 'n' x 30, $_, $s->{root}
+    } 1 .. $s->{extra_namespaces} if $s->{strict} && $s->{extra_namespaces};
     my $vary = $s->{strict} ? '' : 'add_header Vary Accept-Encoding always;';
     my $refresh = $s->{strict} ? <<"REFRESH" : '';
         location = /refresh {
@@ -792,6 +797,38 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     is_deeply([ grep { classify_generation_file($_->[1], $restarted) ne 'stale' } @carried ], [],
               'every file of the previous epoch is certainly stale after a restart');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'full restart never reuses a persisted epoch');
+    stop_server($s);
+};
+
+# The status reply lists every namespace unless that would not fit its fixed
+# reply buffer. Then the list stops early and says so; it is never an error.
+subtest 'status namespace list is bounded and reports when it is cut short' => sub {
+    my $name  = sub { ('n' x 30) . sprintf('%02d', $_[0]) };
+    my $names = sub { [ map { $_->{name} } @{ $_[0]->{namespaces} } ] };
+
+    my $s = start_server('namespaces-few', strict => 1, workers => 1, extra_namespaces => 2);
+    my $v = status($s);
+    ok($v->{namespaces_complete}, 'a short list is complete');
+    is_deeply($names->($v), [ 'objects', map { $name->($_) } 1 .. 2 ],
+              'namespaces are listed in configuration order');
+    stop_server($s);
+
+    # 81 namespaces with 32-byte names need more than the 8 KiB reply buffer.
+    my @all = ('objects', map { $name->($_) } 1 .. 80);
+    $s = start_server('namespaces-many', strict => 1, workers => 1, extra_namespaces => 80);
+    my $r = request($s, '/status-a');
+    is($r->{status}, 200, 'more namespaces than fit never turn the status reply into an error');
+    cmp_ok(length $r->{content}, '<', 8192, 'the reply stays inside the 8 KiB reply buffer');
+    $v = status($s);   # also checks that the reply is valid JSON with all queue/cache fields
+    ok(!$v->{namespaces_complete}, 'a list that does not fit says so');
+    my $got = $names->($v);
+    cmp_ok(scalar @$got, '<', scalar @all, 'the list was cut short');
+    cmp_ok(scalar @$got, '>=', 40, 'a useful part of the list is still reported');
+    is_deeply($got, [ @all[0 .. $#$got] ], 'the reported part is the configuration-order prefix');
+    is_deeply([ grep { $_->{epoch} !~ /^\d{10}\z/
+                       || $_->{baseline} !~ /^[0-9a-f]{16}\z/
+                       || $_->{serial} !~ /^[0-9a-f]{16}\z/ } @{ $v->{namespaces} } ], [],
+              'the cut never leaves a partial entry');
     stop_server($s);
 };
 
