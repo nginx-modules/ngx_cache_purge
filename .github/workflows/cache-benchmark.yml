@@ -42,6 +42,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
   NGINX_VERSION: '1.31.6'
 
 jobs:
@@ -49,12 +50,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build measurement image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: t/Dockerfile
@@ -65,10 +68,16 @@ jobs:
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
           secret-files: |
             apt_ca=/etc/ssl/certs/ca-certificates.crt
-          cache-from: type=gha,scope=cache-benchmark
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=cache-benchmark,mode=min' || '' }}
+          cache-from: |
+            type=gha,scope=cache-benchmark
+            type=gha,scope=verify-${{ env.NGINX_VERSION }}
+            type=gha,scope=integration-${{ env.NGINX_VERSION }}-24.04
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=cache-benchmark,mode=max,ignore-error=true,timeout=5m' || '' }}
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-benchmark:local
       - name: Collect native layouts and stack frames
         run: |
           mkdir -p reports/cache-benchmark "$RUNNER_TEMP/cache-benchmark"
@@ -103,7 +112,7 @@ jobs:
           else
             printf '%s\n' 'Experiment incomplete; inspect logs and partial artifacts.' >> "$GITHUB_STEP_SUMMARY"
           fi
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: cache-benchmark-${{ github.run_id }}-${{ github.run_attempt }}

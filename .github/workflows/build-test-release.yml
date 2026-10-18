@@ -23,6 +23,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
+  DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
   DOCKER_BUILDKIT: 1
 
 jobs:
@@ -35,9 +36,10 @@ jobs:
       integration: ${{ steps.matrix.outputs.integration }}
       compatibility: ${{ steps.matrix.outputs.compatibility }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Check APT mirror export
         run: python3 -m unittest discover -s .github/actions/apt-mirror -v
       - name: Check immutable release publication safeguards
@@ -64,13 +66,15 @@ jobs:
       NGINX_VERSION: ${{ matrix.nginx }}
       UBUNTU_VERSION: ${{ matrix.ubuntu }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build integration image
         id: image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
@@ -83,13 +87,18 @@ jobs:
             UBUNTU_VERSION=${{ matrix.ubuntu }}
           tags: ngx-cache-purge-test:${{ matrix.nginx }}-${{ matrix.ubuntu }}
           load: true
-          cache-from: type=gha,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,scope=integration-{0}-{1}', matrix.nginx, matrix.ubuntu) || '' }}
+          cache-from: |
+            type=gha,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
+            type=gha,scope=verify-1.31.6
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,ignore-error=true,timeout=5m,scope=integration-{0}-{1}', matrix.nginx, matrix.ubuntu) || '' }}
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-test:${{ matrix.nginx }}-${{ matrix.ubuntu }}
       - name: Run every TAP suite and write JUnit from this run
         run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports nginx-test
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
@@ -110,12 +119,14 @@ jobs:
       NGINX_VERSION: ${{ matrix.nginx }}
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - id: image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
@@ -128,10 +139,15 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-verify:${{ matrix.nginx }}-24.04
           load: true
-          cache-from: type=gha,scope=verify-${{ matrix.nginx }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,scope=verify-{0}', matrix.nginx) || '' }}
+          cache-from: |
+            type=gha,scope=verify-${{ matrix.nginx }}
+            type=gha,scope=integration-1.31.6-24.04
+          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,ignore-error=true,timeout=5m,scope=verify-{0}', matrix.nginx) || '' }}
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-verify:${{ matrix.nginx }}-24.04
       - name: Strict debug/release module builds, native helpers and runtime regressions
         env:
           COMPILERS: ${{ matrix.cc }}
@@ -149,7 +165,7 @@ jobs:
             done
           done
           exit "$result"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-build-${{ matrix.nginx }}
@@ -166,13 +182,15 @@ jobs:
       NGINX_VERSION: '1.31.6'
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build compiler image
         id: image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
@@ -185,9 +203,14 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-verify:1.31.6-24.04
           load: true
-          cache-from: type=gha,scope=verify-1.31.6
+          cache-from: |
+            type=gha,scope=verify-1.31.6
+            type=gha,scope=integration-1.31.6-24.04
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-verify:1.31.6-24.04
       - name: Run pooled native and runtime checks under sanitizers
         run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports/pooled test-sanitize
       - name: Run incremental native and runtime checks under sanitizers
@@ -197,7 +220,7 @@ jobs:
             -e TEST_REPORT_DIR=/reports/incremental test-sanitize \
             perl t/build_verify.pl --nginx-source /opt/nginx \
             --sanitize --workers 16 --files 16384
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-sanitizer
@@ -211,7 +234,9 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: brew install openssl@3 cpanminus
       - name: Install JUnit formatter
         run: cpanm --local-lib "$RUNNER_TEMP/perl5" --notest TAP::Formatter::JUnit
@@ -224,7 +249,7 @@ jobs:
           export PERL5LIB="$RUNNER_TEMP/perl5/lib/perl5"
           export TEST_REPORT_DIR="$GITHUB_WORKSPACE/t/test-results"
           perl t/build_verify.pl --cc clang --nginx-source nginx-1.31.6
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-macos
@@ -243,11 +268,13 @@ jobs:
       matrix:
         arch: [x64, x86]
     steps:
-      - uses: actions/checkout@v7
-      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
         with:
           arch: ${{ matrix.arch }}
-      - uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: MSYS
           path-type: inherit
@@ -270,7 +297,7 @@ jobs:
       - name: HTTP, path, junction and reload regressions
         shell: pwsh
         run: ./t/windows_runtime.ps1 -Nginx ./nginx-1.31.6/objs/nginx.exe -OutputDirectory ./t/test-results/windows
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-windows-${{ matrix.arch }}
@@ -287,12 +314,14 @@ jobs:
       NGINX_VERSION: '1.31.6'
       UBUNTU_VERSION: '24.04'
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build valgrind image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
@@ -305,11 +334,16 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-test:1.31.6-24.04
           load: true
-          cache-from: type=gha,scope=integration-1.31.6-24.04
+          cache-from: |
+            type=gha,scope=integration-1.31.6-24.04
+            type=gha,scope=verify-1.31.6
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-test:1.31.6-24.04
       - run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports test-valgrind
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: test-results-valgrind
@@ -321,13 +355,16 @@ jobs:
     if: needs.prepare.outputs.run == 'true'
     name: Cppcheck
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - id: apt
         uses: ./.github/actions/apt-mirror
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build analysis image
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           secrets: ${{ steps.apt.outputs.buildkit_secret }}
@@ -340,9 +377,14 @@ jobs:
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-tools
           load: true
-          cache-from: type=gha,scope=verify-1.31.6
+          cache-from: |
+            type=gha,scope=verify-1.31.6
+            type=gha,scope=integration-1.31.6-24.04
           provenance: false
           sbom: false
+      - uses: ./.github/actions/image-size
+        with:
+          image: ngx-cache-purge-tools
       - name: Analyze module and included platform helpers
         run: docker run --rm ngx-cache-purge-tools perl t/cppcheck.pl
 
@@ -351,10 +393,13 @@ jobs:
     if: needs.prepare.outputs.run == 'true'
     name: Semgrep
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     container:
       image: semgrep/semgrep
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - run: semgrep scan --config p/security-audit --config p/secrets --config p/c --error
 
   publish-test-results:
@@ -366,12 +411,14 @@ jobs:
       checks: write
       contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: test-results
           pattern: test-results-*
-      - uses: dorny/test-reporter@v3
+      - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
         if: always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         with:
           name: Test Results
@@ -428,7 +475,9 @@ jobs:
           - {arch: x86_64, runner: ubuntu-24.04}
           - {arch: aarch64, runner: ubuntu-24.04-arm}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/apt-mirror
       - name: Install build dependencies
         run: |
@@ -445,17 +494,18 @@ jobs:
           MODULE_VERSION: ${{ github.ref_name }}
         run: bash tools/verify-release-rebuild.sh
       - name: Attest archive build provenance
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
             dist/*.tar.gz
             dist/*.zip
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-module-${{ matrix.nginx }}-${{ matrix.platform.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 3
+          compression-level: 0
 
   create-release:
     name: Publish release with verified assets
@@ -465,8 +515,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-module-*
           merge-multiple: true

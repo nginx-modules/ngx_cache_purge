@@ -1,6 +1,10 @@
 .git
 **/servroot
 **/test-results
+**/__pycache__
+*.pyc
+reports
+dist
 cache
 cache2
 perfcache

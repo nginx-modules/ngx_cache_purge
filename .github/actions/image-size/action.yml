@@ -1,0 +1,20 @@
+name: Report local image size
+description: Record the loaded image size separately from compressed cache storage.
+inputs:
+  image:
+    description: Local image tag to inspect.
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        bytes=$(docker image inspect --format '{{.Size}}' "$IMAGE")
+        image_id=$(docker image inspect --format '{{.Id}}' "$IMAGE")
+        printf 'Image: %s\nID: %s\nUncompressed size: %s bytes\n' "$IMAGE" "$image_id" "$bytes"
+        {
+          printf '\n| Image | Uncompressed bytes |\n|---|---:|\n'
+          printf '| `%s` | %s |\n' "$IMAGE" "$bytes"
+        } >> "$GITHUB_STEP_SUMMARY"

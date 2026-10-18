@@ -346,20 +346,52 @@ Use that check for branch protection. The release job requires it to succeed.
 Matrix groups allow at most two simultaneous jobs; a new run cancels an older
 run for the same PR/ref, except tags. Separate groups can still run concurrently.
 
-BuildKit caches use the GitHub Actions backend with `mode=min`. Only workflows
-running on `main` export cache entries; pull requests, maintenance branches,
-and tag builds restore eligible caches without creating new ones. Scopes are
-shared by target and NGINX/Ubuntu version: Valgrind imports the same image as
-the 1.31.6 integration job, and sanitizer/Cppcheck import the 1.31.6 verify
-image. Cache availability still follows GitHub's branch-access rules: a cache
-from `main` is not necessarily accessible when `main` is not the repository's
-default branch or the PR base branch.
+BuildKit caches use the GitHub Actions backend with `mode=min` for integration,
+verify and PVS-Studio. The manual benchmark uses `mode=max` to retain its build
+stage after copying binaries into a smaller runtime image. Only workflows
+running on `main` export BuildKit cache entries; pull requests, maintenance
+branches and tag builds only restore eligible entries. A cache export failure
+is nonfatal and its timeout is five minutes; compilation and test failures
+still fail their jobs. Buildx's own binary cache is managed by its setup action.
 
-JUnit artifacts expire after 7 days, and intermediate release-module artifacts
-after 3 days. Published GitHub Release assets are independent of these
-short-lived workflow artifacts. Cache retention and repository size limits
-cannot be enforced by this workflow; configure them in repository Actions
-settings (typically 7 days and 10 GB) if needed.
+Scopes are shared by target and NGINX/Ubuntu version: Valgrind imports the
+1.31.6 integration image, and sanitizer/Cppcheck import the 1.31.6 verify image.
+Integration and verify jobs also import the other mainline scope as a fallback
+for common tool layers. The benchmark imports both scopes. BuildKit still
+matches each layer's inputs, including the base distribution and core version;
+an extra cache source does not substitute a different NGINX build. These
+imports reuse available caches, without making parallel jobs wait for a writer.
+Availability follows GitHub's branch-access rules: a cache from `main` is not
+necessarily accessible if `main` is neither the default nor the PR base branch.
+
+The Dockerfile installs explicit packages without APT recommendations and
+removes CPAN build/download files in the installation layer. NGINX downloads
+precede module sources; integration compilation precedes the complete test
+checkout. Editing tests or documentation therefore preserves the server build
+layer. Integration and verify retain compilers and configured sources because
+the native fixtures compile against that ABI at test time. The benchmark
+runtime contains only its binaries, layout/stack reports, Python and runtime
+libraries. Its image build checks both binaries' linkage and Python imports.
+
+Every Docker build records the loaded image's uncompressed size in the job
+summary. BuildKit's build summary and logs provide cache-hit and timing evidence.
+Compare equivalent runner, target and version combinations, including a cold
+build and a repeated build. Image bytes are not compressed cache bytes or total
+runner disk usage. Repository cache usage/evictions must be inspected separately
+under Actions > Caches; no percentage saving is assumed from the Dockerfile.
+
+JUnit and Docker build-record artifacts expire after 7 days, and intermediate
+release-module artifacts after 3 days. Already compressed release archives use
+artifact compression level zero. Published GitHub Release assets are independent
+of these short-lived artifacts. GitHub normally evicts caches unused for seven
+days and applies a 10 GB repository limit. Increasing storage beyond the free
+allowance can incur charges; these workflows do not change that allowance.
+Keep `mode=max` confined to the benchmark's separate, manually populated scope.
+
+External Actions use full commit SHAs with release-version comments. Dependabot
+checks them weekly and groups updates into one reviewable PR; it does not merge
+them automatically. Checkouts do not persist Git credentials. Release steps
+receive their existing explicit token and attestation permissions.
 
 The local APT composite action pins `vegardit/fast-apt-mirror.sh` 1.4.5 by full
 commit SHA. It selects a runner mirror, then passes the validated URL and CA
