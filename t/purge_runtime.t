@@ -86,6 +86,11 @@ sub config {
     my $namespace = $s->{strict}
         ? "cache_purge_namespace objects 1m $s->{root}/purge-state;\n"
           . "cache_purge_key objects $logical;" : '';
+    # Unused extra namespaces with the longest allowed name (32 bytes). They only
+    # exist to make the status "namespaces" list outgrow its reply buffer.
+    $namespace .= join '', map {
+        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state;", 'n' x 30, $_, $s->{root}
+    } 1 .. $s->{extra_namespaces} if $s->{strict} && $s->{extra_namespaces};
     my $vary = $s->{strict} ? '' : 'add_header Vary Accept-Encoding always;';
     my $refresh = $s->{strict} ? <<"REFRESH" : '';
         location = /refresh {
@@ -273,6 +278,28 @@ sub status {
     # Fields are approximate aligned loads, not a cross-worker transaction.
     # Admission uses locked control state, never these monitoring snapshots.
     return $v;
+}
+
+# One namespace from the status "namespaces" list.
+sub namespace_view {
+    my ($s, $name) = @_;
+    my $v = status($s);
+    ok($v->{namespaces_complete}, 'status lists every namespace');
+    my ($ns) = grep { $_->{name} eq $name } @{ $v->{namespaces} };
+    die "namespace $name missing from status" unless $ns;
+    return $ns;
+}
+
+# The classification documented in docs/OPERATIONS.md: what a tool reading
+# cache files can conclude from the status view and a file's KEY line alone.
+sub classify_generation_file {
+    my ($key, $view) = @_;
+    return 'legacy'
+        unless $key =~ /^p4:([A-Za-z0-9_-]{1,32}):(\d{10}):([0-9A-Fa-f]{16}):/;
+    my ($name, $epoch, $generation) = ($1, $2, lc $3);
+    return 'unknown' unless $name eq $view->{name};
+    return 'stale' if $epoch ne $view->{epoch} || $generation lt $view->{baseline};
+    return $view->{rules} ? 'unknown' : 'live';
 }
 
 sub drain {
@@ -725,9 +752,22 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     warm($s);
     my ($old) = grep { $_->[1] =~ m{/cache/warm$} } cached_entries($s);
     ok($old, 'native cache key includes the namespace');
+    my $view = namespace_view($s, 'objects');
+    like($view->{epoch}, qr/^\d{10}\z/, 'status reports the namespace epoch');
+    is($view->{baseline}, '0000000000000001', 'fresh namespace baseline');
+    is($view->{serial}, '0000000000000001', 'fresh namespace serial');
+    ok(!$view->{rules}, 'fresh namespace has no per-key rules');
+    is(classify_generation_file($old->[1], $view), 'live',
+       'a file of the live generation is certainly live');
     my $r = request($s, '/cache/warm', 'PURGE');
     is($r->{status}, 200, 'logical invalidation returns 200');
     is(decode_json($r->{content})->{code}, 'invalidated', 'response states logical completion');
+    $view = namespace_view($s, 'objects');
+    ok($view->{rules}, 'exact invalidation registers a per-key rule');
+    is($view->{baseline}, '0000000000000001', 'exact invalidation keeps the baseline');
+    is($view->{serial}, '0000000000000002', 'exact invalidation advances the serial');
+    is(classify_generation_file($old->[1], $view), 'unknown',
+       'with per-key rules a file at the baseline is not claimed live or stale');
     ok(-e $old->[0], 'old file still exists while the executor is delayed');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'new request cannot hit old generation');
     await(sub { (request($s, '/cache/warm')->{headers}{'x-cache'} || '') eq 'HIT' }, 'new generation did not warm');
@@ -736,13 +776,59 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     is(request($s, '/cache/*', 'PURGE')->{status}, 200, 'prefix generation invalidated');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'prefix invalidation affects exact lookups');
     is(request($s, '/all', 'PURGE')->{status}, 200, 'namespace baseline invalidated');
+    $view = namespace_view($s, 'objects');
+    is($view->{baseline}, $view->{serial}, 'namespace invalidation raises the baseline to the serial');
+    ok(!$view->{rules}, 'namespace invalidation discards the per-key rules');
+    my @earlier = cached_entries($s);
+    ok(scalar @earlier, 'physical files remain while cleanup is delayed');
+    is_deeply([ grep { classify_generation_file($_->[1], $view) ne 'stale' } @earlier ], [],
+              'after a namespace invalidation every earlier file is certainly stale');
     my $before = status($s)->{cache}{logical}{invalidations};
     is($before, 3, 'logical invalidations have a separate metric');
     reload_server($s);
     is(status($s)->{cache}{logical}{invalidations}, $before, 'reload preserves namespace and counters');
+    is_deeply(namespace_view($s, 'objects'), $view, 'reload preserves the generation state');
     stop_server($s);
     $s = start_server('strict', strict => 1, throttle => '60s');
+    my $restarted = namespace_view($s, 'objects');
+    isnt($restarted->{epoch}, $view->{epoch}, 'full restart creates a new epoch');
+    is($restarted->{baseline}, '0000000000000001', 'full restart starts from a fresh baseline');
+    my @carried = cached_entries($s);
+    is_deeply([ grep { classify_generation_file($_->[1], $restarted) ne 'stale' } @carried ], [],
+              'every file of the previous epoch is certainly stale after a restart');
     is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'full restart never reuses a persisted epoch');
+    stop_server($s);
+};
+
+# The status reply lists every namespace unless that would not fit its fixed
+# reply buffer. Then the list stops early and says so; it is never an error.
+subtest 'status namespace list is bounded and reports when it is cut short' => sub {
+    my $name  = sub { ('n' x 30) . sprintf('%02d', $_[0]) };
+    my $names = sub { [ map { $_->{name} } @{ $_[0]->{namespaces} } ] };
+
+    my $s = start_server('namespaces-few', strict => 1, workers => 1, extra_namespaces => 2);
+    my $v = status($s);
+    ok($v->{namespaces_complete}, 'a short list is complete');
+    is_deeply($names->($v), [ 'objects', map { $name->($_) } 1 .. 2 ],
+              'namespaces are listed in configuration order');
+    stop_server($s);
+
+    # 81 namespaces with 32-byte names need more than the 8 KiB reply buffer.
+    my @all = ('objects', map { $name->($_) } 1 .. 80);
+    $s = start_server('namespaces-many', strict => 1, workers => 1, extra_namespaces => 80);
+    my $r = request($s, '/status-a');
+    is($r->{status}, 200, 'more namespaces than fit never turn the status reply into an error');
+    cmp_ok(length $r->{content}, '<', 8192, 'the reply stays inside the 8 KiB reply buffer');
+    $v = status($s);   # also checks that the reply is valid JSON with all queue/cache fields
+    ok(!$v->{namespaces_complete}, 'a list that does not fit says so');
+    my $got = $names->($v);
+    cmp_ok(scalar @$got, '<', scalar @all, 'the list was cut short');
+    cmp_ok(scalar @$got, '>=', 40, 'a useful part of the list is still reported');
+    is_deeply($got, [ @all[0 .. $#$got] ], 'the reported part is the configuration-order prefix');
+    is_deeply([ grep { $_->{epoch} !~ /^\d{10}\z/
+                       || $_->{baseline} !~ /^[0-9a-f]{16}\z/
+                       || $_->{serial} !~ /^[0-9a-f]{16}\z/ } @{ $v->{namespaces} } ], [],
+              'the cut never leaves a partial entry');
     stop_server($s);
 };
 

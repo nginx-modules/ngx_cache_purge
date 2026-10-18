@@ -1135,8 +1135,12 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
     ngx_http_cache_purge_loc_conf_t   *cplcf;
     ngx_http_cache_purge_main_conf_t  *cmcf;
     ngx_http_cache_purge_queue_stat_t  snap;
+    ngx_http_cache_purge_generation_view_t  view;
+    ngx_http_cache_purge_namespace_t **namespaces;
     u_char                             buf[NGX_CACHE_PURGE_STATUS_BODY_MAX];
-    u_char                            *p;
+    u_char                            *p, *last;
+    ngx_uint_t                         i;
+    ngx_flag_t                         complete;
     ngx_str_t                          allow = ngx_string("GET, HEAD");
     ngx_buf_t                         *b;
     ngx_chain_t                        out;
@@ -1170,7 +1174,7 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
                      "\"files\":{\"deleted\":%uL,\"errors\":%uL,\"bytes\":%uL},"
                      "\"cleanup\":{\"scan_errors\":%uL,\"retries\":%uL,\"exhausted\":%uL},"
                      "\"logical\":{\"invalidations\":%uL},"
-                     "\"responses\":{\"hit\":%uL,\"miss\":%uL,\"hit_ratio\":%.6f}}}",
+                     "\"responses\":{\"hit\":%uL,\"miss\":%uL,\"hit_ratio\":%.6f}}",
                      snap.queue.size, snap.queue.running, snap.queue.max_size,
                      snap.queue.wait_time,
                      (u_char *) (snap.queue.full ? "true" : "false"),
@@ -1185,7 +1189,38 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
                      ? (double) snap.cache.hits
                        / ((double) snap.cache.hits + (double) snap.cache.misses)
                      : 0.0);
-    if (p == buf + sizeof(buf)) {
+    last = buf + sizeof(buf);
+    if (p == last) {
+        return ngx_http_cache_purge_reply(r, NGX_PURGE_RESULT_INTERNAL_ERROR);
+    }
+
+    /* Generation state per namespace (one snapshot each, taken under that
+     * namespace's own lock). It lets a tool that reads cache files classify
+     * them without guessing; see "Reading cache files in generation mode" in
+     * docs/OPERATIONS.md. A list that does not fit is cut short and flagged,
+     * so a large configuration can never turn the status reply into an error. */
+    p = ngx_snprintf(p, last - p, ",\"namespaces\":[");
+    namespaces = cmcf->namespaces.elts;
+    complete = 1;
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        if ((size_t) (last - p) < NGX_CACHE_PURGE_STATUS_NS_MAX
+                                  + NGX_CACHE_PURGE_STATUS_NS_TAIL)
+        {
+            complete = 0;
+            break;
+        }
+        ngx_http_cache_purge_generation_view(namespaces[i], &view);
+        p = ngx_snprintf(p, last - p,
+                         "%s{\"name\":\"%V\",\"epoch\":\"%*s\","
+                         "\"baseline\":\"%016xL\",\"serial\":\"%016xL\","
+                         "\"rules\":%s}",
+                         (u_char *) (i ? "," : ""), &namespaces[i]->name,
+                         (size_t) 10, view.epoch, view.baseline, view.serial,
+                         (u_char *) (view.rules ? "true" : "false"));
+    }
+    p = ngx_snprintf(p, last - p, "],\"namespaces_complete\":%s}",
+                     (u_char *) (complete ? "true" : "false"));
+    if (p == last) {
         return ngx_http_cache_purge_reply(r, NGX_PURGE_RESULT_INTERNAL_ERROR);
     }
 

@@ -32,4 +32,16 @@ ngx_int_t ngx_http_cache_purge_generation_stale(
 ngx_int_t ngx_http_cache_purge_generation_current(
     ngx_http_cache_purge_namespace_t *ns, ngx_str_t *key, ngx_str_t *logical);
 
+/* Consistent copy of the namespace generation state, for status reporting. */
+typedef struct {
+    u_char      epoch[10];
+    uint64_t    serial;
+    uint64_t    baseline;
+    ngx_flag_t  rules;
+} ngx_http_cache_purge_generation_view_t;
+
+void ngx_http_cache_purge_generation_view(
+    ngx_http_cache_purge_namespace_t *ns,
+    ngx_http_cache_purge_generation_view_t *view);
+
 #endif

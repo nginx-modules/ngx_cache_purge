@@ -489,6 +489,29 @@ ngx_http_cache_purge_generation_stale(ngx_http_cache_purge_namespace_t *ns,
 }
 
 
+/* Everything an external file scanner needs to apply the same predicate as
+ * ngx_http_cache_purge_generation_stale() to files it reads from disk, except
+ * the per-key rules. A file is stale when its epoch differs from "epoch" or its
+ * generation is below "baseline". When "rules" is false the live generation of
+ * every key equals "baseline", so any other file is live. When "rules" is true
+ * a file at or above "baseline" may still be stale through an exact or prefix
+ * rule. One short critical section, the same lock the request path takes. */
+void
+ngx_http_cache_purge_generation_view(ngx_http_cache_purge_namespace_t *ns,
+    ngx_http_cache_purge_generation_view_t *view)
+{
+    ngx_slab_pool_t  *slab;
+
+    slab = (ngx_slab_pool_t *) ns->zone->shm.addr;
+    ngx_shmtx_lock(&slab->mutex);
+    ngx_memcpy(view->epoch, ns->shared->epoch, 10);
+    view->serial = ns->shared->serial;
+    view->baseline = ns->shared->baseline;
+    view->rules = ns->shared->exact != NULL || ns->shared->prefix != NULL;
+    ngx_shmtx_unlock(&slab->mutex);
+}
+
+
 ngx_int_t
 ngx_http_cache_purge_generation_current(ngx_http_cache_purge_namespace_t *ns,
     ngx_str_t *key, ngx_str_t *logical)
