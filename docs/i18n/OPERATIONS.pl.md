@@ -50,6 +50,28 @@ Usuwanie działa best effort. `202` potwierdza przyjęcie, nie usunięcie; ukoń
 
 Błędne przejście tła ponawia się po 100 ms, 1 s i 10 s, najwyżej trzy razy. Odroczone zadanie zachowuje miejsce przyjęcia/deduplikacji i pozwala działać innym. Nowy PURGE zeruje okno ponowień. Po wyczerpaniu zadanie jest wycofywane z błędem w logu; sprawdź `cleanup.exhausted` i ponów po naprawie dysku. Invalidacja generacji działa mimo błędu fizycznego. Brakujące pliki to spodziewane wyścigi; uszkodzone są pomijane bez nieskończonych prób.
 
+<a id="reading-cache-files"></a>
+
+### Odczyt plików cache w trybie generacji
+
+Przeglądarka cache, narzędzie wstępnego ładowania lub raport użycia nie określi aktualności generacji na podstawie samych plików: po unieważnieniu mogą pozostać nieaktualne pliki, nawet bez zastępstwa. Wiersz `KEY:` pliku generacji ma postać `p4:<namespace>:<epoch>:<generation>:<logical key>`. [Endpoint statusu](DIRECTIVES.pl.md#cache_purge_queue_status) udostępnia stan przestrzeni nazw. Bieżąca generacja klucza to `baseline`, chyba że podniosła ją reguła dokładna lub prefiksowa; odpowiedź nie zawiera tych reguł.
+
+| Stan przestrzeni nazw pliku | Ocena |
+|---|---|
+| Brak przestrzeni nazw na liście | unknown |
+| Epoka pliku różni się od `epoch` | stale |
+| Epoka jest zgodna; generacja pliku jest mniejsza niż `baseline` | stale |
+| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `false` | live |
+| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `true` | unknown |
+
+**live** oznacza tu wyłącznie, że plik nie jest nieaktualny według generacji przestrzeni nazw; nie potwierdza świeżości treści, ważności TTL ani HIT w cache NGINX. Przy `namespaces_complete=false` zwrócone wpisy nadal nadają się do użycia, a pominięte przestrzenie mają stan nieznany.
+
+Plik o wyższej generacji z tą samą przestrzenią nazw, epoką i kluczem logicznym dowodzi, że plik o niższej generacji jest nieaktualny: bieżąca generacja nigdy nie maleje w obrębie epoki. W pozostałych przypadkach zachowaj ocenę unknown.
+
+Odczytaj status przed skanowaniem i po nim, łącząc wpisy według nazwy przestrzeni. Używaj ocen opartych na statusie dla przestrzeni tylko wtedy, gdy występuje w obu odpowiedziach, a `epoch`, `baseline` i `serial` są niezmienione. Brak lub zmiana stanu unieważnia jej oceny. Epoki porównuj wyłącznie pod względem równości. Te obserwacje nie zapobiegają późniejszym unieważnieniom.
+
+Pusta kolejka czyszczenia nie dowodzi aktualności. Żądanie rozpoczęte przed unieważnieniem może zapisać plik starej generacji już po zakończeniu czyszczenia. Plik pozostanie do następnego czyszczenia lub usunięcia przez natywny mechanizm cache. Czyszczenie obejmuje też tylko ścieżkę cache location obsługującej PURGE, podczas gdy przestrzeń nazw może obejmować wiele ścieżek.
+
 ---
 
 <a id="performance-tuning"></a>

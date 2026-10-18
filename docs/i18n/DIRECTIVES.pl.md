@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Całkowita / przejścia | Dodatkowe przejścia po błędzie czyszczenia |
 | `cleanup.exhausted` | Całkowita / zadania | Zadania wycofane po trzech nieudanych ponowieniach |
 
+`namespaces` zawiera skonfigurowane wpisy `cache_purge_namespace` niezależnie od cache wybranego przez tę location: wszystkie ścieżki cache danej przestrzeni nazw współdzielą stan generacji. Każdy wpis jest kopiowany pod blokadą swojej przestrzeni nazw. Wpisy odczytywane są osobno; lista nie stanowi jednej globalnej migawki.
+
+| Pole | Typ / jednostka | Znaczenie |
+|---|---|---|
+| `name` | Ciąg znaków | Nazwa przestrzeni nazw w prefiksie klucza cache `p4:<name>:` |
+| `epoch` | Ciąg / 10 cyfr | Bieżąca epoka przestrzeni nazw; pełny restart tworzy nową |
+| `baseline` | Ciąg / 16 cyfr szesnastkowych z małymi literami | Generacja kluczy, której nie podniosła żadna reguła; unieważnienie całej przestrzeni ustawia ją na `serial` |
+| `serial` | Ciąg / 16 cyfr szesnastkowych z małymi literami | Numer sekwencyjny zaczynający się od 1, zwiększany przy każdym opublikowanym unieważnieniu w tej epoce |
+| `rules` | Wartość logiczna | `true`, gdy istnieją reguły dokładne lub prefiksowe; unieważnienie całej przestrzeni je usuwa, także gdy brak pamięci współdzielonej rozszerza unieważnienie |
+
+`baseline` i `serial` mają tę samą stałą szerokość co generacja w kluczu cache i można je porównywać jako ciągi znaków. `namespaces_complete` ma wartość `false`, gdy lista została skrócona, aby zmieściła się w odpowiedzi. Zwrócone wpisy nadal można wykorzystać; brakująca przestrzeń nazw ma stan nieznany. Zobacz [odczyt plików cache w trybie generacji](OPERATIONS.pl.md#reading-cache-files).
+
 `pending.full` liczy pełne czyszczenia; wzorzec klucza `*` jest innym typem. `active` obejmuje oczekiwanie na pulę i zajmuje pojemność, choć nie wchodzi w `queue.size` ani `pending.total`.
 
 Przy scalonym przejściu przestrzeni `pending.full` odpowiada klasyfikacji pierwszego zadania. Skanowania/sondy REFRESH nie wchodzą w głębokość PURGE ani błędy usuwania. Rotacja opóźnionej próby może sprawić, że `wait_time` jest wiekiem próbkowanej głowy, nie maksimum.

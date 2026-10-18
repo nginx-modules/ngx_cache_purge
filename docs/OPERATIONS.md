@@ -18,17 +18,19 @@ A tool that reads cache files itself (a cache browser, a preloader, a usage repo
 
 | Status of the file's namespace | Verdict |
 |---|---|
+| Namespace missing from the list | unknown |
 | File epoch differs from `epoch` | stale |
-| File generation is below `baseline` | stale |
-| `rules` is `false` and the generation is not below `baseline` | live |
-| `rules` is `true` and the generation is not below `baseline` | unknown |
-| Namespace missing from the list, or `namespaces_complete` is `false` | unknown |
+| Epoch matches; file generation is below `baseline` | stale |
+| Epoch matches; generation is at least `baseline`; `rules` is `false` | live |
+| Epoch matches; generation is at least `baseline`; `rules` is `true` | unknown |
+
+Here, **live** means not stale by namespace generation; it does not establish freshness, TTL validity or an NGINX cache HIT. `namespaces_complete=false` leaves returned entries usable and makes omitted namespaces unknown.
 
 An unknown file can still be settled from the files alone in one case: if another file has the same namespace, epoch and logical key and a higher generation, the lower one is stale, because the live generation of a key never decreases within an epoch. Treat everything else as unknown; do not guess live or stale.
 
-Invalidations can land while a scan runs. Read the status before and after the scan and discard the verdicts when `epoch`, `baseline` or `serial` changed. `epoch` values are not ordered; compare them only for equality.
+Read status before and after the scan, matching entries by namespace name. Use status-based verdicts for a namespace only if it appears in both replies and `epoch`, `baseline` and `serial` are unchanged. Missing or changed state invalidates that namespace's verdicts. Compare epochs only for equality. These observations do not prevent later invalidations.
 
-Do not use an idle cleanup queue as a replacement for these verdicts. A request that began before an invalidation can still write an old-generation file after the cleanup of that invalidation has finished, and that file stays until a later cleanup or until `inactive` expires it. Cleanup also addresses only the cache path of the purge location, while a namespace can be shared by several cache paths.
+Do not use an idle cleanup queue as a replacement for these verdicts. A request that began before an invalidation can still write an old-generation file after the cleanup of that invalidation has finished, and that file stays until a later cleanup or native cache eviction. Cleanup also addresses only the cache path of the purge location, while a namespace can be shared by several cache paths.
 
 <a id="performance-tuning"></a>
 

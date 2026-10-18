@@ -50,6 +50,28 @@ Löschen erfolgt nach bestem Bemühen. `202` bestätigt die Annahme, nicht die a
 
 Fehlgeschlagene Hintergrunddurchläufe werden nach 100 ms, 1 s und 10 s höchstens dreimal wiederholt. Wartende Wiederholungen behalten ihren Deduplizierungs-/Aufnahmeplatz, lassen aber andere Aufgaben passieren. Ein neuer PURGE setzt das Wiederholungsfenster zurück. Danach wird die Aufgabe mit Fehlermeldung beendet; `cleanup.exhausted` prüfen und nach Behebung des Speicherfehlers erneut purgen. Eine Generationsinvalidierung bleibt auch bei fehlgeschlagener physischer Bereinigung wirksam. Fehlende Dateien gelten als erwartete Rennen; ungültige Dateien werden übersprungen.
 
+<a id="reading-cache-files"></a>
+
+### Cache-Dateien im Generationsmodus lesen
+
+Ein Cache-Browser, Preloader oder Nutzungsbericht kann die Generationsgültigkeit nicht allein aus Dateien ableiten: Nach einer Invalidierung können veraltete Dateien ohne Ersatz verbleiben. Die `KEY:`-Zeile einer Generationsdatei lautet `p4:<namespace>:<epoch>:<generation>:<logical key>`. Der [Status-Endpunkt](DIRECTIVES.de.md#cache_purge_queue_status) liefert den Namensraumzustand. Die aktuelle Generation eines Schlüssels ist `baseline`, sofern keine exakte oder Präfixregel sie erhöht hat; diese Regeln fehlen in der Antwort.
+
+| Zustand des Namensraums der Datei | Ergebnis |
+|---|---|
+| Namensraum fehlt in der Liste | unknown |
+| Epoche der Datei weicht von `epoch` ab | stale |
+| Epoche stimmt überein; Dateigeneration liegt unter `baseline` | stale |
+| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `false` | live |
+| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `true` | unknown |
+
+**live** bedeutet hier nur, dass die Datei gemäß der Namensraumgeneration nicht veraltet ist. Es bestätigt weder Inhaltsfrische noch TTL-Gültigkeit oder einen NGINX-Cache-HIT. Bei `namespaces_complete=false` bleiben zurückgegebene Einträge verwendbar; ausgelassene Namensräume gelten als unbekannt.
+
+Eine Datei mit höherer Generation bei gleichem Namensraum, gleicher Epoche und gleichem logischen Schlüssel beweist, dass die Datei mit niedrigerer Generation veraltet ist: Die aktuelle Generation sinkt innerhalb einer Epoche nie. Andernfalls bleibt das Ergebnis unknown.
+
+Status vor und nach dem Scan lesen und Einträge anhand des Namensraumnamens zuordnen. Aus dem Status abgeleitete Ergebnisse für einen Namensraum nur verwenden, wenn er in beiden Antworten vorkommt und `epoch`, `baseline` und `serial` unverändert sind. Fehlender oder geänderter Zustand macht dessen Ergebnisse ungültig. Epochen nur auf Gleichheit vergleichen. Diese Beobachtungen verhindern keine späteren Invalidierungen.
+
+Eine leere Bereinigungswarteschlange beweist keine Gültigkeit. Ein vor der Invalidierung begonnener Request kann nach Abschluss der Bereinigung eine Datei der alten Generation schreiben. Sie bleibt bis zu einer späteren Bereinigung oder zur Verdrängung durch den nativen Cache bestehen. Die Bereinigung betrifft außerdem nur den Cache-Pfad der PURGE-Location, während ein Namensraum mehrere Pfade umfassen kann.
+
 ---
 
 <a id="performance-tuning"></a>

@@ -50,6 +50,28 @@ Penghapusan bersifat best effort. `202` mengonfirmasi penerimaan, bukan penghapu
 
 Putaran latar gagal diulang setelah 100 ms, 1 s, dan 10 s, maksimal tiga kali. Tugas tertunda tetap memiliki slot penerimaan/deduplikasi sambil membiarkan tugas lain berjalan. PURGE baru mengatur ulang jendela ini. Setelah habis, tugas dihentikan dengan log error; periksa `cleanup.exhausted` dan ulangi setelah memperbaiki penyimpanan. Invalidasi generasi tetap berlaku walau pembersihan fisik gagal. File hilang adalah race yang diharapkan; file rusak dilewati tanpa pengulangan tak berujung.
 
+<a id="reading-cache-files"></a>
+
+### Membaca berkas cache dalam mode generasi
+
+Penjelajah cache, pemuat awal, atau laporan penggunaan tidak dapat menyimpulkan validitas generasi hanya dari berkas: berkas usang dapat tetap ada setelah invalidasi, bahkan tanpa pengganti. Baris `KEY:` berkas generasi adalah `p4:<namespace>:<epoch>:<generation>:<logical key>`. [Endpoint status](DIRECTIVES.id.md#cache_purge_queue_status) menyediakan status namespace. Generasi aktif suatu kunci adalah `baseline`, kecuali aturan exact atau prefiks menaikkannya; aturan tersebut tidak disertakan dalam respons.
+
+| Status namespace berkas | Kesimpulan |
+|---|---|
+| Namespace tidak ada dalam daftar | unknown |
+| Epoch berkas berbeda dari `epoch` | stale |
+| Epoch cocok; generasi berkas lebih kecil dari `baseline` | stale |
+| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `false` | live |
+| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `true` | unknown |
+
+Di sini, **live** hanya berarti berkas tidak usang menurut generasi namespace; ini tidak membuktikan kesegaran konten, validitas TTL, atau HIT pada cache NGINX. Dengan `namespaces_complete=false`, entri yang dikembalikan tetap dapat digunakan dan namespace yang tidak disertakan dianggap tidak diketahui.
+
+Berkas dengan generasi lebih tinggi, namespace, epoch, dan kunci logis yang sama membuktikan bahwa berkas bergenerasi lebih rendah sudah usang: generasi aktif tidak pernah menurun dalam satu epoch. Selain itu, pertahankan kesimpulan unknown.
+
+Baca status sebelum dan sesudah pemindaian, cocokkan entri berdasarkan nama namespace. Gunakan kesimpulan berdasarkan status untuk suatu namespace hanya jika namespace ada dalam kedua respons dan `epoch`, `baseline`, serta `serial` tidak berubah. Status yang hilang atau berubah membatalkan kesimpulan untuk namespace tersebut. Bandingkan epoch hanya untuk kesamaan. Pengamatan ini tidak mencegah invalidasi berikutnya.
+
+Antrean pembersihan kosong tidak membuktikan validitas. Permintaan yang dimulai sebelum invalidasi dapat menulis berkas generasi lama setelah pembersihan selesai. Berkas tetap ada sampai pembersihan berikutnya atau pengusiran oleh cache bawaan. Pembersihan juga hanya menargetkan jalur cache pada location PURGE, sedangkan satu namespace dapat dipakai oleh beberapa jalur.
+
 ---
 
 <a id="performance-tuning"></a>

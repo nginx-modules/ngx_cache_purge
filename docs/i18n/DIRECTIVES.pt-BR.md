@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Inteiro / passagens | Passagens adicionais agendadas após falha de limpeza |
 | `cleanup.exhausted` | Inteiro / tarefas | Tarefas retiradas após três novas tentativas malsucedidas |
 
+`namespaces` apresenta as entradas `cache_purge_namespace` configuradas, independentemente do cache selecionado por esta location: todos os caminhos de cache de um namespace compartilham seu estado de gerações. Cada entrada é copiada sob o bloqueio do próprio namespace. As entradas são obtidas separadamente; a lista não é um snapshot global.
+
+| Campo | Tipo / unidade | Significado |
+|---|---|---|
+| `name` | String | Nome do namespace no prefixo da chave de cache `p4:<name>:` |
+| `epoch` | String / 10 dígitos | Época atual do namespace; uma reinicialização completa cria outra |
+| `baseline` | String / 16 dígitos hexadecimais em minúsculas | Geração das chaves que nenhuma regra elevou; uma invalidação de todo o namespace a define como `serial` |
+| `serial` | String / 16 dígitos hexadecimais em minúsculas | Número de sequência que começa em 1 e avança a cada invalidação publicada nesta época |
+| `rules` | Booleano | `true` quando existem regras exatas ou de prefixo; uma invalidação de todo o namespace as remove, inclusive quando a falta de memória compartilhada amplia a invalidação |
+
+`baseline` e `serial` têm a mesma largura fixa da geração na chave de cache e podem ser comparados como strings. `namespaces_complete` é `false` quando a lista é truncada para caber na resposta. As entradas retornadas continuam utilizáveis; um namespace ausente é desconhecido. Veja [leitura de arquivos de cache no modo de gerações](OPERATIONS.pt-BR.md#reading-cache-files).
+
 `pending.full` conta operações de cache inteiro; um curinga cuja chave é `*` constitui outro tipo. `active` inclui espera por pool, excluída de `queue.size` e `pending.total`, mas que ocupa capacidade de admissão.
 
 Em varreduras agregadas de namespace, `pending.full` reflete a classificação da primeira tarefa aceita. Scans/probes REFRESH não entram na profundidade da fila PURGE nem nos erros de remoção. Reposicionar uma tentativa adiada pode fazer `wait_time` refletir a idade da cabeça amostrada, não a maior idade pendente.

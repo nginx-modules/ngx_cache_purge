@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | 整数／扫描次数 | 因清理失败而安排的额外扫描 |
 | `cleanup.exhausted` | 整数／任务数 | 三次重试失败后终止的清理任务 |
 
+`namespaces` 返回已配置的 `cache_purge_namespace`，不受当前 location 所选缓存的限制：使用同一命名空间的所有缓存路径共享世代状态。每个条目都在持有对应命名空间锁时复制。各条目分别采样，因此整个列表不是同一时刻的全局快照。
+
+| 字段 | 类型／单位 | 含义 |
+|---|---|---|
+| `name` | 字符串 | 缓存键前缀 `p4:<name>:` 中的命名空间名称 |
+| `epoch` | 字符串／10 位数字 | 命名空间的当前 epoch；完整重启会创建新值 |
+| `baseline` | 字符串／16 位小写十六进制数 | 未被规则提升的键的世代；整个命名空间失效时将其设为 `serial` |
+| `serial` | 字符串／16 位小写十六进制数 | 从 1 开始的序列号，在本 epoch 内每次发布失效时递增 |
+| `rules` | 布尔值 | 存在精确匹配或前缀规则时为 `true`；整个命名空间失效会清除这些规则，包括共享内存不足导致失效范围扩大时 |
+
+`baseline` 和 `serial` 与缓存键中的世代采用相同的固定宽度，可按字符串比较。列表因响应容量而截断时，`namespaces_complete` 为 `false`。已返回的条目仍可使用，缺失的命名空间应视为未知。参见[在世代模式下读取缓存文件](OPERATIONS.zh-CN.md#reading-cache-files)。
+
 `pending.full` 统计全缓存操作；键为 `*` 的通配符仍是独立操作类型。`active` 包括线程池等待者。活动任务不计入 `queue.size` 和 `pending.total`，但占用接纳容量。
 
 合并命名空间扫描时，`pending.full` 沿用首个任务的分类。REFRESH 扫描／探测不计入 PURGE 队列深度或删除错误计数。延迟重试轮转后，`wait_time` 可能只是采样到的队头等待时间，而非最长等待时间。

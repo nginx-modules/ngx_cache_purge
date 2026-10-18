@@ -50,6 +50,28 @@ A remoção é best effort. `202` confirma aceitação, não remoção concluíd
 
 Passagens com falha são repetidas após 100 ms, 1 s e 10 s, até três vezes. Tarefas adiadas conservam a vaga de admissão/deduplicação e permitem outras tarefas. Um novo PURGE reinicia essa janela. Esgotadas as tentativas, a tarefa é retirada com erro no log; consulte `cleanup.exhausted` e repita após corrigir o armazenamento. A invalidação por gerações continua eficaz mesmo se a limpeza física falhar. Arquivos ausentes são corridas esperadas; arquivos malformados são ignorados sem repetição infinita.
 
+<a id="reading-cache-files"></a>
+
+### Leitura de arquivos de cache no modo de gerações
+
+Um navegador de cache, pré-carregador ou relatório de uso não pode deduzir a validade da geração apenas pelos arquivos: arquivos obsoletos podem permanecer após a invalidação, mesmo sem substituto. A linha `KEY:` de um arquivo de geração é `p4:<namespace>:<epoch>:<generation>:<logical key>`. O [endpoint de status](DIRECTIVES.pt-BR.md#cache_purge_queue_status) expõe o estado do namespace. A geração vigente de uma chave é `baseline`, salvo se uma regra exata ou de prefixo a elevou; essas regras não aparecem na resposta.
+
+| Estado do namespace do arquivo | Resultado |
+|---|---|
+| Namespace ausente da lista | unknown |
+| A época do arquivo difere de `epoch` | stale |
+| A época coincide; a geração do arquivo é inferior a `baseline` | stale |
+| A época coincide; a geração é pelo menos `baseline`; `rules` é `false` | live |
+| A época coincide; a geração é pelo menos `baseline`; `rules` é `true` | unknown |
+
+Aqui, **live** significa apenas que o arquivo não está obsoleto pela geração do namespace; não confirma a atualidade do conteúdo, a validade do TTL nem um HIT no cache NGINX. Com `namespaces_complete=false`, as entradas retornadas continuam utilizáveis e os namespaces omitidos são desconhecidos.
+
+Um arquivo de geração superior com o mesmo namespace, época e chave lógica prova que o arquivo de geração inferior está obsoleto: a geração vigente nunca diminui dentro de uma época. Nos demais casos, mantenha o resultado unknown.
+
+Leia o status antes e depois da varredura, associando as entradas pelo nome do namespace. Use os resultados baseados no status somente se o namespace estiver nas duas respostas e `epoch`, `baseline` e `serial` não mudarem. Estado ausente ou alterado invalida os resultados daquele namespace. Compare épocas apenas por igualdade. Essas observações não impedem invalidações posteriores.
+
+Uma fila de limpeza vazia não comprova validade. Uma requisição iniciada antes da invalidação pode gravar um arquivo da geração antiga após o término da limpeza. O arquivo permanece até outra limpeza ou sua remoção pelo cache nativo. A limpeza também atinge apenas o caminho de cache da location de PURGE, enquanto um namespace pode ser compartilhado entre vários caminhos.
+
 ---
 
 <a id="performance-tuning"></a>

@@ -50,6 +50,28 @@ Xóa theo best effort. `202` xác nhận nhận việc, không phải đã xóa;
 
 Lượt nền lỗi được thử lại sau 100 ms, 1 s và 10 s, tối đa ba lần. Tác vụ trì hoãn giữ suất tiếp nhận/khử trùng lặp nhưng cho tác vụ khác chạy. PURGE mới đặt lại cửa sổ. Hết thử thì bỏ tác vụ và ghi lỗi; xem `cleanup.exhausted`, sửa lưu trữ rồi thử lại. Vô hiệu hóa thế hệ vẫn có hiệu lực khi dọn vật lý lỗi. Tệp mất là race dự kiến; tệp sai định dạng bị bỏ qua, không thử mãi.
 
+<a id="reading-cache-files"></a>
+
+### Đọc tệp cache ở chế độ thế hệ
+
+Trình duyệt cache, công cụ nạp trước hoặc báo cáo sử dụng không thể suy ra tính hợp lệ của thế hệ chỉ từ tệp: tệp lỗi thời có thể còn lại sau vô hiệu hóa, ngay cả khi chưa có tệp thay thế. Dòng `KEY:` của tệp thế hệ có dạng `p4:<namespace>:<epoch>:<generation>:<logical key>`. [Endpoint trạng thái](DIRECTIVES.vi.md#cache_purge_queue_status) cung cấp trạng thái không gian tên. Thế hệ hiện hành của khóa là `baseline`, trừ khi quy tắc khớp chính xác hoặc tiền tố đã nâng nó lên; phản hồi không chứa các quy tắc đó.
+
+| Trạng thái không gian tên của tệp | Kết luận |
+|---|---|
+| Không gian tên không có trong danh sách | unknown |
+| Epoch của tệp khác `epoch` | stale |
+| Epoch trùng; thế hệ của tệp nhỏ hơn `baseline` | stale |
+| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `false` | live |
+| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `true` | unknown |
+
+Ở đây, **live** chỉ có nghĩa là tệp chưa lỗi thời theo thế hệ của không gian tên; không chứng minh nội dung còn mới, TTL còn hiệu lực hay cache NGINX sẽ HIT. Với `namespaces_complete=false`, các mục đã trả về vẫn dùng được, còn không gian tên bị bỏ qua là chưa biết.
+
+Tệp có thế hệ cao hơn nhưng cùng không gian tên, epoch và khóa logic chứng minh tệp có thế hệ thấp hơn đã lỗi thời: thế hệ hiện hành không bao giờ giảm trong cùng epoch. Trong các trường hợp khác, giữ kết luận unknown.
+
+Đọc trạng thái trước và sau khi quét, ghép các mục theo tên không gian tên. Chỉ dùng kết luận dựa trên trạng thái của một không gian tên nếu nó xuất hiện trong cả hai phản hồi và `epoch`, `baseline`, `serial` không đổi. Trạng thái bị thiếu hoặc thay đổi làm mất hiệu lực các kết luận của không gian tên đó. Chỉ so sánh epoch về tính bằng nhau. Những quan sát này không ngăn được các lần vô hiệu hóa sau đó.
+
+Hàng đợi dọn dẹp trống không chứng minh tính hợp lệ. Yêu cầu bắt đầu trước vô hiệu hóa có thể ghi tệp thế hệ cũ sau khi dọn dẹp kết thúc. Tệp còn lại cho đến lần dọn tiếp theo hoặc bị cơ chế cache gốc loại bỏ. Dọn dẹp cũng chỉ nhắm đến đường dẫn cache của location PURGE, trong khi một không gian tên có thể được nhiều đường dẫn dùng chung.
+
 ---
 
 <a id="performance-tuning"></a>

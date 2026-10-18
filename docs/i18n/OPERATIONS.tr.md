@@ -50,6 +50,28 @@ Silme best effort’dur. `202`, tamamlanan silmeyi değil kabulü doğrular; bit
 
 Başarısız arka plan geçişi 100 ms, 1 s ve 10 s sonra, en fazla üç kez tekrarlanır. Ertelenen görev kabul/tekilleştirme yerini tutar, diğerlerine izin verir. Yeni PURGE pencereyi sıfırlar. Denemeler tükenince görev kaldırılıp hata loglanır; depoyu düzelttikten sonra `cleanup.exhausted` değerini inceleyip yeniden deneyin. Fiziksel hata nesil geçersizleştirmesini bozmaz. Eksik dosya beklenen yarıştır; bozuk dosyalar sonsuza kadar denenmez, atlanır.
 
+<a id="reading-cache-files"></a>
+
+### Nesil modunda önbellek dosyalarını okuma
+
+Bir önbellek gezgini, ön yükleyici veya kullanım raporu nesil geçerliliğini yalnızca dosyalardan çıkaramaz: geçersiz kılmadan sonra, yenisi oluşmamış olsa bile eski dosyalar kalabilir. Nesil dosyasının `KEY:` satırı `p4:<namespace>:<epoch>:<generation>:<logical key>` biçimindedir. [Durum uç noktası](DIRECTIVES.tr.md#cache_purge_queue_status) ad alanının durumunu sunar. Tam eşleşme veya önek kuralı yükseltmediyse anahtarın geçerli nesli `baseline` değeridir; bu kurallar yanıtta yer almaz.
+
+| Dosyanın ad alanının durumu | Sonuç |
+|---|---|
+| Ad alanı listede yok | unknown |
+| Dosyanın epoch değeri `epoch` ile farklı | stale |
+| Epoch aynı; dosyanın nesli `baseline` değerinden küçük | stale |
+| Epoch aynı; nesil en az `baseline`; `rules` değeri `false` | live |
+| Epoch aynı; nesil en az `baseline`; `rules` değeri `true` | unknown |
+
+Burada **live**, yalnızca dosyanın ad alanı nesline göre eski olmadığı anlamına gelir; içerik tazeliğini, TTL geçerliliğini veya NGINX önbellek HIT sonucunu kanıtlamaz. `namespaces_complete=false` olduğunda döndürülen girdiler kullanılabilir, atlanan ad alanları ise bilinmeyendir.
+
+Aynı ad alanı, epoch ve mantıksal anahtara sahip daha yüksek nesilli bir dosya, düşük nesilli dosyanın eski olduğunu kanıtlar: geçerli nesil aynı epoch içinde asla azalmaz. Diğer durumlarda unknown sonucunu koruyun.
+
+Taramadan önce ve sonra durumu okuyun; girdileri ad alanı adına göre eşleştirin. Bir ad alanının duruma dayalı sonuçlarını yalnızca her iki yanıtta da yer alıyorsa ve `epoch`, `baseline`, `serial` değişmediyse kullanın. Durumun eksik veya değişmiş olması o ad alanının sonuçlarını geçersiz kılar. Epoch değerlerini yalnızca eşitlik açısından karşılaştırın. Bu gözlemler daha sonraki geçersiz kılmaları engellemez.
+
+Boş bir temizleme kuyruğu geçerlilik kanıtı değildir. Geçersiz kılmadan önce başlayan bir istek, temizleme bittikten sonra eski nesilli bir dosya yazabilir. Dosya sonraki temizlemeye veya yerel önbelleğin dosyayı çıkarmasına kadar kalır. Temizleme ayrıca yalnızca PURGE location içindeki önbellek yolunu hedefler; bir ad alanı ise birden fazla yol tarafından paylaşılabilir.
+
 ---
 
 <a id="performance-tuning"></a>

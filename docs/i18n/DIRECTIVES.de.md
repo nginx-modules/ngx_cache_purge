@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Ganzzahl / Durchläufe | Wegen Fehlern zusätzlich geplante Bereinigungsdurchläufe |
 | `cleanup.exhausted` | Ganzzahl / Aufgaben | Nach drei erfolglosen Wiederholungen beendete Aufgaben |
 
+`namespaces` enthält die konfigurierten `cache_purge_namespace`-Einträge unabhängig vom Cache dieser Location: Alle Cache-Pfade eines Namensraums teilen dessen Generationszustand. Jeder Eintrag wird unter der Sperre seines Namensraums kopiert. Die Einträge werden einzeln erfasst; die Liste ist kein globaler Snapshot.
+
+| Feld | Typ / Einheit | Bedeutung |
+|---|---|---|
+| `name` | Zeichenkette | Name des Namensraums im Cache-Schlüsselpräfix `p4:<name>:` |
+| `epoch` | Zeichenkette / 10 Ziffern | Aktuelle Epoche des Namensraums; ein vollständiger Neustart erzeugt eine neue |
+| `baseline` | Zeichenkette / 16 Hexadezimalziffern in Kleinschreibung | Generation der Schlüssel ohne Erhöhung durch eine Regel; eine Invalidierung des gesamten Namensraums setzt sie auf `serial` |
+| `serial` | Zeichenkette / 16 Hexadezimalziffern in Kleinschreibung | Bei 1 beginnende Sequenznummer, die mit jeder veröffentlichten Invalidierung dieser Epoche steigt |
+| `rules` | Boolesch | `true`, wenn exakte oder Präfixregeln existieren; eine Invalidierung des gesamten Namensraums entfernt sie, auch wenn Speichermangel im SHM die Invalidierung ausweitet |
+
+`baseline` und `serial` haben dieselbe feste Breite wie die Generation im Cache-Schlüssel und lassen sich als Zeichenketten vergleichen. `namespaces_complete` ist `false`, wenn die Liste für die Antwort gekürzt wurde. Zurückgegebene Einträge bleiben verwendbar; ein fehlender Namensraum gilt als unbekannt. Siehe [Cache-Dateien im Generationsmodus lesen](OPERATIONS.de.md#reading-cache-files).
+
 `pending.full` zählt Gesamtcache-Operationen. Ein Platzhalterschlüssel `*` bleibt ein eigener Operationstyp. `active` enthält Pool-Wartezeit. Aktive Aufträge sind nicht in `queue.size` oder `pending.total` enthalten, belegen aber Aufnahmekapazität.
 
 Bei zusammengefassten Namespace-Durchläufen folgt `pending.full` der Klassifikation der zuerst angenommenen Aufgabe. REFRESH-Scans/-Probes gehören weder zur PURGE-Queue-Tiefe noch zu deren Löschfehlerzählern. Rotierte Wiederholungen können bewirken, dass `wait_time` das abgetastete Alter des Kopfes statt des ältesten Eintrags angibt.

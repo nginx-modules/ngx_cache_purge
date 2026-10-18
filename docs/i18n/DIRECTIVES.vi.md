@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Số nguyên / lượt | Lượt thêm do dọn dẹp lỗi |
 | `cleanup.exhausted` | Số nguyên / tác vụ | Tác vụ bỏ sau ba lần thử lại thất bại |
 
+`namespaces` liệt kê các mục `cache_purge_namespace` đã cấu hình, bất kể cache được chọn bởi location này: mọi đường dẫn cache dùng chung một không gian tên đều chia sẻ trạng thái thế hệ. Mỗi mục được sao chép khi đang giữ khóa của không gian tên đó. Các mục được lấy riêng lẻ; danh sách không phải ảnh chụp trạng thái toàn cục.
+
+| Trường | Kiểu / đơn vị | Ý nghĩa |
+|---|---|---|
+| `name` | Chuỗi | Tên không gian tên trong tiền tố khóa cache `p4:<name>:` |
+| `epoch` | Chuỗi / 10 chữ số | Epoch hiện tại của không gian tên; khởi động lại hoàn toàn tạo epoch mới |
+| `baseline` | Chuỗi / 16 chữ số thập lục phân viết thường | Thế hệ của khóa chưa được quy tắc nâng lên; vô hiệu hóa toàn bộ không gian tên đặt nó thành `serial` |
+| `serial` | Chuỗi / 16 chữ số thập lục phân viết thường | Số thứ tự bắt đầu từ 1, tăng sau mỗi lần vô hiệu hóa được công bố trong epoch này |
+| `rules` | Boolean | `true` khi có quy tắc khớp chính xác hoặc tiền tố; vô hiệu hóa toàn bộ không gian tên sẽ xóa chúng, kể cả khi thiếu bộ nhớ dùng chung làm mở rộng phạm vi vô hiệu hóa |
+
+`baseline` và `serial` có cùng độ rộng cố định với thế hệ trong khóa cache và có thể so sánh như chuỗi. `namespaces_complete` là `false` khi danh sách bị cắt để vừa phản hồi. Các mục đã trả về vẫn dùng được; coi không gian tên bị thiếu là chưa biết. Xem [đọc tệp cache ở chế độ thế hệ](OPERATIONS.vi.md#reading-cache-files).
+
 `pending.full` đếm xóa toàn cache; wildcard khóa `*` là loại khác. `active` gồm chờ pool, không thuộc `queue.size`/`pending.total` nhưng vẫn chiếm sức chứa.
 
 Lượt quét không gian tên hợp nhất giữ phân loại của tác vụ đầu tiên trong `pending.full`. Scan/probe REFRESH không tính vào độ sâu PURGE hoặc lỗi xóa. Đổi vị trí thử lại trì hoãn có thể làm `wait_time` thành tuổi đầu hàng đợi được lấy mẫu thay vì tuổi chờ tối đa.

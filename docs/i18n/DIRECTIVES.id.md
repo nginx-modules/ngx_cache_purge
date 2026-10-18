@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Integer / putaran | Putaran tambahan karena pembersihan gagal |
 | `cleanup.exhausted` | Integer / tugas | Tugas dihentikan setelah tiga percobaan ulang gagal |
 
+`namespaces` menampilkan entri `cache_purge_namespace` yang dikonfigurasi, terlepas dari cache yang dipilih location ini: semua jalur cache yang memakai namespace berbagi status generasinya. Setiap entri disalin dengan kunci namespace tersebut dipegang. Entri diambil secara terpisah; daftar ini bukan snapshot global.
+
+| Kolom | Tipe / satuan | Makna |
+|---|---|---|
+| `name` | String | Nama namespace dalam prefiks kunci cache `p4:<name>:` |
+| `epoch` | String / 10 digit | Epoch namespace saat ini; restart penuh membuat epoch baru |
+| `baseline` | String / 16 digit heksadesimal huruf kecil | Generasi kunci yang tidak dinaikkan oleh aturan; invalidasi seluruh namespace menetapkannya ke `serial` |
+| `serial` | String / 16 digit heksadesimal huruf kecil | Nomor urut mulai dari 1, bertambah pada setiap invalidasi yang dipublikasikan dalam epoch ini |
+| `rules` | Boolean | `true` jika ada aturan exact atau prefiks; invalidasi seluruh namespace menghapusnya, termasuk ketika kekurangan memori bersama memperluas invalidasi |
+
+`baseline` dan `serial` memiliki lebar tetap yang sama dengan generasi pada kunci cache dan dapat dibandingkan sebagai string. `namespaces_complete` bernilai `false` jika daftar dipotong agar muat dalam respons. Entri yang dikembalikan tetap dapat digunakan; namespace yang tidak ada dianggap tidak diketahui. Lihat [membaca berkas cache dalam mode generasi](OPERATIONS.id.md#reading-cache-files).
+
 `pending.full` menghitung operasi seluruh cache; wildcard dengan kunci `*` adalah jenis berbeda. `active` mencakup penunggu pool, di luar `queue.size` dan `pending.total` tetapi tetap menggunakan kapasitas.
 
 Untuk penyapuan namespace gabungan, `pending.full` mengikuti klasifikasi tugas pertama. Pemindaian/probe REFRESH tidak masuk kedalaman antrean atau error penghapusan. Memutar tugas percobaan tertunda dapat membuat `wait_time` menjadi usia kepala yang disampel, bukan usia tunggu maksimum.

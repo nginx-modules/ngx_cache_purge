@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Entero / pasadas | Pasadas adicionales por fallo de limpieza |
 | `cleanup.exhausted` | Entero / tareas | Tareas retiradas tras tres reintentos fallidos |
 
+`namespaces` incluye las entradas `cache_purge_namespace` configuradas, con independencia del caché elegido por esta location: todas las rutas de un espacio de nombres comparten su estado de generaciones. Cada entrada se copia bajo el bloqueo de su espacio de nombres. Las entradas se leen por separado; la lista no es una instantánea global.
+
+| Campo | Tipo / unidad | Significado |
+|---|---|---|
+| `name` | Cadena | Nombre del espacio de nombres en el prefijo de clave `p4:<name>:` |
+| `epoch` | Cadena / 10 dígitos | Época actual del espacio de nombres; un reinicio completo crea otra |
+| `baseline` | Cadena / 16 dígitos hexadecimales en minúsculas | Generación de las claves que ninguna regla ha elevado; una invalidación de todo el espacio la establece en `serial` |
+| `serial` | Cadena / 16 dígitos hexadecimales en minúsculas | Número de secuencia que empieza en 1 y aumenta con cada invalidación publicada en esta época |
+| `rules` | Booleano | `true` si existen reglas exactas o de prefijo; una invalidación de todo el espacio las elimina, incluso cuando la falta de memoria compartida amplía la invalidación |
+
+`baseline` y `serial` tienen el mismo ancho fijo que la generación de una clave y se comparan como cadenas. `namespaces_complete` es `false` cuando la lista se recorta para caber en la respuesta. Las entradas devueltas siguen siendo utilizables; un espacio de nombres ausente se considera desconocido. Véase [lectura de archivos de caché en modo de generaciones](OPERATIONS.es.md#reading-cache-files).
+
 `pending.full` cuenta purgas completas. El comodín de clave `*` es otro tipo de operación. `active` incluye espera por pool; se excluye de `queue.size` y `pending.total`, pero ocupa capacidad.
 
 En un barrido agrupado, `pending.full` refleja la clasificación de la primera tarea aceptada. Exploraciones/probes REFRESH no cuentan en profundidad de cola PURGE ni errores de borrado. Rotar un reintento diferido puede hacer que `wait_time` muestre la edad de la cabeza muestreada y no la máxima.

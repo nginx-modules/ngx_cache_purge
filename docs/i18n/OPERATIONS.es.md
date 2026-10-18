@@ -50,6 +50,28 @@ El borrado es best effort. `202` confirma aceptación, no borrado; una pasada co
 
 Las pasadas fallidas se repiten a los 100 ms, 1 s y 10 s, como máximo tres veces. Las tareas diferidas conservan su plaza de admisión/deduplicación y permiten otras tareas. Un PURGE nuevo reinicia la ventana. Tras agotar intentos se retira la tarea y se registra un error; consulte `cleanup.exhausted` y repita tras reparar el almacenamiento. La invalidación por generaciones sigue siendo efectiva aunque falle el borrado. Archivos ausentes son carreras esperadas; los malformados se omiten sin reintentos infinitos.
 
+<a id="reading-cache-files"></a>
+
+### Lectura de archivos de caché en modo de generaciones
+
+Un explorador de caché, precargador o informe de uso no puede deducir la validez de una generación solo de los archivos: tras una invalidación pueden quedar archivos obsoletos sin sustituto. La línea `KEY:` de un archivo de generación es `p4:<namespace>:<epoch>:<generation>:<logical key>`. El [endpoint de estado](DIRECTIVES.es.md#cache_purge_queue_status) expone el estado del espacio de nombres. La generación vigente de una clave es `baseline`, salvo que una regla exacta o de prefijo la haya elevado; la respuesta no incluye esas reglas.
+
+| Estado del espacio de nombres del archivo | Veredicto |
+|---|---|
+| El espacio de nombres no aparece en la lista | unknown |
+| La época del archivo difiere de `epoch` | stale |
+| La época coincide; la generación del archivo es inferior a `baseline` | stale |
+| La época coincide; la generación es al menos `baseline`; `rules` es `false` | live |
+| La época coincide; la generación es al menos `baseline`; `rules` es `true` | unknown |
+
+Aquí, **live** solo significa que el archivo no está obsoleto según la generación del espacio de nombres; no confirma la frescura del contenido, la validez del TTL ni un HIT de caché de NGINX. Con `namespaces_complete=false`, las entradas devueltas siguen siendo utilizables y los espacios omitidos son desconocidos.
+
+Un archivo de generación superior con el mismo espacio de nombres, época y clave lógica demuestra que el de generación inferior está obsoleto: la generación vigente nunca disminuye dentro de una época. En los demás casos, mantenga el veredicto unknown.
+
+Lea el estado antes y después del recorrido, emparejando entradas por nombre del espacio de nombres. Use los veredictos basados en el estado solo si el espacio aparece en ambas respuestas y `epoch`, `baseline` y `serial` no cambian. Si falta o cambia el estado, descarte los veredictos de ese espacio. Compare las épocas solo por igualdad. Estas observaciones no impiden invalidaciones posteriores.
+
+Una cola de limpieza vacía no demuestra validez. Una petición iniciada antes de la invalidación puede escribir un archivo de la generación antigua después de terminar la limpieza. El archivo permanece hasta otra limpieza o su expulsión por el caché nativo. Además, la limpieza solo afecta a la ruta de caché de la location de PURGE, mientras que un espacio de nombres puede abarcar varias rutas.
+
 ---
 
 <a id="performance-tuning"></a>

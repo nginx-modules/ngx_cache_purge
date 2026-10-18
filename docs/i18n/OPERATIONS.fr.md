@@ -50,6 +50,28 @@ La suppression est best effort. `202` confirme l’admission, pas la suppression
 
 Un passage échoué est réessayé après 100 ms, 1 s et 10 s, au plus trois fois. Les tâches différées gardent leur place d’admission/déduplication tout en laissant avancer les autres. Un nouveau PURGE réinitialise cette fenêtre. Après épuisement, la tâche est retirée avec erreur journalisée ; consultez `cleanup.exhausted` et réessayez après réparation du stockage. L’invalidation reste effective malgré l’échec physique. Les fichiers absents sont des courses attendues ; les fichiers mal formés sont ignorés sans répétition infinie.
 
+<a id="reading-cache-files"></a>
+
+### Lire les fichiers de cache en mode générations
+
+Un navigateur de cache, un préchargeur ou un rapport d’utilisation ne peut pas déduire la validité d’une génération des seuls fichiers : des fichiers périmés peuvent subsister après une invalidation, même sans remplacement. La ligne `KEY:` d’un fichier de génération est `p4:<namespace>:<epoch>:<generation>:<logical key>`. Le [point d’accès au statut](DIRECTIVES.fr.md#cache_purge_queue_status) expose l’état de l’espace de noms. La génération courante d’une clé est `baseline`, sauf si une règle exacte ou de préfixe l’a augmentée ; ces règles ne figurent pas dans la réponse.
+
+| État de l’espace de noms du fichier | Verdict |
+|---|---|
+| Espace de noms absent de la liste | unknown |
+| L’époque du fichier diffère de `epoch` | stale |
+| L’époque correspond ; la génération du fichier est inférieure à `baseline` | stale |
+| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `false` | live |
+| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `true` | unknown |
+
+Ici, **live** signifie seulement que le fichier n’est pas périmé selon la génération de l’espace de noms ; cela ne prouve ni la fraîcheur du contenu, ni la validité du TTL, ni un HIT du cache NGINX. Avec `namespaces_complete=false`, les entrées renvoyées restent utilisables et les espaces omis sont inconnus.
+
+Un fichier de génération supérieure, avec un même espace de noms, une même époque et une même clé logique, prouve que celui de génération inférieure est périmé : la génération courante ne diminue jamais au sein d’une époque. Sinon, conservez le verdict unknown.
+
+Lisez le statut avant et après le parcours, en associant les entrées par nom d’espace de noms. N’utilisez les verdicts fondés sur le statut d’un espace que s’il figure dans les deux réponses et que `epoch`, `baseline` et `serial` restent identiques. Un état absent ou modifié invalide ses verdicts. Comparez les époques uniquement par égalité. Ces observations n’empêchent pas des invalidations ultérieures.
+
+Une file de nettoyage vide ne prouve pas la validité. Une requête commencée avant l’invalidation peut écrire un fichier de l’ancienne génération après la fin du nettoyage. Le fichier reste jusqu’à un nettoyage ultérieur ou son éviction par le cache natif. De plus, le nettoyage ne vise que le chemin de cache de la location PURGE, alors qu’un espace de noms peut être partagé entre plusieurs chemins.
+
 ---
 
 <a id="performance-tuning"></a>

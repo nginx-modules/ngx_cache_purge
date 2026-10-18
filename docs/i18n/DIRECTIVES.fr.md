@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Entier / passages | Passages supplémentaires après échec du nettoyage |
 | `cleanup.exhausted` | Entier / tâches | Tâches retirées après trois reprises échouées |
 
+`namespaces` présente les entrées `cache_purge_namespace` configurées, quel que soit le cache choisi par cette location : tous les chemins de cache d’un espace de noms partagent son état de générations. Chaque entrée est copiée sous le verrou de son espace de noms. Les entrées sont relevées séparément ; la liste n’est pas un instantané global.
+
+| Champ | Type / unité | Signification |
+|---|---|---|
+| `name` | Chaîne | Nom de l’espace de noms dans le préfixe de clé `p4:<name>:` |
+| `epoch` | Chaîne / 10 chiffres | Époque actuelle de l’espace de noms ; un redémarrage complet en crée une nouvelle |
+| `baseline` | Chaîne / 16 chiffres hexadécimaux en minuscules | Génération des clés qu’aucune règle n’a augmentée ; une invalidation de tout l’espace la fixe à `serial` |
+| `serial` | Chaîne / 16 chiffres hexadécimaux en minuscules | Numéro de séquence démarrant à 1, augmenté à chaque invalidation publiée dans cette époque |
+| `rules` | Booléen | `true` si des règles exactes ou de préfixe existent ; une invalidation de tout l’espace les efface, y compris lorsqu’un manque de mémoire partagée élargit l’invalidation |
+
+`baseline` et `serial` ont la même largeur fixe que la génération d’une clé et se comparent comme des chaînes. `namespaces_complete` vaut `false` lorsque la liste est tronquée pour tenir dans la réponse. Les entrées renvoyées restent utilisables ; un espace de noms absent est inconnu. Voir [lire les fichiers de cache en mode générations](OPERATIONS.fr.md#reading-cache-files).
+
 `pending.full` compte les purges complètes. Le joker de clé `*` est une autre opération. `active` comprend les attentes de pool ; exclu de `queue.size` et `pending.total`, il consomme néanmoins la capacité.
 
 Pour un balayage regroupé, `pending.full` reflète la classification de la première tâche admise. Scans/sondes REFRESH ne comptent ni dans la profondeur de file ni dans les erreurs de suppression. Une reprise différée déplacée peut faire de `wait_time` l’âge de la tête échantillonnée plutôt que l’attente maximale.

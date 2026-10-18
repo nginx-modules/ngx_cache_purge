@@ -234,6 +234,18 @@ location = /cache_purge_queue_status {
 | `cleanup.retries` | Tamsayı / geçiş | Temizleme hatası nedeniyle ek geçişler |
 | `cleanup.exhausted` | Tamsayı / görev | Üç başarısız yeniden denemeden sonra kaldırılanlar |
 
+`namespaces`, bu location tarafından seçilen önbellekten bağımsız olarak yapılandırılmış `cache_purge_namespace` girdilerini gösterir: bir ad alanını kullanan tüm önbellek yolları nesil durumunu paylaşır. Her girdi, kendi ad alanının kilidi altında kopyalanır. Girdiler ayrı ayrı alınır; liste tek bir küresel anlık görüntü değildir.
+
+| Alan | Tür / birim | Anlam |
+|---|---|---|
+| `name` | Dize | Önbellek anahtarının `p4:<name>:` önekindeki ad alanı adı |
+| `epoch` | Dize / 10 rakam | Ad alanının geçerli epoch değeri; tam yeniden başlatma yeni bir değer oluşturur |
+| `baseline` | Dize / küçük harfli 16 onaltılık basamak | Bir kuralın yükseltmediği anahtarların nesli; ad alanının tamamını geçersiz kılmak bunu `serial` değerine ayarlar |
+| `serial` | Dize / küçük harfli 16 onaltılık basamak | 1 ile başlayan ve bu epoch içindeki her yayımlanan geçersiz kılmada artan sıra numarası |
+| `rules` | Mantıksal | Tam eşleşme veya önek kuralları varsa `true`; ad alanının tamamını geçersiz kılmak bunları siler. Paylaşımlı bellek yetersizliğinin geçersiz kılmayı genişletmesi de buna dahildir |
+
+`baseline` ve `serial`, önbellek anahtarındaki nesille aynı sabit genişliğe sahiptir ve dize olarak karşılaştırılabilir. Liste yanıta sığması için kesildiğinde `namespaces_complete` değeri `false` olur. Döndürülen girdiler kullanılabilir; listede olmayan ad alanını bilinmeyen kabul edin. Bkz. [nesil modunda önbellek dosyalarını okuma](OPERATIONS.tr.md#reading-cache-files).
+
 `pending.full` tam önbellek işlemlerini sayar; `*` anahtarlı joker farklı türdür. `active` havuz bekleyenleri içerir; `queue.size` ve `pending.total` dışında olsa da kabul kapasitesini tüketir.
 
 Birleşik ad alanı taramasında `pending.full`, ilk kabul edilenin sınıfıdır. REFRESH tarama/yoklamaları kuyruk derinliğine veya silme hatalarına dahil değildir. Ertelenen tekrarın döndürülmesi, `wait_time` değerini en büyük yaş yerine örneklenen başın yaşına dönüştürebilir.
