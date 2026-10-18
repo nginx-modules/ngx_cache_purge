@@ -58,11 +58,11 @@ Un explorador de caché, precargador o informe de uso no puede deducir la valide
 
 | Estado del espacio de nombres del archivo | Veredicto |
 |---|---|
-| El espacio de nombres no aparece en la lista | unknown |
-| La época del archivo difiere de `epoch` | stale |
-| La época coincide; la generación del archivo es inferior a `baseline` | stale |
-| La época coincide; la generación es al menos `baseline`; `rules` es `false` | live |
-| La época coincide; la generación es al menos `baseline`; `rules` es `true` | unknown |
+| El espacio de nombres no aparece en la lista | `unknown` |
+| La época del archivo difiere de `epoch` | `stale` |
+| La época coincide; la generación del archivo es inferior a `baseline` | `stale` |
+| La época coincide; la generación es al menos `baseline`; `rules` es `false` | `live` |
+| La época coincide; la generación es al menos `baseline`; `rules` es `true` | `unknown` |
 
 Aquí, **live** solo significa que el archivo no está obsoleto según la generación del espacio de nombres; no confirma la frescura del contenido, la validez del TTL ni un HIT de caché de NGINX. Con `namespaces_complete=false`, las entradas devueltas siguen siendo utilizables y los espacios omitidos son desconocidos.
 

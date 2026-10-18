@@ -58,11 +58,11 @@ rbtree は物理削除タスクの重複排除専用です。世代ルールは�
 
 | ファイルの名前空間の状態 | 判定 |
 |---|---|
-| 名前空間がリストにない | unknown |
-| ファイルのエポックが `epoch` と異なる | stale |
-| エポックが一致し、ファイルの世代が `baseline` より小さい | stale |
-| エポックが一致し、世代が `baseline` 以上で、`rules` が `false` | live |
-| エポックが一致し、世代が `baseline` 以上で、`rules` が `true` | unknown |
+| 名前空間がリストにない | `unknown` |
+| ファイルのエポックが `epoch` と異なる | `stale` |
+| エポックが一致し、ファイルの世代が `baseline` より小さい | `stale` |
+| エポックが一致し、世代が `baseline` 以上で、`rules` が `false` | `live` |
+| エポックが一致し、世代が `baseline` 以上で、`rules` が `true` | `unknown` |
 
 ここでの **live** は、名前空間の世代に照らして古くないことだけを意味します。内容の鮮度、TTL の有効性、NGINX キャッシュの HIT は保証しません。`namespaces_complete=false` でも返されたエントリは利用でき、省略された名前空間のみが不明となります。
 

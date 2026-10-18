@@ -44,6 +44,7 @@ RUN --mount=type=secret,id=apt_mirror \
     curl \
     git \
     perl \
+    python3 \
     cpanminus \
     && if apt-cache show libclang-rt-dev >/dev/null 2>&1; then \
         apt-get $ca_option install -y libclang-rt-dev; \
@@ -78,6 +79,20 @@ ENV NGINX_SOURCE=/opt/nginx \
 # Strict GCC/Clang and sanitizer jobs build their selected configuration at run time.
 FROM source AS verify
 CMD ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx"]
+
+# Manual performance runs use an optimized, unsanitized build and retain the
+# compiler's stack reports. Runtime tests continue to use their existing lanes.
+FROM source AS benchmark
+RUN mkdir -p /opt/benchmark/incremental /opt/benchmark/threads && \
+    cd /opt/nginx && ./configure --prefix=/opt/benchmark/incremental \
+    --with-cc-opt='-O2 -fstack-usage' --add-module=/src && make -j2 && \
+    cp objs/nginx /opt/benchmark/incremental/nginx && \
+    python3 /src/t/measure_layout.py --output /opt/benchmark/reports/incremental && \
+    make clean && ./configure --prefix=/opt/benchmark/threads \
+    --with-threads --with-cc-opt='-O2 -fstack-usage' --add-module=/src && make -j2 && \
+    cp objs/nginx /opt/benchmark/threads/nginx && \
+    python3 /src/t/measure_layout.py --output /opt/benchmark/reports/threads
+CMD ["python3", "t/cache_benchmark.py", "--help"]
 
 # The analyzer needs only GCC, Perl, zlib and tracing tools. Keep its dependency
 # and NGINX layers independent of module edits and the full integration toolbox.

@@ -58,11 +58,11 @@ Bir önbellek gezgini, ön yükleyici veya kullanım raporu nesil geçerliliğin
 
 | Dosyanın ad alanının durumu | Sonuç |
 |---|---|
-| Ad alanı listede yok | unknown |
-| Dosyanın epoch değeri `epoch` ile farklı | stale |
-| Epoch aynı; dosyanın nesli `baseline` değerinden küçük | stale |
-| Epoch aynı; nesil en az `baseline`; `rules` değeri `false` | live |
-| Epoch aynı; nesil en az `baseline`; `rules` değeri `true` | unknown |
+| Ad alanı listede yok | `unknown` |
+| Dosyanın epoch değeri `epoch` ile farklı | `stale` |
+| Epoch aynı; dosyanın nesli `baseline` değerinden küçük | `stale` |
+| Epoch aynı; nesil en az `baseline`; `rules` değeri `false` | `live` |
+| Epoch aynı; nesil en az `baseline`; `rules` değeri `true` | `unknown` |
 
 Burada **live**, yalnızca dosyanın ad alanı nesline göre eski olmadığı anlamına gelir; içerik tazeliğini, TTL geçerliliğini veya NGINX önbellek HIT sonucunu kanıtlamaz. `namespaces_complete=false` olduğunda döndürülen girdiler kullanılabilir, atlanan ad alanları ise bilinmeyendir.
 

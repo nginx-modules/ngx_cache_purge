@@ -1,0 +1,112 @@
+name: Cache purge benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      files:
+        description: Unrelated native cache files (filled through HTTP)
+        type: choice
+        options: ['1000', '10000', '100000', '1000000']
+        default: '10000'
+      variants:
+        description: Representations of the purged key
+        type: choice
+        options: ['2', '16', '66']
+        default: '16'
+      mode:
+        description: Cleanup implementation
+        type: choice
+        options: [compare, legacy-vary, generation, generation-threads]
+        default: compare
+      trials:
+        description: Repeated purges with verified refills
+        type: choice
+        options: ['5', '10']
+        default: '5'
+      workers:
+        description: NGINX workers
+        type: choice
+        options: ['1', '4']
+        default: '1'
+      levels:
+        description: Native cache directory layout
+        type: choice
+        options: ['1:2', '2:2', flat]
+        default: '1:2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cache-benchmark-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NGINX_VERSION: '1.31.6'
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - id: apt
+        uses: ./.github/actions/apt-mirror
+      - uses: docker/setup-buildx-action@v4
+      - name: Build measurement image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: t/Dockerfile
+          target: benchmark
+          load: true
+          tags: ngx-cache-purge-benchmark:local
+          build-args: NGINX_VERSION=${{ env.NGINX_VERSION }}
+          secrets: ${{ steps.apt.outputs.buildkit_secret }}
+          secret-files: |
+            apt_ca=/etc/ssl/certs/ca-certificates.crt
+          cache-from: type=gha,scope=cache-benchmark
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=cache-benchmark,mode=min' || '' }}
+          provenance: false
+          sbom: false
+      - name: Collect native layouts and stack frames
+        run: |
+          mkdir -p reports/cache-benchmark "$RUNNER_TEMP/cache-benchmark"
+          docker run --rm --network none \
+            --mount "type=bind,src=$PWD/reports/cache-benchmark,dst=/reports" \
+            ngx-cache-purge-benchmark:local \
+            sh -c 'cp -R /opt/benchmark/reports/. /reports/'
+      - name: Run bounded cache experiment
+        env:
+          BENCH_FILES: ${{ inputs.files }}
+          BENCH_VARIANTS: ${{ inputs.variants }}
+          BENCH_MODE: ${{ inputs.mode }}
+          BENCH_TRIALS: ${{ inputs.trials }}
+          BENCH_WORKERS: ${{ inputs.workers }}
+          BENCH_LEVELS: ${{ inputs.levels }}
+        run: |
+          # Cache files live on the runner bind mount, outside Docker's overlay.
+          timeout --signal=TERM --kill-after=30s 30m \
+            docker run --rm --init --network none -e GITHUB_SHA \
+              --mount "type=bind,src=$RUNNER_TEMP/cache-benchmark,dst=/bench-work" \
+              --mount "type=bind,src=$PWD/reports/cache-benchmark,dst=/reports" \
+              ngx-cache-purge-benchmark:local \
+              python3 t/cache_benchmark.py --work /bench-work --output /reports \
+                --files "$BENCH_FILES" --variants "$BENCH_VARIANTS" \
+                --mode "$BENCH_MODE" --trials "$BENCH_TRIALS" \
+                --workers "$BENCH_WORKERS" --levels "$BENCH_LEVELS"
+      - name: Publish measurement summary
+        if: always()
+        run: |
+          if [ -f reports/cache-benchmark/summary.md ]; then
+            cat reports/cache-benchmark/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            printf '%s\n' 'Experiment incomplete; inspect logs and partial artifacts.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: cache-benchmark-${{ github.run_id }}-${{ github.run_attempt }}
+          path: reports/cache-benchmark/
+          retention-days: 7
+          if-no-files-found: warn

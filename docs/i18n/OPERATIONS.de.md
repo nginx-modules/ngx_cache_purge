@@ -58,11 +58,11 @@ Ein Cache-Browser, Preloader oder Nutzungsbericht kann die Generationsgültigkei
 
 | Zustand des Namensraums der Datei | Ergebnis |
 |---|---|
-| Namensraum fehlt in der Liste | unknown |
-| Epoche der Datei weicht von `epoch` ab | stale |
-| Epoche stimmt überein; Dateigeneration liegt unter `baseline` | stale |
-| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `false` | live |
-| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `true` | unknown |
+| Namensraum fehlt in der Liste | `unknown` |
+| Epoche der Datei weicht von `epoch` ab | `stale` |
+| Epoche stimmt überein; Dateigeneration liegt unter `baseline` | `stale` |
+| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `false` | `live` |
+| Epoche stimmt überein; Generation ist mindestens `baseline`; `rules` ist `true` | `unknown` |
 
 **live** bedeutet hier nur, dass die Datei gemäß der Namensraumgeneration nicht veraltet ist. Es bestätigt weder Inhaltsfrische noch TTL-Gültigkeit oder einen NGINX-Cache-HIT. Bei `namespaces_complete=false` bleiben zurückgegebene Einträge verwendbar; ausgelassene Namensräume gelten als unbekannt.
 

@@ -11,6 +11,7 @@ int main(void)
 {
     printf("{\"size\":%lu,\"fields\":{",
            (unsigned long) sizeof(ngx_http_file_cache_header_t));
+    FIELD(valid_sec); printf(",");
     FIELD(crc32); printf(",");
     FIELD(header_start); printf(",");
     FIELD(body_start); printf(",");

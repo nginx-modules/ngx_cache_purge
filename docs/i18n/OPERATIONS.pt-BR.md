@@ -58,11 +58,11 @@ Um navegador de cache, pré-carregador ou relatório de uso não pode deduzir a 
 
 | Estado do namespace do arquivo | Resultado |
 |---|---|
-| Namespace ausente da lista | unknown |
-| A época do arquivo difere de `epoch` | stale |
-| A época coincide; a geração do arquivo é inferior a `baseline` | stale |
-| A época coincide; a geração é pelo menos `baseline`; `rules` é `false` | live |
-| A época coincide; a geração é pelo menos `baseline`; `rules` é `true` | unknown |
+| Namespace ausente da lista | `unknown` |
+| A época do arquivo difere de `epoch` | `stale` |
+| A época coincide; a geração do arquivo é inferior a `baseline` | `stale` |
+| A época coincide; a geração é pelo menos `baseline`; `rules` é `false` | `live` |
+| A época coincide; a geração é pelo menos `baseline`; `rules` é `true` | `unknown` |
 
 Aqui, **live** significa apenas que o arquivo não está obsoleto pela geração do namespace; não confirma a atualidade do conteúdo, a validade do TTL nem um HIT no cache NGINX. Com `namespaces_complete=false`, as entradas retornadas continuam utilizáveis e os namespaces omitidos são desconhecidos.
 

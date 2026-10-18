@@ -58,11 +58,11 @@ Penjelajah cache, pemuat awal, atau laporan penggunaan tidak dapat menyimpulkan 
 
 | Status namespace berkas | Kesimpulan |
 |---|---|
-| Namespace tidak ada dalam daftar | unknown |
-| Epoch berkas berbeda dari `epoch` | stale |
-| Epoch cocok; generasi berkas lebih kecil dari `baseline` | stale |
-| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `false` | live |
-| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `true` | unknown |
+| Namespace tidak ada dalam daftar | `unknown` |
+| Epoch berkas berbeda dari `epoch` | `stale` |
+| Epoch cocok; generasi berkas lebih kecil dari `baseline` | `stale` |
+| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `false` | `live` |
+| Epoch cocok; generasi setidaknya `baseline`; `rules` bernilai `true` | `unknown` |
 
 Di sini, **live** hanya berarti berkas tidak usang menurut generasi namespace; ini tidak membuktikan kesegaran konten, validitas TTL, atau HIT pada cache NGINX. Dengan `namespaces_complete=false`, entri yang dikembalikan tetap dapat digunakan dan namespace yang tidak disertakan dianggap tidak diketahui.
 

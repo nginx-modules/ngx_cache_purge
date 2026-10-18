@@ -495,6 +495,24 @@ and log-phase HIT/MISS observation are included in `purge_runtime.t`.
 
 ### Additional v4 regression cases
 
+Native policy scenarios cover lock ownership, timeout/age, stale fallback,
+minimum-use warmup and separate bypass/no-cache predicates for all four upstream
+protocols. Proxy cases also hold revalidation and background updating across
+PURGE. Real-file expiration uses the configured core header layout. The stale
+case must first observe STALE; the background case observes STALE/UPDATING and
+a late old-generation file after cleanup. These preconditions prevent a MISS
+from accidentally satisfying a stale-path regression.
+
+Vary cases populate 66 real representations across two header axes, preserve
+case/prefix neighbors, repeat after reload and verify replacement bodies. A
+held-body case lets headers pass before PURGE, drains cleanup, then verifies
+late cache publication remains unreachable from the new generation.
+
+The optional [performance workflow and source review](PERFORMANCE.md) describe
+the complete native directive inventory, remaining scenarios, measurement
+limits and memory tradeoffs. Performance runs are manual; normal test jobs do
+not run the large cache populations or impose latency thresholds.
+
 `purge_runtime.t` also starts small local FastCGI, SCGI and uWSGI origins from
 `fixtures/gateway_origin.pl`. Each protocol fills a real NGINX cache and checks
 exact/prefix PURGE with generation keys enabled and disabled. No external app

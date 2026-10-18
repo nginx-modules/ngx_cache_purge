@@ -58,11 +58,11 @@ PID/슬롯 epoch로 작업 소유권을 식별합니다. worker는 1초 간격, 
 
 | 파일 네임스페이스의 상태 | 판정 |
 |---|---|
-| 목록에 네임스페이스가 없음 | unknown |
-| 파일의 epoch가 `epoch`와 다름 | stale |
-| Epoch가 같고 파일 세대가 `baseline`보다 작음 | stale |
-| Epoch가 같고 세대가 `baseline` 이상이며 `rules`가 `false` | live |
-| Epoch가 같고 세대가 `baseline` 이상이며 `rules`가 `true` | unknown |
+| 목록에 네임스페이스가 없음 | `unknown` |
+| 파일의 epoch가 `epoch`와 다름 | `stale` |
+| Epoch가 같고 파일 세대가 `baseline`보다 작음 | `stale` |
+| Epoch가 같고 세대가 `baseline` 이상이며 `rules`가 `false` | `live` |
+| Epoch가 같고 세대가 `baseline` 이상이며 `rules`가 `true` | `unknown` |
 
 여기서 **live**는 네임스페이스 세대 기준으로 오래되지 않았다는 뜻일 뿐입니다. 콘텐츠의 최신성, TTL 유효성, NGINX 캐시 HIT를 보장하지 않습니다. `namespaces_complete=false`여도 반환된 항목은 사용할 수 있고, 생략된 네임스페이스만 알 수 없음으로 처리합니다.
 

@@ -58,11 +58,11 @@ rbtree 仅用于物理清理任务去重。世代规则存储在独立 SHM 区�
 
 | 文件所属命名空间的状态 | 判定 |
 |---|---|
-| 命名空间不在列表中 | unknown |
-| 文件的 epoch 与 `epoch` 不同 | stale |
-| Epoch 相同；文件世代小于 `baseline` | stale |
-| Epoch 相同；世代不小于 `baseline`；`rules` 为 `false` | live |
-| Epoch 相同；世代不小于 `baseline`；`rules` 为 `true` | unknown |
+| 命名空间不在列表中 | `unknown` |
+| 文件的 epoch 与 `epoch` 不同 | `stale` |
+| Epoch 相同；文件世代小于 `baseline` | `stale` |
+| Epoch 相同；世代不小于 `baseline`；`rules` 为 `false` | `live` |
+| Epoch 相同；世代不小于 `baseline`；`rules` 为 `true` | `unknown` |
 
 这里的 **live** 仅表示文件未因命名空间世代而过时，并不证明内容新鲜、TTL 有效或 NGINX 缓存会 HIT。`namespaces_complete=false` 时，已返回的条目仍可使用，被省略的命名空间才属于未知。
 

@@ -58,11 +58,11 @@ Przeglądarka cache, narzędzie wstępnego ładowania lub raport użycia nie okr
 
 | Stan przestrzeni nazw pliku | Ocena |
 |---|---|
-| Brak przestrzeni nazw na liście | unknown |
-| Epoka pliku różni się od `epoch` | stale |
-| Epoka jest zgodna; generacja pliku jest mniejsza niż `baseline` | stale |
-| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `false` | live |
-| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `true` | unknown |
+| Brak przestrzeni nazw na liście | `unknown` |
+| Epoka pliku różni się od `epoch` | `stale` |
+| Epoka jest zgodna; generacja pliku jest mniejsza niż `baseline` | `stale` |
+| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `false` | `live` |
+| Epoka jest zgodna; generacja wynosi co najmniej `baseline`; `rules` ma wartość `true` | `unknown` |
 
 **live** oznacza tu wyłącznie, że plik nie jest nieaktualny według generacji przestrzeni nazw; nie potwierdza świeżości treści, ważności TTL ani HIT w cache NGINX. Przy `namespaces_complete=false` zwrócone wpisy nadal nadają się do użycia, a pominięte przestrzenie mają stan nieznany.
 

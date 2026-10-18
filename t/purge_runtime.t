@@ -75,6 +75,7 @@ sub config {
     my $response = $s->{default_response} ? '' : 'cache_purge_response_type json;';
     my $extra_locations = $s->{extra_locations} || '';
     my $log_level = $s->{log_level} || 'notice';
+    my $cache_settings = $s->{cache_settings} || '';
     my $count = $s->{workers} || $workers;
     my $pool = $s->{threads} ? 'thread_pool cleanup threads=2 max_queue=1;' : '';
     my $selection = $s->{threads} ? 'cache_purge_thread_pool cleanup;' : '';
@@ -126,6 +127,8 @@ sub config {
 REFRESH
     my ($gateway_http, $gateway_location) = ('', '');
     if (my $g = $s->{gateway}) {
+        my $gateway_settings = $cache_settings;
+        $gateway_settings =~ s/proxy_/${g}_/g;
         my $length_param = $g eq 'scgi' ? 'scgi_param SCGI "1";'
             : "${g}_param CONTENT_LENGTH \"0\";";
         $gateway_http = "${g}_cache_path $s->{root}/gateway-cache levels=1:2 keys_zone=gw:2m inactive=1h;\n"
@@ -136,6 +139,7 @@ REFRESH
             ${g}_cache gw;
             ${g}_cache_key $key;
             ${g}_cache_valid 200 1h;
+            $gateway_settings
             ${g}_param REQUEST_METHOD \$request_method;
             ${g}_param REQUEST_URI \$request_uri;
             $length_param
@@ -200,6 +204,7 @@ http {
             proxy_cache a;
             proxy_cache_key $key;
             proxy_cache_valid 200 1h;
+            $cache_settings
             add_header X-Cache \$upstream_cache_status always;
         }
         location /missing-cache {
@@ -329,7 +334,7 @@ sub start_origin {
             close $listener;
             $client->autoflush(1);
             if ($s->{gateway}) {
-                gateway_respond($client, $s->{gateway});
+                gateway_respond($client, $s->{gateway}, $s);
                 close $client;
                 POSIX::_exit(0);
             }
@@ -346,28 +351,53 @@ sub start_origin {
             my $modified = -f "$s->{root}/last-modified"
                 ? 'Wed, 21 Oct 2015 07:28:00 GMT' : '';
             my $kind = $head ? 'head' : 'get';
-            if (-f "$s->{root}/$kind-block") {
+            write_file("$s->{root}/get-request-$$", $request) if !$head && $s->{track_gets};
+            if (-f "$s->{root}/$kind-block"
+                && (!-f "$s->{root}/$kind-block-version"
+                    || read_file("$s->{root}/$kind-block-version") eq $version)) {
                 write_file("$s->{root}/$kind-started", $request);
-                my $until = time + 5;
+                my $until = time + (-f "$s->{root}/$kind-block-version" ? 15 : 5);
                 sleep 0.005 until -f "$s->{root}/$kind-release" || time >= $until;
+                write_file("$s->{root}/$kind-unblocked-$version", '');
             }
-            my $status = $head && -f "$s->{root}/head-status"
-                         ? read_file("$s->{root}/head-status")
-                         : $head && (($etag && $request =~ /If-None-Match: (?:W\/)?"v\Q$version\E"/i)
+            my $status = -f "$s->{root}/$kind-status"
+                         ? read_file("$s->{root}/$kind-status")
+                         : ($head || $s->{conditional_get})
+                           && (($etag && $request =~ /If-None-Match: (?:W\/)?"v\Q$version\E"/i)
                             || (!$etag && $modified
                                 && $request =~ /If-Modified-Since: \Q$modified\E/i))
                            ? 304 : 200;
             if ($status) {
                 my $body = "object version $version\n";
                 my $vary = -f "$s->{root}/vary" ? "Vary: Accept-Encoding\r\n" : '';
+                if ($s->{vary_axes}) {
+                    $vary = "Vary: X-Test-Variant, Accept-Language\r\n";
+                    for my $name (qw(X-Test-Variant Accept-Language)) {
+                        my ($value) = $request =~ /\r\n\Q$name\E: ([^\r\n]*)/i;
+                        $body .= "$name=" . ($value || '') . "\n";
+                    }
+                }
+                my $body_block = !$head && $status == 200 && -f "$s->{root}/body-block";
+                $body = ('x' x 65536) . $body if $body_block;
+                my $cache_control = $status == 200 || $status == 304
+                    ? 'max-age=3600' : 'no-store';
                 my $location = $head && $status >= 300 && $status < 400 && $status != 304
                     ? "Location: /origin/redirect-target\r\n" : '';
                 print {$client} "HTTP/1.1 $status Test\r\nConnection: close\r\n"
                     . ($etag ? "ETag: $etag\r\n" : '')
                     . ($modified ? "Last-Modified: $modified\r\n" : '')
-                    . "Cache-Control: max-age=3600\r\n$vary$location"
-                    . 'Content-Length: ' . length($body) . "\r\n\r\n"
-                    . ($head ? '' : $body);
+                    . "Cache-Control: $cache_control\r\n$vary$location"
+                    . 'Content-Length: ' . length($body) . "\r\n\r\n";
+                if ($body_block) {
+                    print {$client} substr($body, 0, 65536);
+                    write_file("$s->{root}/body-started", $request);
+                    my $until = time + 15;
+                    sleep 0.005 until -f "$s->{root}/body-release" || time >= $until;
+                    print {$client} substr($body, 65536);
+                    write_file("$s->{root}/body-finished", '');
+                } elsif (!$head && $status != 304) {
+                    print {$client} $body;
+                }
             }
             close $client;
             POSIX::_exit(0);
@@ -387,12 +417,14 @@ sub stop_origin {
 }
 
 sub pending_request {
-    my ($s, $uri, $method, $key) = @_;
+    my ($s, $uri, $method, $key, $headers) = @_;
     my $socket = IO::Socket::INET->new(PeerAddr => '127.0.0.1',
                      PeerPort => $s->{port}, Timeout => 5) or die $!;
     $socket->autoflush(1);
     print {$socket} "$method $uri HTTP/1.0\r\nHost: localhost\r\n"
-        . (defined $key ? "X-Refresh-Key: $key\r\n" : '') . "\r\n";
+        . (defined $key ? "X-Refresh-Key: $key\r\n" : '')
+        . join('', map { "$_: $headers->{$_}\r\n" } sort keys %{$headers || {}})
+        . "\r\n";
     return $socket;
 }
 
@@ -1052,6 +1084,250 @@ subtest 'one namespace invalidates logical keys across cache paths' => sub {
        'PURGE only schedules physical cleanup for its addressed path');
     await(sub { (request($s, '/cache-b/warm')->{headers}{'x-cache'} || '') eq 'HIT' },
           'second path did not refill');
+    stop_server($s);
+};
+
+# Expire real entries without a wall-clock sleep. The offset/width comes from
+# this NGINX build; the next HTTP request still takes the real core stale path.
+sub expire_entries {
+    my ($s) = @_;
+    my ($offset, $size) = @{cache_header_layout()->{fields}{valid_sec}};
+    my $template = {4 => 'L', 8 => 'Q'}->{$size} or die 'unsupported time_t';
+    my $root = $s->{gateway} ? "$s->{root}/gateway-cache" : $s->{cache};
+    my $count = 0;
+    find(sub {
+        return unless -f $_ && /^[0-9a-f]{32}$/;
+        open my $fh, '+<', $_ or die $!;
+        binmode $fh;
+        seek($fh, $offset, 0) or die $!;
+        print {$fh} pack($template, 1) or die $!;
+        close $fh or die $!;
+        $count++;
+    }, $root);
+    die 'no native entry to expire' unless $count;
+}
+
+for my $strict (0, 1) {
+subtest "66 Vary representations, exact identity and reload, generation=$strict" => sub {
+    my $s = start_server("vary-many-$strict", strict => $strict,
+                         controlled_origin => 1, vary_axes => 1);
+    my @headers = map {
+        my $variant = $_;
+        map { { 'X-Test-Variant' => "$variant", 'Accept-Language' => $_ } } qw(en fr);
+    } 1 .. 33;
+    for my $neighbor ('/cache/VARIANTS', '/cache/variantsExtra') {
+        await(sub { (request($s, $neighbor)->{headers}{'x-cache'} || '') eq 'HIT' },
+              'neighbor did not warm');
+    }
+    for my $round (1, 2) {
+        for my $h (@headers) {
+            await(sub {
+                (request($s, '/cache/variants', 'GET', $h)->{headers}{'x-cache'} || '') eq 'HIT';
+            }, 'Vary representation did not warm');
+        }
+        my @entries = grep { $_->[1] =~ m{(?:^|:)/cache/variants$} } cached_entries($s);
+        is(scalar @entries, 66, 'all representations exist as native files');
+        reload_server($s) if $round == 2;
+        write_file("$s->{root}/version", $round + 1);
+        is(request($s, '/cache/variants', 'PURGE')->{status}, 200, 'exact PURGE succeeds');
+        for my $h (@headers) {
+            my $r = request($s, '/cache/variants', 'GET', $h);
+            is($r->{headers}{'x-cache'}, 'MISS', 'representation cannot reuse an old entry');
+            is($r->{content}, 'object version ' . ($round + 1) . "\n"
+               . "X-Test-Variant=$h->{'X-Test-Variant'}\nAccept-Language=$h->{'Accept-Language'}\n",
+               'origin body identifies the requested representation');
+        }
+        drain($s);
+        for my $neighbor ('/cache/VARIANTS', '/cache/variantsExtra') {
+            is(request($s, $neighbor)->{headers}{'x-cache'}, 'HIT',
+               'case and key-boundary neighbors survive');
+        }
+        for my $h (@headers) {
+            await(sub {
+                (request($s, '/cache/variants', 'GET', $h)->{headers}{'x-cache'} || '') eq 'HIT';
+            }, 'replacement did not survive cleanup');
+        }
+    }
+    stop_server($s);
+};
+}
+
+subtest 'a Vary body can finish after PURGE without publishing into the new generation' => sub {
+    my $s = start_server('vary-body-race', strict => 1, controlled_origin => 1,
+                         vary_axes => 1);
+    my $headers = { 'X-Test-Variant' => 'late', 'Accept-Language' => 'en' };
+    write_file("$s->{root}/body-block", '');
+    my $socket = pending_request($s, '/cache/late-vary', 'GET', undef, $headers);
+    await(sub { -f "$s->{root}/body-started" }, 'origin did not start its body');
+    my $head = '';
+    while (my $line = <$socket>) { $head .= $line; last if $line eq "\r\n"; }
+    like($head, qr/^HTTP\/1\.[01] 200 /, 'headers passed through NGINX before PURGE');
+    ok(!-f "$s->{root}/body-finished", 'origin still holds the unfinished body');
+    is(request($s, '/cache/late-vary', 'PURGE')->{status}, 200, 'invalidate an unfinished body');
+    drain($s);
+    ok(!-f "$s->{root}/body-finished", 'PURGE completes before the held body');
+    write_file("$s->{root}/version", '2');
+    unlink "$s->{root}/body-block" or die $!;
+    write_file("$s->{root}/body-release", '');
+    like(finish_request($socket), qr/object version 1\n/, 'in-flight response may finish');
+    await(sub { scalar grep { $_->[1] =~ m{/cache/late-vary$} } cached_entries($s) },
+          'old Vary file was not published after cleanup');
+    my $next = request($s, '/cache/late-vary', 'GET', $headers);
+    is($next->{headers}{'x-cache'}, 'MISS', 'late variant is unreachable');
+    like($next->{content}, qr/object version 2\n/, 'new generation uses current origin');
+    stop_server($s);
+};
+
+for my $protocol (qw(proxy fastcgi scgi uwsgi)) {
+    my %gateway = $protocol eq 'proxy' ? () : (gateway => $protocol);
+    my $uri = $protocol eq 'proxy' ? '/cache/policy' : '/gateway/policy';
+    for my $policy ('lock', 'timeout', 'age') {
+    subtest "$protocol cache_lock $policy cannot hold or repopulate a new generation" => sub {
+        my $timeout = $policy eq 'timeout' ? '50ms' : '3s';
+        my $age = $policy eq 'age' ? '50ms' : '10s';
+        my $s = start_server("lock-$protocol-$policy", strict => 1,
+            controlled_origin => 1, track_gets => 1, %gateway,
+            cache_settings => "proxy_cache_lock on; proxy_cache_lock_timeout $timeout; "
+                              . "proxy_cache_lock_age $age;");
+        write_file("$s->{root}/get-block", '');
+        write_file("$s->{root}/get-block-version", '1');
+        my @pending = (pending_request($s, $uri, 'GET'));
+        await(sub { -f "$s->{root}/get-started" }, 'lock owner did not reach origin');
+        if ($policy ne 'lock') {
+            push @pending, pending_request($s, $uri, 'GET');
+            await(sub { my @requests = glob "$s->{root}/get-request-*"; @requests == 2 },
+                  'second old-generation request did not pass the lock deadline', 3);
+        }
+        is(request($s, $uri, 'PURGE')->{status}, 200, 'PURGE acknowledges while owner is blocked');
+        write_file("$s->{root}/version", '2');
+        my $replacement = request($s, $uri);
+        is($replacement->{headers}{'x-cache'}, 'MISS', 'new key obtains an independent cache lock');
+        like($replacement->{content}, qr/object version 2\n/, 'new key fetches current data');
+        ok(!-f "$s->{root}/get-unblocked-1", 'old lock owners are still held at origin');
+        write_file("$s->{root}/get-release", '');
+        like(finish_request($_), qr/object version 1\n/, 'old request can finish') for @pending;
+        await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
+              'replacement did not warm');
+        like(request($s, $uri)->{content}, qr/object version 2\n/, 'late writers cannot replace new data');
+        stop_server($s);
+    };
+    }
+    subtest "$protocol cache_use_stale cannot cross an invalidated generation" => sub {
+        my $s = start_server("stale-$protocol", strict => 1, controlled_origin => 1,
+            track_gets => 1, %gateway,
+            cache_settings => 'proxy_cache_use_stale error timeout http_503;');
+        await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'stale fixture did not warm');
+        expire_entries($s);
+        write_file("$s->{root}/get-status", '503');
+        my $stale = request($s, $uri);
+        is($stale->{headers}{'x-cache'}, 'STALE', 'precondition: core stale fallback is exercised');
+        like($stale->{content}, qr/object version 1\n/, 'stale body exists before PURGE');
+        is(request($s, $uri, 'PURGE')->{status}, 200, 'invalidate stale generation');
+        my $after = request($s, $uri);
+        is($after->{status}, 503, 'origin failure remains visible after PURGE');
+        isnt($after->{headers}{'x-cache'} || '', 'STALE', 'old generation is not a stale fallback');
+        unlink "$s->{root}/get-status" or die $!;
+        write_file("$s->{root}/version", '2');
+        like(request($s, $uri)->{content}, qr/object version 2\n/, 'origin recovery fills current data');
+        stop_server($s);
+    };
+    subtest "$protocol cache_min_uses starts again for a new generation" => sub {
+        my $s = start_server("min-uses-$protocol", strict => 1, controlled_origin => 1,
+            track_gets => 1, %gateway, cache_settings => 'proxy_cache_min_uses 3;');
+        for my $version (1, 2) {
+            write_file("$s->{root}/version", $version);
+            for (1 .. 2) {
+                my $r = request($s, $uri);
+                is($r->{headers}{'x-cache'}, 'MISS', 'pre-threshold request reaches origin');
+                like($r->{content}, qr/object version $version\n/, 'current origin body is used');
+            }
+            await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
+                  'minimum-use threshold did not allow a cache fill');
+            if ($version == 1) {
+                is(request($s, $uri, 'PURGE')->{status}, 200, 'invalidate the warmed generation');
+            }
+        }
+        stop_server($s);
+    };
+}
+
+for my $protocol (qw(proxy fastcgi scgi uwsgi)) {
+subtest "$protocol bypass and no_cache retain distinct read/write policies across PURGE" => sub {
+    my %gateway = $protocol eq 'proxy' ? () : (gateway => $protocol);
+    my $s = start_server("cache-predicates-$protocol", strict => 1, controlled_origin => 1,
+        track_gets => 1, %gateway,
+        cache_settings => 'proxy_cache_bypass $http_x_test_bypass; proxy_no_cache $http_x_test_no_store;');
+    my $uri = $protocol eq 'proxy' ? '/cache/predicates' : '/gateway/predicates';
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'predicate fixture did not warm');
+    write_file("$s->{root}/version", '2');
+    is(request($s, $uri, 'GET', { 'X-Test-No-Store' => 1 })->{headers}{'x-cache'}, 'HIT',
+       'no_cache alone does not bypass a stored response');
+    my $bypass = request($s, $uri, 'GET', { 'X-Test-Bypass' => 1, 'X-Test-No-Store' => 1 });
+    is($bypass->{headers}{'x-cache'}, 'BYPASS', 'read bypass is exercised');
+    like($bypass->{content}, qr/object version 2\n/, 'bypass fetches from origin');
+    like(request($s, $uri)->{content}, qr/object version 1\n/, 'no_cache prevents replacement');
+    is(request($s, $uri, 'PURGE')->{status}, 200, 'PURGE invalidates the stored generation');
+    for (1 .. 2) {
+        is(request($s, $uri, 'GET', { 'X-Test-No-Store' => 1 })->{headers}{'x-cache'}, 'MISS',
+           'no_cache prevents storing a new generation');
+    }
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'cache did not recover');
+    like(request($s, $uri)->{content}, qr/object version 2\n/, 'ordinary requests cache current data');
+    stop_server($s);
+};
+}
+
+subtest 'late core revalidation cannot refresh a replacement generation' => sub {
+    my $s = start_server('core-revalidation', strict => 1, controlled_origin => 1,
+        conditional_get => 1, cache_settings => 'proxy_cache_revalidate on;');
+    my $uri = '/cache/revalidated';
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'revalidation fixture did not warm');
+    expire_entries($s);
+    write_file("$s->{root}/get-block", '');
+    write_file("$s->{root}/get-block-version", '1');
+    my $old = pending_request($s, $uri, 'GET');
+    await(sub { -f "$s->{root}/get-started" }, 'conditional GET did not start');
+    like(read_file("$s->{root}/get-started"), qr/If-None-Match: "v1"/i, 'core supplies cached validator');
+    is(request($s, $uri, 'PURGE')->{status}, 200, 'invalidate during revalidation');
+    write_file("$s->{root}/version", '2');
+    like(request($s, $uri)->{content}, qr/object version 2\n/, 'replacement uses current origin');
+    ok(!-f "$s->{root}/get-unblocked-1", 'old conditional response is still held');
+    write_file("$s->{root}/get-release", '');
+    my $response = finish_request($old);
+    like($response, qr/X-Cache: REVALIDATED/i, 'old request completes real core 304 path');
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'replacement did not warm');
+    like(request($s, $uri)->{content}, qr/object version 2\n/, '304 did not change replacement identity');
+    stop_server($s);
+};
+
+subtest 'background update cannot publish into a replacement generation' => sub {
+    my $source = read_file("$ENV{NGINX_SOURCE}/src/http/modules/ngx_http_proxy_module.c");
+    plan skip_all => 'core predates cache_background_update'
+        unless $source =~ /"proxy_cache_background_update"/;
+    my $s = start_server('core-background', strict => 1, controlled_origin => 1,
+        cache_settings => 'proxy_cache_use_stale updating; proxy_cache_background_update on;');
+    my $uri = '/cache/background';
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'background fixture did not warm');
+    my ($old) = grep { $_->[1] =~ m{/cache/background$} } cached_entries($s);
+    expire_entries($s);
+    write_file("$s->{root}/version", '2');
+    write_file("$s->{root}/get-block", '');
+    write_file("$s->{root}/get-block-version", '2');
+    is(request($s, $uri)->{headers}{'x-cache'}, 'STALE', 'first expired request starts background update');
+    await(sub { -f "$s->{root}/get-started" }, 'background origin request did not start');
+    is(request($s, $uri)->{headers}{'x-cache'}, 'UPDATING', 'concurrent old request serves stale while updating');
+    is(request($s, $uri, 'PURGE')->{status}, 200, 'invalidate during background update');
+    write_file("$s->{root}/version", '3');
+    my $next = request($s, $uri);
+    is($next->{headers}{'x-cache'}, 'MISS', 'new generation does not use updating entry');
+    like($next->{content}, qr/object version 3\n/, 'replacement has current body');
+    drain($s);
+    ok(!-f "$s->{root}/get-unblocked-2", 'old background response is held through cleanup');
+    write_file("$s->{root}/get-release", '');
+    await(sub { -f $old->[0] && read_file($old->[0]) =~ /object version 2\n/ },
+          'late background cache write did not complete');
+    await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' }, 'replacement did not warm');
+    like(request($s, $uri)->{content}, qr/object version 3\n/, 'late background body stays unreachable');
     stop_server($s);
 };
 

@@ -58,11 +58,11 @@ Un navigateur de cache, un préchargeur ou un rapport d’utilisation ne peut pa
 
 | État de l’espace de noms du fichier | Verdict |
 |---|---|
-| Espace de noms absent de la liste | unknown |
-| L’époque du fichier diffère de `epoch` | stale |
-| L’époque correspond ; la génération du fichier est inférieure à `baseline` | stale |
-| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `false` | live |
-| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `true` | unknown |
+| Espace de noms absent de la liste | `unknown` |
+| L’époque du fichier diffère de `epoch` | `stale` |
+| L’époque correspond ; la génération du fichier est inférieure à `baseline` | `stale` |
+| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `false` | `live` |
+| L’époque correspond ; la génération vaut au moins `baseline` ; `rules` vaut `true` | `unknown` |
 
 Ici, **live** signifie seulement que le fichier n’est pas périmé selon la génération de l’espace de noms ; cela ne prouve ni la fraîcheur du contenu, ni la validité du TTL, ni un HIT du cache NGINX. Avec `namespaces_complete=false`, les entrées renvoyées restent utilisables et les espaces omis sont inconnus.
 

@@ -20,7 +20,7 @@ sub gateway_record {
 }
 
 sub gateway_respond {
-    my ($socket, $protocol) = @_;
+    my ($socket, $protocol, $s) = @_;
     my $id = 1;
     if ($protocol eq 'fastcgi') {
         while (1) {
@@ -49,9 +49,22 @@ sub gateway_respond {
     } else {
         die "unknown gateway protocol: $protocol";
     }
+    my $version = read_file("$s->{root}/version");
+    write_file("$s->{root}/get-request-$$", $protocol) if $s->{track_gets};
+    if (-f "$s->{root}/get-block"
+        && (!-f "$s->{root}/get-block-version"
+            || read_file("$s->{root}/get-block-version") eq $version)) {
+        write_file("$s->{root}/get-started", $protocol);
+        my $until = time + (-f "$s->{root}/get-block-version" ? 15 : 5);
+        sleep 0.005 until -f "$s->{root}/get-release" || time >= $until;
+        write_file("$s->{root}/get-unblocked-$version", '');
+    }
+    my $status = -f "$s->{root}/get-status" ? read_file("$s->{root}/get-status") : 200;
+    my $cache_control = $status == 200 ? 'max-age=3600' : 'no-store';
     my $body = "$protocol origin content\n";
-    my $response = "Status: 200 OK\r\nContent-Type: text/plain\r\n"
-        . "ETag: \"gateway-v1\"\r\nCache-Control: max-age=3600\r\nContent-Length: " . length($body)
+    $body .= "object version $version\n" if $s->{track_gets};
+    my $response = "Status: $status Test\r\nContent-Type: text/plain\r\n"
+        . "ETag: \"gateway-v$version\"\r\nCache-Control: $cache_control\r\nContent-Length: " . length($body)
         . "\r\n\r\n$body";
     print {$socket} $protocol eq 'fastcgi'
         ? gateway_record(6, $id, $response) . gateway_record(6, $id, '')

@@ -58,11 +58,11 @@ Trình duyệt cache, công cụ nạp trước hoặc báo cáo sử dụng kh�
 
 | Trạng thái không gian tên của tệp | Kết luận |
 |---|---|
-| Không gian tên không có trong danh sách | unknown |
-| Epoch của tệp khác `epoch` | stale |
-| Epoch trùng; thế hệ của tệp nhỏ hơn `baseline` | stale |
-| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `false` | live |
-| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `true` | unknown |
+| Không gian tên không có trong danh sách | `unknown` |
+| Epoch của tệp khác `epoch` | `stale` |
+| Epoch trùng; thế hệ của tệp nhỏ hơn `baseline` | `stale` |
+| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `false` | `live` |
+| Epoch trùng; thế hệ ít nhất bằng `baseline`; `rules` là `true` | `unknown` |
 
 Ở đây, **live** chỉ có nghĩa là tệp chưa lỗi thời theo thế hệ của không gian tên; không chứng minh nội dung còn mới, TTL còn hiệu lực hay cache NGINX sẽ HIT. Với `namespaces_complete=false`, các mục đã trả về vẫn dùng được, còn không gian tên bị bỏ qua là chưa biết.
 

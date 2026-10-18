@@ -18,11 +18,11 @@ A tool that reads cache files itself (a cache browser, a preloader, a usage repo
 
 | Status of the file's namespace | Verdict |
 |---|---|
-| Namespace missing from the list | unknown |
-| File epoch differs from `epoch` | stale |
-| Epoch matches; file generation is below `baseline` | stale |
-| Epoch matches; generation is at least `baseline`; `rules` is `false` | live |
-| Epoch matches; generation is at least `baseline`; `rules` is `true` | unknown |
+| Namespace missing from the list | `unknown` |
+| File epoch differs from `epoch` | `stale` |
+| Epoch matches; file generation is below `baseline` | `stale` |
+| Epoch matches; generation is at least `baseline`; `rules` is `false` | `live` |
+| Epoch matches; generation is at least `baseline`; `rules` is `true` | `unknown` |
 
 Here, **live** means not stale by namespace generation; it does not establish freshness, TTL validity or an NGINX cache HIT. `namespaces_complete=false` leaves returned entries usable and makes omitted namespaces unknown.
 
