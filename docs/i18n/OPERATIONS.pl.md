@@ -229,7 +229,7 @@ Zbuduj i uruchom cały zestaw w Dockerze:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 Z katalogu `t/` nadal dostępne są istniejące usługi Compose:

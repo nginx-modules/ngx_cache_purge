@@ -26,14 +26,14 @@ env:
 
 jobs:
   analyze:
-    name: PVS-Studio / NGINX 1.31.6
+    name: PVS-Studio / NGINX 1.31.7
     # Analyze branches only, including manual runs; Dependabot lacks secrets.
     if: github.ref_type == 'branch' && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-24.04
     environment: PVS-Studio
     timeout-minutes: 30
     env:
-      NGINX_VERSION: '1.31.6'
+      NGINX_VERSION: '1.31.7'
       UBUNTU_VERSION: '24.04'
     permissions:
       contents: read
@@ -64,17 +64,17 @@ jobs:
           file: t/Dockerfile
           target: pvs-studio
           build-args: |
-            NGINX_VERSION=1.31.6
+            NGINX_VERSION=1.31.7
             UBUNTU_VERSION=24.04
-          tags: ngx-cache-purge-pvs:1.31.6-24.04
+          tags: ngx-cache-purge-pvs:1.31.7-24.04
           load: true
-          cache-from: type=gha,scope=pvs-1.31.6
-          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,ignore-error=true,timeout=5m,scope=pvs-1.31.6' || '' }}
+          cache-from: type=gha,scope=pvs-1.31.7
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,mode=min,ignore-error=true,timeout=5m,scope=pvs-1.31.7' || '' }}
           provenance: false
           sbom: false
       - uses: ./.github/actions/image-size
         with:
-          image: ngx-cache-purge-pvs:1.31.6-24.04
+          image: ngx-cache-purge-pvs:1.31.7-24.04
       - name: Trace build and analyze module in Docker
         id: analysis
         env:
@@ -85,7 +85,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
-          name: pvs-studio-nginx-1.31.6
+          name: pvs-studio-nginx-1.31.7
           path: t/test-results/pvs-studio/
           retention-days: 7
       - name: Publish code scanning results

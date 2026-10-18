@@ -74,7 +74,7 @@ WORKDIR /src
 # Source downloads depend only on the downloader and the selected core version.
 FROM tools AS core-source
 COPY t/download.sh /usr/local/bin/download-source
-ARG NGINX_VERSION=1.31.6
+ARG NGINX_VERSION=1.31.7
 RUN mkdir -p /opt/nginx && \
     sh /usr/local/bin/download-source "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" /tmp/nginx.tar.gz && \
     tar -xzf /tmp/nginx.tar.gz --strip-components=1 -C /opt/nginx && \
@@ -161,7 +161,7 @@ RUN --mount=type=secret,id=apt_mirror \
     apt-get $ca_option update && apt-get $ca_option install -y --no-install-recommends pvs-studio && \
     rm -f /tmp/pvs-studio.asc && rm -rf /var/lib/apt/lists/*
 COPY t/download.sh /usr/local/bin/download-source
-ARG NGINX_VERSION=1.31.6
+ARG NGINX_VERSION=1.31.7
 RUN mkdir -p /opt/nginx && \
     sh /usr/local/bin/download-source "https://nginx.org/download/nginx-${NGINX_VERSION}.tar.gz" /tmp/nginx.tar.gz && \
     tar -xzf /tmp/nginx.tar.gz --strip-components=1 -C /opt/nginx && \

@@ -9,11 +9,11 @@ dependencies. A host NGINX or Perl installation is not required.
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 make test-version VERSION=1.26.3
 ```
 
-The default is NGINX 1.31.6 on Ubuntu 24.04. `test-compat` uses Ubuntu 20.04
+The default is NGINX 1.31.7 on Ubuntu 24.04. `test-compat` uses Ubuntu 20.04
 for the NGINX 1.20.2 integration build, matching CI; individual runs of that
 version should set `UBUNTU_VERSION=20.04`. Every test target builds its image
 before running. When using Compose directly, rebuild after changing
@@ -78,15 +78,15 @@ Set `TEST_NGINX_WORKERS` and `TEST_NGINX_FILES` with Compose
 | `test-verify` | Strict debug/release module builds, then native and runtime suites |
 | `test-sanitize` | ASan/UBSan with threads, 16 workers and 16384 files |
 | `test-valgrind` | Memory suite with Test::Nginx's Valgrind launcher enabled |
-| `test-compat` | All seven suites on 1.20.2, 1.26.3, 1.28.3, 1.30.5 and 1.31.6 |
+| `test-compat` | All seven suites on 1.20.2, 1.26.3, 1.28.3, 1.30.6 and 1.31.7 |
 | `test-version VERSION=x.y.z` | All seven suites on the selected version |
 | `shell` | Open the integration container |
 | `clean` | Remove project test containers and generated test files |
 
 ```sh
-CC=clang NGINX_VERSION=1.31.6 make test-verify
-NGINX_VERSION=1.31.6 make test-sanitize
-NGINX_VERSION=1.31.6 make test-valgrind
+CC=clang NGINX_VERSION=1.31.7 make test-verify
+NGINX_VERSION=1.31.7 make test-sanitize
+NGINX_VERSION=1.31.7 make test-valgrind
 
 # Save XML from the same run under t/test-results/.
 TEST_REPORT_DIR=/reports make test-all
@@ -293,8 +293,8 @@ and build configuration; it does not cover every release in a series.
 
 | NGINX | Commit checks | Extended checks |
 |---|---|---|
-| 1.30.5, 1.31.6 | All seven container suites | Same coverage |
-| 1.31.6 | Strict GCC/Clang, incremental/pooled; ASan/UBSan; native macOS and Windows x64/x86; Valgrind on PRs | Valgrind also outside PRs |
+| 1.30.6, 1.31.7 | All seven container suites | Same coverage |
+| 1.31.7 | Strict GCC/Clang, incremental/pooled; ASan/UBSan; native macOS and Windows x64/x86; Valgrind on PRs | Valgrind also outside PRs |
 | 1.7.9 | Strict GCC, native helpers and runtime, incremental | Same coverage |
 | 1.7.11, 1.7.12 | Strict GCC; epoll fallback / first corrected thread-pool notification | Same coverage |
 | 1.20.2, 1.26.3, 1.28.3 | — | All seven container suites |
@@ -321,10 +321,10 @@ Build, runtime and release jobs live in `.github/workflows/build-test-release.ym
 |---|---|---|
 | `test-matrix` | Docker, Ubuntu 20.04/24.04 | Every TAP suite; see the compatibility matrix above |
 | `build-compatibility` | Docker, Ubuntu 24.04 | GCC/Clang, strict debug/release compilation, native and runtime suites, selected thread builds |
-| `sanitizer` | Docker, NGINX 1.31.6 | ASan/UBSan, pooled and incremental modes, 16 workers/16384 files |
-| `memory-leak-test` | Docker, NGINX 1.31.6 | Valgrind-instrumented memory suite, code PRs and extended runs |
-| `native-macos` | macOS 14, NGINX 1.31.6 | Clang build, native helpers and POSIX runtime suite |
-| `native-windows` | Windows 2022, MSVC x64/x86, NGINX 1.31.6 | Native build and `windows_runtime.ps1` HTTP/filesystem/lifecycle checks |
+| `sanitizer` | Docker, NGINX 1.31.7 | ASan/UBSan, pooled and incremental modes, 16 workers/16384 files |
+| `memory-leak-test` | Docker, NGINX 1.31.7 | Valgrind-instrumented memory suite, code PRs and extended runs |
+| `native-macos` | macOS 14, NGINX 1.31.7 | Clang build, native helpers and POSIX runtime suite |
+| `native-windows` | Windows 2022, MSVC x64/x86, NGINX 1.31.7 | Native build and `windows_runtime.ps1` HTTP/filesystem/lifecycle checks |
 | `static-analysis` | Docker | Cppcheck |
 | `semgrep-analysis` | Container | C/security/secrets rules |
 
@@ -355,7 +355,7 @@ is nonfatal and its timeout is five minutes; compilation and test failures
 still fail their jobs. Buildx's own binary cache is managed by its setup action.
 
 Scopes are shared by target and NGINX/Ubuntu version: Valgrind imports the
-1.31.6 integration image, and sanitizer/Cppcheck import the 1.31.6 verify image.
+1.31.7 integration image, and sanitizer/Cppcheck import the 1.31.7 verify image.
 Integration and verify jobs also import the other mainline scope as a fallback
 for common tool layers. The benchmark imports both scopes. BuildKit still
 matches each layer's inputs, including the base distribution and core version;
@@ -433,7 +433,7 @@ To reproduce the Windows runtime job after building the module with MSVC,
 run in PowerShell 7 on Windows:
 
 ```powershell
-./t/windows_runtime.ps1 -Nginx ./nginx-1.31.6/objs/nginx.exe
+./t/windows_runtime.ps1 -Nginx ./nginx-1.31.7/objs/nginx.exe
 ```
 
 Every runtime job uploads JUnit from its actual execution. Windows additionally
@@ -468,7 +468,7 @@ parser to validate the generated entry without installing the analyzer.
 It omits the integration image's Clang, Valgrind and Perl test dependencies.
 Module sources are not copied into the image, so edits do not invalidate the
 analyzer installation or NGINX download layers. The `test-pvs` Compose service
-configures the license and NGINX 1.31.6 with threads and debug enabled, then
+configures the license and NGINX 1.31.7 with threads and debug enabled, then
 traces the module's compiler commands inside Docker.
 Only this service adds `SYS_PTRACE` for the build tracer. License credentials
 are passed at runtime and are never included in image layers or build caches.

@@ -19,14 +19,14 @@ if (!$full && $base =~ /^[0-9a-f]{40}$/ && $base !~ /^0+$/) {
 }
 
 my @integration = (
-    {name => 'stable', nginx => '1.30.5', ubuntu => '24.04'},
-    {name => 'mainline', nginx => '1.31.6', ubuntu => '24.04'},
+    {name => 'stable', nginx => '1.30.6', ubuntu => '24.04'},
+    {name => 'mainline', nginx => '1.31.7', ubuntu => '24.04'},
 );
 my @compatibility = (
     {name => 'minimum', nginx => '1.7.9', cc => 'gcc', modes => 'incremental'},
     {name => 'epoll fallback', nginx => '1.7.11', cc => 'gcc', modes => 'pooled'},
     {name => 'first safe thread pools', nginx => '1.7.12', cc => 'gcc', modes => 'pooled'},
-    {name => 'GCC + Clang', nginx => '1.31.6', cc => 'gcc clang', modes => 'incremental pooled'},
+    {name => 'GCC + Clang', nginx => '1.31.7', cc => 'gcc clang', modes => 'incremental pooled'},
 );
 if ($full) {
     push @integration,

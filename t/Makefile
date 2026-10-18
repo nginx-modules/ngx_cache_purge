@@ -1,5 +1,5 @@
 # Run from t/ or use the forwarding Makefile at the repository root.
-NGINX_VERSION ?= 1.31.6
+NGINX_VERSION ?= 1.31.7
 UBUNTU_VERSION ?= 24.04
 COMPOSE ?= $(shell docker compose version >/dev/null 2>&1 && echo 'docker compose' || echo 'docker-compose')
 COMPOSE_CMD = $(COMPOSE) -f docker-compose.test.yml
@@ -17,7 +17,7 @@ help:
 	@echo "  test-verify    Strict builds plus native and runtime tests"
 	@echo "  test-sanitize  ASan/UBSan, threads, 16 workers, 16384 files"
 	@echo "  test-pvs       PVS-Studio analysis (requires license environment variables)"
-	@echo "  test-compat    Full suite on 1.20.2, 1.26.3, 1.28.3, 1.30.5, 1.31.6"
+	@echo "  test-compat    Full suite on 1.20.2, 1.26.3, 1.28.3, 1.30.6, 1.31.7"
 	@echo "  test-version VERSION=x.y.z"
 	@echo "  shell          Open the integration container"
 	@echo "  clean          Remove test containers and generated test files"
@@ -39,7 +39,7 @@ test-verify test-sanitize test-pvs:
 	$(COMPOSE_CMD) run --rm $@
 
 test-compat:
-	@for version in 1.20.2 1.26.3 1.28.3 1.30.5 1.31.6; do \
+	@for version in 1.20.2 1.26.3 1.28.3 1.30.6 1.31.7; do \
 	    ubuntu=$(UBUNTU_VERSION); \
 	    case $$version in 1.20.2) ubuntu=20.04 ;; esac; \
 	    $(MAKE) --no-print-directory NGINX_VERSION=$$version UBUNTU_VERSION=$$ubuntu test-all || exit 1; \

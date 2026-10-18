@@ -43,7 +43,7 @@ concurrency:
 
 env:
   DOCKER_BUILD_RECORD_RETENTION_DAYS: 7
-  NGINX_VERSION: '1.31.6'
+  NGINX_VERSION: '1.31.7'
 
 jobs:
   benchmark:

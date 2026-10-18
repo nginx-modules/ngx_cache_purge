@@ -229,7 +229,7 @@ Compilez et exécutez la suite complète dans Docker :
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 Depuis `t/`, les services Compose existants restent disponibles :

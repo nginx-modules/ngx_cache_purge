@@ -229,7 +229,7 @@ Build và chạy toàn bộ trong Docker:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 Từ `t/`, các dịch vụ Compose sẵn có vẫn dùng được:

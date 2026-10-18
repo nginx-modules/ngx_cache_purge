@@ -229,7 +229,7 @@ Gesamte Suite in Docker bauen und ausführen:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 Unter `t/` bleiben die vorhandenen Compose-Dienste verfügbar:

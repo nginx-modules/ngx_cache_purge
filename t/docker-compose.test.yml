@@ -1,12 +1,12 @@
 # Run from t/; build context is the repository root.
 x-test-base: &test-base
-  image: ngx-cache-purge-test:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
+  image: ngx-cache-purge-test:${NGINX_VERSION:-1.31.7}-${UBUNTU_VERSION:-24.04}
   build:
     context: ..
     dockerfile: t/Dockerfile
     target: integration
     args:
-      NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+      NGINX_VERSION: ${NGINX_VERSION:-1.31.7}
       UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
   volumes:
     - ..:/src
@@ -16,13 +16,13 @@ x-test-base: &test-base
 
 x-verify-base: &verify-base
   <<: *test-base
-  image: ngx-cache-purge-verify:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
+  image: ngx-cache-purge-verify:${NGINX_VERSION:-1.31.7}-${UBUNTU_VERSION:-24.04}
   build:
     context: ..
     dockerfile: t/Dockerfile
     target: verify
     args:
-      NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+      NGINX_VERSION: ${NGINX_VERSION:-1.31.7}
       UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
   environment:
     <<: *test-environment
@@ -70,13 +70,13 @@ services:
     command: ["perl", "t/build_verify.pl", "--nginx-source", "/opt/nginx", "--threads", "--sanitize", "--workers", "16", "--files", "16384"]
 
   test-pvs:
-    image: ngx-cache-purge-pvs:${NGINX_VERSION:-1.31.6}-${UBUNTU_VERSION:-24.04}
+    image: ngx-cache-purge-pvs:${NGINX_VERSION:-1.31.7}-${UBUNTU_VERSION:-24.04}
     build:
       context: ..
       dockerfile: t/Dockerfile
       target: pvs-studio
       args:
-        NGINX_VERSION: ${NGINX_VERSION:-1.31.6}
+        NGINX_VERSION: ${NGINX_VERSION:-1.31.7}
         UBUNTU_VERSION: ${UBUNTU_VERSION:-24.04}
     volumes:
       - ..:/src:ro

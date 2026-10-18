@@ -229,7 +229,7 @@ Docker에서 전체 모음을 빌드하고 실행하십시오:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 `t/`에서 기존 Compose 서비스도 사용할 수 있습니다:

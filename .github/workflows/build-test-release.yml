@@ -89,7 +89,7 @@ jobs:
           load: true
           cache-from: |
             type=gha,scope=integration-${{ matrix.nginx }}-${{ matrix.ubuntu }}
-            type=gha,scope=verify-1.31.6
+            type=gha,scope=verify-1.31.7
           cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,ignore-error=true,timeout=5m,scope=integration-{0}-{1}', matrix.nginx, matrix.ubuntu) || '' }}
           provenance: false
           sbom: false
@@ -141,7 +141,7 @@ jobs:
           load: true
           cache-from: |
             type=gha,scope=verify-${{ matrix.nginx }}
-            type=gha,scope=integration-1.31.6-24.04
+            type=gha,scope=integration-1.31.7-24.04
           cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,mode=min,ignore-error=true,timeout=5m,scope=verify-{0}', matrix.nginx) || '' }}
           provenance: false
           sbom: false
@@ -179,7 +179,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      NGINX_VERSION: '1.31.6'
+      NGINX_VERSION: '1.31.7'
       UBUNTU_VERSION: '24.04'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -199,18 +199,18 @@ jobs:
           file: t/Dockerfile
           target: verify
           build-args: |
-            NGINX_VERSION=1.31.6
+            NGINX_VERSION=1.31.7
             UBUNTU_VERSION=24.04
-          tags: ngx-cache-purge-verify:1.31.6-24.04
+          tags: ngx-cache-purge-verify:1.31.7-24.04
           load: true
           cache-from: |
-            type=gha,scope=verify-1.31.6
-            type=gha,scope=integration-1.31.6-24.04
+            type=gha,scope=verify-1.31.7
+            type=gha,scope=integration-1.31.7-24.04
           provenance: false
           sbom: false
       - uses: ./.github/actions/image-size
         with:
-          image: ngx-cache-purge-verify:1.31.6-24.04
+          image: ngx-cache-purge-verify:1.31.7-24.04
       - name: Run pooled native and runtime checks under sanitizers
         run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports/pooled test-sanitize
       - name: Run incremental native and runtime checks under sanitizers
@@ -242,13 +242,13 @@ jobs:
         run: cpanm --local-lib "$RUNNER_TEMP/perl5" --notest TAP::Formatter::JUnit
       - name: Build and test native filesystem and process behavior
         run: |
-          sh t/download.sh https://nginx.org/download/nginx-1.31.6.tar.gz nginx.tar.gz
+          sh t/download.sh https://nginx.org/download/nginx-1.31.7.tar.gz nginx.tar.gz
           tar -xzf nginx.tar.gz
           export C_INCLUDE_PATH="$(brew --prefix openssl@3)/include"
           export LIBRARY_PATH="$(brew --prefix openssl@3)/lib"
           export PERL5LIB="$RUNNER_TEMP/perl5/lib/perl5"
           export TEST_REPORT_DIR="$GITHUB_WORKSPACE/t/test-results"
-          perl t/build_verify.pl --cc clang --nginx-source nginx-1.31.6
+          perl t/build_verify.pl --cc clang --nginx-source nginx-1.31.7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -284,9 +284,9 @@ jobs:
         run: |
           export PATH="$(cygpath -u "$VCToolsInstallDir")/bin/Hostx64/${{ matrix.arch }}:$PATH"
           module_path="$(cygpath -m "$GITHUB_WORKSPACE")"
-          sh t/download.sh https://nginx.org/download/nginx-1.31.6.tar.gz nginx.tar.gz
+          sh t/download.sh https://nginx.org/download/nginx-1.31.7.tar.gz nginx.tar.gz
           tar -xzf nginx.tar.gz
-          cd nginx-1.31.6
+          cd nginx-1.31.7
           ./configure --with-cc=cl --with-debug --prefix= \
             --conf-path=conf/nginx.conf --pid-path=logs/nginx.pid \
             --http-log-path=logs/access.log --error-log-path=logs/error.log \
@@ -296,7 +296,7 @@ jobs:
           nmake -f objs/Makefile
       - name: HTTP, path, junction and reload regressions
         shell: pwsh
-        run: ./t/windows_runtime.ps1 -Nginx ./nginx-1.31.6/objs/nginx.exe -OutputDirectory ./t/test-results/windows
+        run: ./t/windows_runtime.ps1 -Nginx ./nginx-1.31.7/objs/nginx.exe -OutputDirectory ./t/test-results/windows
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -311,7 +311,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:
-      NGINX_VERSION: '1.31.6'
+      NGINX_VERSION: '1.31.7'
       UBUNTU_VERSION: '24.04'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -330,18 +330,18 @@ jobs:
           file: t/Dockerfile
           target: integration
           build-args: |
-            NGINX_VERSION=1.31.6
+            NGINX_VERSION=1.31.7
             UBUNTU_VERSION=24.04
-          tags: ngx-cache-purge-test:1.31.6-24.04
+          tags: ngx-cache-purge-test:1.31.7-24.04
           load: true
           cache-from: |
-            type=gha,scope=integration-1.31.6-24.04
-            type=gha,scope=verify-1.31.6
+            type=gha,scope=integration-1.31.7-24.04
+            type=gha,scope=verify-1.31.7
           provenance: false
           sbom: false
       - uses: ./.github/actions/image-size
         with:
-          image: ngx-cache-purge-test:1.31.6-24.04
+          image: ngx-cache-purge-test:1.31.7-24.04
       - run: docker compose -f t/docker-compose.test.yml run --rm -e TEST_REPORT_DIR=/reports test-valgrind
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -373,13 +373,13 @@ jobs:
           file: t/Dockerfile
           target: verify
           build-args: |
-            NGINX_VERSION=1.31.6
+            NGINX_VERSION=1.31.7
             UBUNTU_VERSION=24.04
           tags: ngx-cache-purge-tools
           load: true
           cache-from: |
-            type=gha,scope=verify-1.31.6
-            type=gha,scope=integration-1.31.6-24.04
+            type=gha,scope=verify-1.31.7
+            type=gha,scope=integration-1.31.7-24.04
           provenance: false
           sbom: false
       - uses: ./.github/actions/image-size

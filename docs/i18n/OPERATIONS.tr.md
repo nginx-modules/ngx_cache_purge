@@ -229,7 +229,7 @@ Tüm takımı Docker’da derleyip çalıştırın:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 `t/` içinden mevcut Compose servisleri kullanılabilir:

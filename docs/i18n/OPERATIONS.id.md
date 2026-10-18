@@ -229,7 +229,7 @@ Build dan jalankan seluruh suite dalam Docker:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.6 make test-all
+NGINX_VERSION=1.31.7 make test-all
 ```
 
 Dari `t/`, layanan Compose yang ada tetap tersedia:
