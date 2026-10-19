@@ -108,6 +108,8 @@ RUN mkdir -p /opt/benchmark/incremental /opt/benchmark/threads && \
 # The experiment needs the two binaries, their native reports and Python only.
 # Keep compilers, analyzer packages, CPAN and the NGINX tree out of this image.
 FROM base AS benchmark
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
 RUN --mount=type=secret,id=apt_mirror \
     --mount=type=secret,id=apt_ca,mode=0444 \
     if [ -s /run/secrets/apt_mirror ]; then \
@@ -126,7 +128,7 @@ RUN --mount=type=secret,id=apt_mirror \
     rm -rf /var/lib/apt/lists/*
 COPY --from=benchmark-build /opt/benchmark /opt/benchmark
 WORKDIR /src
-COPY t/cache_benchmark.py /src/t/cache_benchmark.py
+COPY t/cache_benchmark.py t/cache_benchmark_report.py /src/t/
 # Fail the CI build if a runtime library or Python module is missing.
 RUN /opt/benchmark/incremental/nginx -V && \
     /opt/benchmark/threads/nginx -V && \

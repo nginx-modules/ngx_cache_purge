@@ -1,9 +1,9 @@
 # Cache correctness and performance qualification
 
-This review starts from v4 commit `9c6c6d7` and the NGINX 1.31.6 source archive.
-It adds regression scenarios and an opt-in measurement workflow. It does not
-change production invalidation or claim measured speedups. Results require an
-actual Actions run; adding a test is not evidence that it passes.
+The source review starts from v4 commit `9c6c6d7` and NGINX 1.31.6. The measured
+baseline below comes from Actions runs of `fdccce7`, which includes the test and
+benchmark changes in `bf1359c`. Keep those results separate from later revisions
+and core versions. Adding a test is not evidence that it passes.
 
 ## Run through GitHub Actions
 
@@ -14,7 +14,8 @@ sanitizer and macOS lanes. They need no separate service or paid runner.
 Once `.github/workflows/cache-benchmark.yml` exists on the default branch, open
 **Actions > Cache purge benchmark > Run workflow** and select the tested branch.
 Start with 1,000 unrelated files, 2 variants, `compare`, 5 trials and one worker.
-Then use 10,000 / 100,000 files and 16 / 66 variants as needed. One million files
+For a size comparison, hold variants, workers and directory layout constant;
+changing from 2 to 16 to 66 variants also changes the workload. One million files
 is an explicit large experiment: capacity checks may reject it, and the run
 may exceed its time budget. Use one mode at a time for the largest population.
 Changing the worker count or directory layout is a separate experiment.
@@ -59,11 +60,18 @@ Each trial records:
   and observed queue drain. Deletion/drain observations are polled at about
   20 ms, with HTTP and scheduling overhead; they are upper-bound observations,
   not exact unlink timestamps.
+- Twenty no-op `PURGE /control` requests before the baseline, with the same
+  client and fresh TCP connection policy. Raw `client_control_ms` samples show
+  the HTTP round-trip floor. The control does not touch the cache, so it is not
+  a direct non-Vary cache-purge benchmark or an isolated interpreter cost.
+  Do not subtract it from ACK and label the difference server execution time.
 - Raw timings of alternating uncached `/ping` and unrelated cache-HIT requests,
   with a two-second baseline before PURGE. A single closed-loop client opens a
   fresh connection per probe and pauses 5 ms. Slow replies reduce sample count;
   these probes reveal stalls but do not measure an offered-load tail-latency
   distribution. Phase summaries include probes overlapping a phase boundary.
+  With several workers, fresh connections can be accepted by free workers and
+  miss the worker blocked in PURGE. Worker coverage is not established.
 - Worker CPU ticks, I/O counters, PSS/RSS and FD counts before PURGE and after
   cleanup. These snapshots include monitoring work, do not measure peaks, and
   do not include origin refill after the trial. Linux memory fields are in KiB;
@@ -74,7 +82,25 @@ The harness checks response bodies, every replacement's initial MISS and later
 HIT, unrelated HIT survival, cleanup error counters, worker identity, error logs
 and clean shutdown. Refills start after old filenames disappear because legacy
 refills reuse those names. Partial `results.json` contains only trials whose
-replacement checks completed; the final summary requires all selected modes.
+replacement checks completed. Reports are replaced atomically so interruption
+does not truncate the preceding checkpoint. `progress.json` identifies the
+last phase and trial; setup, file validation and refill costs are recorded
+outside the PURGE interval. Shutdown and cache-tree removal also consume time.
+
+The workflow rebuilds `summary.md` and `purges.csv` from those checkpoints even
+after failure or timeout. It marks partial experiments **INCOMPLETE**, lists
+missing modes and retains the failed experiment's outcome. Medians, ranges,
+first/repeated trials, probe maxima/counts and resource deltas are summarized;
+missing measurements are `n/a`. The reporter does not synthesize pooled p99
+from per-trial quantiles. Older artifacts can also be summarized:
+
+```sh
+python3 t/cache_benchmark_report.py path/to/extracted-artifact --outcome failure
+```
+
+Use `--outcome success` only after checking the workflow outcome. Complete
+trial counts alone do not establish clean shutdown. Omitting the option leaves
+the outcome unknown. The report generator performs no NGINX or network work.
 
 Artifacts contain `purges.csv`, per-mode `results.json`, raw `probes-*.csv`,
 configuration, logs and `environment.json`. Quantiles include sample counts;
@@ -82,11 +108,87 @@ p99 is omitted below 100 samples. No latency threshold makes the job green or
 red. Repeat runs and inspect raw distributions before claiming an improvement.
 Runner storage, CPU scheduling and filesystem caches vary between runs.
 
+The client uses Python's monotonic `perf_counter`; timer resolution does not
+establish end-to-end measurement accuracy. ACK includes connection setup,
+client HTTP handling and scheduling. `environment.json` records interpreter,
+clock, GIL/JIT availability and state where exposed, plus bytecode/stdio settings.
+Unavailable interpreter APIs are reported as null. `PYTHONDONTWRITEBYTECODE=1`
+avoids import-cache writes, and `PYTHONUNBUFFERED=1` makes console output prompt.
+These settings do not accelerate NGINX. Progress printing and report generation
+stay outside the PURGE timer. Changing Python version, enabling JIT/free
+threading, or replacing the driver with Perl is a separate client experiment;
+keep the module, runner, connection policy and workload fixed when comparing.
+
 `incremental/layout.json` and `threads/layout.json` report actual configured
 `sizeof` values, page size and compiler/core configuration. `stack-usage.tsv`
 contains GCC's per-function stack estimates from `-fstack-usage`. Neither
 report measures allocator fragmentation, recursive call-chain stack peaks,
 thread-stack commitment, total process memory or an allocation count.
+
+### Measured baseline: 18 October 2026
+
+All six runs used module `fdccce771d875d92002f2639fb72b9a79afaac74`, NGINX
+1.31.6, GCC 13.3, Linux x86-64 and the warm-file policy above. Five compare
+experiments completed, giving 75 verified trials. The interrupted experiment
+retained another 19 verified trials, but did not complete its requested comparison.
+`N` is unrelated files; each population also contains the requested variants.
+The entries below are ACK / observed drain medians in milliseconds.
+
+| Run / attempt | N / variants / workers / levels | Legacy Vary | Generation | Generation + threads |
+|---|---|---:|---:|---:|
+| [1 / 1](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39154643833) | 10000 / 16 / 1 / 1:2 | 145.212 / 145.762 | 0.329 / 581.024 | 0.289 / 164.973 |
+| [2 / 1](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39155401242) | 1000000 / 66 / 4 / 2:2 | 10481.569 / 10482.348 (10 trials) | 0.336 / 32244.181 (9 trials) | Not run |
+| [3 / 1](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39158262520) | 1000 / 2 / 1 / 1:2 | 21.613 / 22.031 | 0.251 / 123.280 | 0.256 / 41.462 |
+| [4 / 2](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39158319370/attempts/2) | 10000 / 16 / 1 / 1:2 | 114.906 / 115.313 | 0.145 / 551.749 | 0.208 / 142.318 |
+| [5 / 1](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39158351301) | 100000 / 66 / 1 / 1:2 | 552.280 / 552.899 | 0.325 / 2506.640 | 0.339 / 639.000 |
+| [6 / 1](https://github.com/nginx-modules/ngx_cache_purge/actions/runs/39159686384) | 100000 / 16 / 4 / 1:2 | 987.420 / 987.823 | 0.251 / 2976.427 | 0.237 / 1045.716 |
+
+Successful runs have five trials per mode. Run 2 ended with exit 124 at the
+outer 30-minute limit, not the per-trial 300-second cleanup deadline. Ten legacy
+and nine incremental trials completed; threaded cleanup was not reached. File
+population, repeated full-file validation and removing each private cache tree
+also consume that budget. Re-run the missing threaded case by itself with
+1000000 files, 66 variants, 4 workers, levels 2:2 and five trials. Its result
+will be a new runner observation, not a paired extension of run 2.
+
+Runs 1/2/3/6 used AMD EPYC 7763, run 4 AMD EPYC 9V45, and run 5 Intel Xeon
+Platinum 8370C. Even the identical presets in runs 1 and 4 differ substantially.
+Do not infer a worker-count effect from runs 5 and 6: CPU and variants changed
+too. These are individual workload observations, not a controlled scaling curve.
+
+Run 5 shows the intended tradeoff clearly. The maximum observed unrelated HIT
+latency overlapping PURGE was 554.189 ms in legacy mode, 0.910 ms during
+incremental cleanup and 1.424 ms during threaded cleanup. These are closed-loop
+sample maxima, not latency bounds. Generation ACK was short, while physical
+cleanup still visited the cache. Threads drained much sooner than incremental
+cleanup under this configuration; they did not eliminate the full scan.
+
+With four workers, run 2's legacy ACK exceeded ten seconds while ping/HIT
+maxima during ACK stayed below 3.1 ms. Fresh connections did not establish
+responsiveness of the worker doing the purge. Across all saved trials, probes
+reported no request/HIT failures and before/after FD deltas were zero. Neither
+fact establishes per-worker coverage, peak resource use or absence of leaks.
+
+Both layout reports measured a 40-byte rule node, a 144-byte stats record,
+an 8592-byte REFRESH entry and a 283864-byte REFRESH scanner. The scanner is
+about 277 KiB before allocator overhead. This confirms the size worth studying,
+but these PURGE runs never exercised REFRESH or measured peak memory. They
+cannot validate a REFRESH allocation redesign.
+
+### Next qualification work, in order
+
+| Priority | Experiment | Decision it supports |
+|---|---|---|
+| 1 | A fixed-size, fixed-variant comparison with independent probes on persistent connections to every worker, recording `$pid`; verify replacement generations immediately after ACK while old files still exist. | Establish worker responsiveness and the ACK contract under active cleanup. A fast aggregate probe or a MISS only after drain is insufficient. |
+| 2 | Direct non-Vary exact PURGE with `cache_purge_vary_aware off`, then non-Vary and Vary cases with it on, using the same runner and population. Preserve first and repeated trials. | Separate client/protocol cost, direct deletion and directory scanning. In current legacy dispatch, enabling Vary awareness invokes the variant walk even if the primary entry has no Vary header; simply omitting Vary is not the direct-path control. |
+| 3 | Bounded bursts of repeated and distinct exact/prefix/full purges during an active walk; record admitted work, scan passes, drain, CPU and ordinary traffic. | Quantify existing coalescing and admission saturation before choosing an index or changing scheduling. More sequential single-key trials cannot answer this. |
+| 4 | REFRESH with short/long keys and 1/32 candidates, then concurrent waiting requests; sample peak PSS/private dirty memory and verify disconnect, cancellation and reload. | Select a lazy pool or compact candidate-storage prototype using actual savings and lifetime checks. The current layout report supplies sizes, not peak occupancy. |
+
+Cold-storage behavior, sustained offered load, namespace-rule cardinality and
+cache-manager pressure remain separate experiments. No current run measures
+them. Cold trials need an explicit cache-eviction procedure after validation;
+calling the first validated trial cold would mislabel the workload. Expand one
+axis at a time and retain bounded manual Actions presets.
 
 ## Native cache model that the tests exercise
 

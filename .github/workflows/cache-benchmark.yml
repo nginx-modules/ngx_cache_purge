@@ -86,6 +86,7 @@ jobs:
             ngx-cache-purge-benchmark:local \
             sh -c 'cp -R /opt/benchmark/reports/. /reports/'
       - name: Run bounded cache experiment
+        id: experiment
         env:
           BENCH_FILES: ${{ inputs.files }}
           BENCH_VARIANTS: ${{ inputs.variants }}
@@ -106,12 +107,11 @@ jobs:
                 --workers "$BENCH_WORKERS" --levels "$BENCH_LEVELS"
       - name: Publish measurement summary
         if: always()
+        env:
+          BENCH_OUTCOME: ${{ steps.experiment.outcome }}
         run: |
-          if [ -f reports/cache-benchmark/summary.md ]; then
-            cat reports/cache-benchmark/summary.md >> "$GITHUB_STEP_SUMMARY"
-          else
-            printf '%s\n' 'Experiment incomplete; inspect logs and partial artifacts.' >> "$GITHUB_STEP_SUMMARY"
-          fi
+          python3 t/cache_benchmark_report.py reports/cache-benchmark \
+            --outcome "${BENCH_OUTCOME:-unknown}" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

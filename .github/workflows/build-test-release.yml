@@ -46,6 +46,8 @@ jobs:
         run: python3 -m unittest discover -s t -p test_release.py -v
       - name: Check PVS-Studio runner failure handling
         run: python3 -m unittest discover -s t -p test_pvs_studio.py -v
+      - name: Check complete and interrupted benchmark reports
+        run: python3 -m unittest discover -s t -p test_cache_benchmark_report.py -v
       - id: matrix
         env:
           CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}

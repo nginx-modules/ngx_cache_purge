@@ -14,9 +14,38 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
+import sysconfig
 import tempfile
 import threading
 import time
+
+from cache_benchmark_report import write_report
+
+
+def write_json(path, value):
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def progress(output, phase, trial=None):
+    write_json(output / "progress.json", dict(phase=phase, trial=trial))
+    print(f"{output.name} trial={trial or '-'} phase={phase}", flush=True)
+
+
+def client_metadata():
+    jit = getattr(sys, "_jit", None)
+    return dict(implementation=platform.python_implementation(), version=sys.version,
+        executable=sys.executable, clock=vars(time.get_clock_info("perf_counter")),
+        free_threaded_build=sysconfig.get_config_var("Py_GIL_DISABLED"),
+        gil_enabled=getattr(sys, "_is_gil_enabled", lambda: None)(),
+        jit_available=getattr(jit, "is_available", lambda: None)(),
+        jit_enabled=getattr(jit, "is_enabled", lambda: None)(),
+        dont_write_bytecode=sys.dont_write_bytecode,
+        stdout_write_through=getattr(sys.stdout, "write_through", None),
+        environment={key: os.environ.get(key) for key in
+            ("PYTHONDONTWRITEBYTECODE", "PYTHONUNBUFFERED", "PYTHON_GIL", "PYTHON_JIT")})
 
 
 def request(port, uri, method="GET", headers=None, connection=None):
@@ -129,6 +158,7 @@ http {{
     server {{
         listen 127.0.0.1:{self.port};
         location = /ping {{ return 200 "ready"; }}
+        location = /control {{ return 200 "control"; }}
         location = /status {{ cache_purge_queue_status {self.cache}; }}
         location /cache/ {{
             proxy_pass http://127.0.0.1:{origin};
@@ -278,6 +308,20 @@ def manifest(server, expected):
     return targets, count
 
 
+def client_control(server):
+    # Same client, method and connection policy as PURGE, without cache work.
+    # This is an HTTP round-trip floor, not the interpreter's isolated cost.
+    samples = []
+    for _ in range(20):
+        start = time.perf_counter()
+        response = request(server.port, "/control", "PURGE")
+        end = time.perf_counter()
+        if response[0] != 200 or response[2] != b"control":
+            raise RuntimeError("HTTP client control failed")
+        samples.append((end - start) * 1000)
+    return samples
+
+
 def run_case(args, mode, output):
     output.mkdir()
     root = Path(tempfile.mkdtemp(prefix=mode + "-", dir=args.work))
@@ -285,8 +329,10 @@ def run_case(args, mode, output):
     trials = []
     success = False
     try:
+        progress(output, "startup")
         server = Server(args, mode, root, output)
         setup = time.perf_counter()
+        progress(output, "populate")
         def seed(shard):
             connection = http.client.HTTPConnection("127.0.0.1", server.port, timeout=30)
             try:
@@ -304,20 +350,28 @@ def run_case(args, mode, output):
         warm_targets(server, headers)
         # Core starts its loader with a 60-second delay. Await its real exit,
         # outside timing, so it cannot overlap the scan experiment.
+        progress(output, "wait-loader")
         wait_for(lambda: not any("cache loader process" in process_name(pid)
                                 for pid in children(server.process.pid)),
                  600, "cache loader did not exit")
         setup_seconds = time.perf_counter() - setup
         for number in range(args.trials):
+            progress(output, "validate-files", number + 1)
+            validation = time.perf_counter()
             targets, count = manifest(server, args.files + args.variants)
+            validation_seconds = time.perf_counter() - validation
             if len(targets) != args.variants:
                 raise RuntimeError("native Vary population does not match requested cardinality")
             server.check()
+            progress(output, "client-control", number + 1)
+            control_ms = client_control(server)
             sampler = Sampler(server.port)
+            progress(output, "baseline", number + 1)
             sampler.start()
             try:
                 time.sleep(2)  # baseline outside the measured purge
                 before = resources(server.process.pid)
+                progress(output, "purge-and-drain", number + 1)
                 start = time.perf_counter()
                 response = request(server.port, "/cache/target", "PURGE")
                 ack = time.perf_counter()
@@ -345,6 +399,7 @@ def run_case(args, mode, output):
             if state["files"]["errors"] or state["cleanup"]["scan_errors"]:
                 raise RuntimeError("cleanup reported file/scan errors")
             row = dict(mode=mode, trial=number + 1, files=count, variants=args.variants,
+                       client_control_ms=control_ms, validation_seconds=validation_seconds,
                        ack_ms=(ack - start) * 1000,
                        files_gone_observed_ms=(gone - start) * 1000,
                        drained_observed_ms=(drained - start) * 1000,
@@ -361,28 +416,33 @@ def run_case(args, mode, output):
             # Refill only after the old filenames have disappeared: legacy
             # replacements reuse those names, so earlier refills would make
             # the physical-removal observation ambiguous.
+            progress(output, "verify-refill", number + 1)
+            refill = time.perf_counter()
             warm_targets(server, headers, expect_miss=True)
             server.check()
+            row["refill_seconds"] = time.perf_counter() - refill
             trials.append(row)
-            (output / "results.json").write_text(json.dumps(dict(
-                setup_seconds=setup_seconds, trials=trials), indent=2) + "\n")
+            write_json(output / "results.json", dict(setup_seconds=setup_seconds, trials=trials))
             print(f"{mode} trial={number + 1} ack={row['ack_ms']:.3f}ms "
                   f"drained={row['drained_observed_ms']:.3f}ms", flush=True)
+        progress(output, "teardown")
         success = True
         return trials
     except Exception as error:
-        (output / "failure.json").write_text(json.dumps(dict(error=str(error),
-            verified_trials=len(trials)), indent=2) + "\n")
+        write_json(output / "failure.json", dict(error=str(error), verified_trials=len(trials)))
         raise
     finally:
         clean = True
-        if server is not None:
-            clean = server.close()
-        shutil.rmtree(root)
+        try:
+            if server is not None:
+                clean = server.close()
+        finally:
+            shutil.rmtree(root)
         if success and server is not None:
             server.check_log()
             if not clean:
                 raise RuntimeError("NGINX did not exit cleanly after the experiment")
+            progress(output, "complete")
 
 
 def main():
@@ -406,6 +466,7 @@ def main():
         raise RuntimeError("insufficient free bytes/inodes for this preset; select fewer files")
     environment = dict(revision=os.environ.get("GITHUB_SHA"), platform=platform.platform(),
         cpu_count=os.cpu_count(), cpu=Path("/proc/cpuinfo").read_text(),
+        client=client_metadata(),
         nginx={kind: subprocess.run([binary, "-V"], capture_output=True, text=True, check=True).stderr
                for kind, binary in (("incremental", args.nginx_incremental), ("threads", args.nginx_threads))},
         options={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
@@ -414,25 +475,11 @@ def main():
         available_bytes=disk.f_bavail * disk.f_frsize, available_inodes=disk.f_favail,
         probe_model="closed-loop, alternating fresh TCP ping/HIT requests, 5ms pause",
         cpu_tick_hz=os.sysconf("SC_CLK_TCK"))
-    (args.output / "environment.json").write_text(json.dumps(environment, indent=2) + "\n")
+    write_json(args.output / "environment.json", environment)
     modes = ["legacy-vary", "generation", "generation-threads"] if args.mode == "compare" else [args.mode]
-    rows = []
     for mode in modes:
-        rows.extend(run_case(args, mode, args.output / mode))
-    fields = ["mode", "trial", "files", "variants", "ack_ms", "files_gone_observed_ms", "drained_observed_ms"]
-    with (args.output / "purges.csv").open("w") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-    summary = ["# Cache purge experiment", "", f"Revision: `{environment['revision']}`", "",
-        "Warm-after-validation trials. ACK and physical cleanup have different contracts.", "",
-        "| Mode | Trial | Native files | ACK ms | Files gone ms | Queue drained ms |",
-        "|---|---:|---:|---:|---:|---:|"]
-    summary += [f"| {r['mode']} | {r['trial']} | {r['files']} | {r['ack_ms']:.3f} | "
-                f"{r['files_gone_observed_ms']:.3f} | {r['drained_observed_ms']:.3f} |" for r in rows]
-    summary += ["", "Download the artifact for raw probes, worker PSS/FD/I/O snapshots, ABI sizes, "
-                "stack usage, configuration and environment. No performance pass/fail threshold.", ""]
-    (args.output / "summary.md").write_text("\n".join(summary))
+        run_case(args, mode, args.output / mode)
+    write_report(args.output, "success")
 
 
 if __name__ == "__main__":
