@@ -243,6 +243,30 @@ subtest 'pending/running deduplication, admission, metrics and recovery' => sub 
     run("$tmp/queue");
 };
 
+subtest 'traffic class names bind to stable shared-zone slots' => sub {
+    my $nginx = $ENV{NGINX_SOURCE};
+    BAIL_OUT('NGINX_SOURCE must name a configured source tree') unless $nginx;
+    $nginx = abs_path($nginx);
+    my @inc = map { "-I$nginx/$_" }
+              qw(src/core src/event src/event/modules src/os/unix objs
+                 src/http src/http/modules src/http/v2 src/http/v3);
+    unshift @inc, "-I$ENV{NGINX_BUILD_DIR}" if $ENV{NGINX_BUILD_DIR};
+    my ($types) = $source =~ /(typedef\s+struct\s+ngx_http_cache_purge_queue_item_s
+                              .*?}\s+ngx_http_cache_purge_queue_stat_t;)/sx;
+    die 'missing queue types' unless defined $types;
+    my $code = "#include <ngx_config.h>\n#include <ngx_core.h>\n"
+               . "#include <ngx_http.h>\n#include <assert.h>\n"
+               . "#include \"$root/ngx_cache_purge_invalidation.h\"\n";
+    $code .= "$1\n" while $source =~ /^(#define NGX_CACHE_PURGE_\w+[^\n]*)/mg;
+    $code .= $types . "\n" . fixture('traffic_class_bind_shim');
+    $code .= function('traffic_class_bind');
+    $code .= fixture('traffic_class_bind_main');
+    $code .= fixture('no_leak_check') if $ENV{TEST_NGINX_NO_LEAK_CHECK};
+    write_file("$tmp/class.c", $code);
+    run(@cc, @asan, @inc, "$tmp/class.c", '-o', "$tmp/class");
+    run("$tmp/class");
+};
+
 subtest 'native manager callback units and callback/data preservation' => sub {
     my $nginx = abs_path($ENV{NGINX_SOURCE} || die 'NGINX_SOURCE is required');
     my @inc = map { "-I$nginx/$_" }

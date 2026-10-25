@@ -138,6 +138,8 @@ Native fixtures compile extracted production helper bodies. Checks cover:
 - Generation exact/prefix/baseline rules, memory-pressure invalidation, bounded
   garbage reclamation, counter saturation and conditional invalidation races;
   empty, single-byte and maximum-length selectors, plus over-limit rejection.
+- Traffic class names bound to stable shared-zone slots: reorder, drop, re-add,
+  refusal when no slot is free, and no slot consumed before `init_module`.
 - A cache-manager callback prototype preserving both manager and loader data,
   including the seconds/milliseconds API boundary at NGINX 1.11.5. This is a
   prototype test, not a production manager backend or a performance comparison.

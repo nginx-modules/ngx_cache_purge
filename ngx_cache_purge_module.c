@@ -58,6 +58,11 @@ static char *
 ngx_http_cache_purge_throttle(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static char *
 ngx_http_cache_purge_thread_pool(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char *
+ngx_http_cache_purge_traffic_class_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static ngx_int_t
+ngx_http_cache_purge_init_module(ngx_cycle_t *cycle);
 static void *
 ngx_http_cache_purge_create_main_conf(ngx_conf_t *cf);
 static char *
@@ -199,6 +204,11 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
       NGX_HTTP_MAIN_CONF_OFFSET,
       offsetof(ngx_http_cache_purge_main_conf_t, vary_aware), NULL },
 
+    { ngx_string("cache_purge_traffic_class"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_2MORE,
+      ngx_http_cache_purge_traffic_class_conf,
+      NGX_HTTP_MAIN_CONF_OFFSET, 0, NULL },
+
     { ngx_string("cache_purge_queue_status"),
       NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
       ngx_http_cache_purge_queue_status_conf,
@@ -227,7 +237,7 @@ ngx_module_t  ngx_http_cache_purge_module = {
     ngx_http_cache_purge_module_commands,
     NGX_HTTP_MODULE,
     NULL,                                   /* init master  */
-    NULL,                                   /* init module  */
+    ngx_http_cache_purge_init_module,       /* init module  */
     ngx_http_cache_purge_init_worker,       /* init process */
     NULL,                                   /* init thread  */
     NULL,                                   /* exit thread  */
@@ -422,6 +432,134 @@ ngx_http_cache_purge_flag(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
     }
 
     return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_http_cache_purge_traffic_class_conf(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf)
+{
+    ngx_http_cache_purge_main_conf_t  *cmcf = conf;
+    ngx_str_t                         *value, var;
+    ngx_int_t                          index;
+    ngx_uint_t                         i, j, n;
+    size_t                             k;
+    u_char                             c;
+
+    if (cmcf->traffic_class_n != 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "ngx_cache_purge: \"%V\" directive "
+                           "is duplicate", &cmd->name);
+        return NGX_CONF_ERROR;
+    }
+
+    value = cf->args->elts;
+    n = cf->args->nelts - 2;
+
+    if (n > NGX_CACHE_PURGE_CLASSES) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "ngx_cache_purge: \"%V\" takes at most %d "
+                           "class names", &cmd->name, NGX_CACHE_PURGE_CLASSES);
+        return NGX_CONF_ERROR;
+    }
+
+    /* Only a plain $variable or ${variable}; a constant or "$a-$b" is refused. */
+    var = value[1];
+    if (var.len < 2 || var.data[0] != '$') {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "ngx_cache_purge: \"%V\" needs a variable as its "
+                           "first parameter, got \"%V\"", &cmd->name, &value[1]);
+        return NGX_CONF_ERROR;
+    }
+    var.len--;
+    var.data++;
+    if (var.len > 2 && var.data[0] == '{' && var.data[var.len - 1] == '}') {
+        var.len -= 2;
+        var.data++;
+    }
+
+    /*
+     * A variable name is letters, digits and "_". Without this check
+     * "$http_a-$http_b" would pass: the "http_" prefix handler accepts any
+     * header name, so the mixed value would resolve as a header called
+     * "a-$http_b" that never exists and silently count nothing.
+     */
+    for (k = 0; k < var.len; k++) {
+        c = var.data[k];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+              || (c >= '0' && c <= '9') || c == '_'))
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "ngx_cache_purge: \"%V\" needs a variable as "
+                               "its first parameter, got \"%V\"",
+                               &cmd->name, &value[1]);
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    for (i = 0; i < n; i++) {
+        if (value[i + 2].len == 0
+            || value[i + 2].len > NGX_CACHE_PURGE_CLASS_NAME_MAX)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "ngx_cache_purge: invalid traffic class name "
+                               "\"%V\" (1..%d characters)", &value[i + 2],
+                               NGX_CACHE_PURGE_CLASS_NAME_MAX);
+            return NGX_CONF_ERROR;
+        }
+        for (k = 0; k < value[i + 2].len; k++) {
+            c = value[i + 2].data[k];
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                  || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "ngx_cache_purge: invalid traffic class "
+                                   "name \"%V\" (use letters, digits, "
+                                   "\"_\" and \"-\")", &value[i + 2]);
+                return NGX_CONF_ERROR;
+            }
+        }
+        for (j = 0; j < i; j++) {
+            if (value[j + 2].len == value[i + 2].len
+                && ngx_memcmp(value[j + 2].data, value[i + 2].data,
+                              value[i + 2].len) == 0)
+            {
+                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                                   "ngx_cache_purge: duplicate traffic class "
+                                   "name \"%V\"", &value[i + 2]);
+                return NGX_CONF_ERROR;
+            }
+        }
+    }
+
+    index = ngx_http_get_variable_index(cf, &var);
+    if (index == NGX_ERROR) {
+        return NGX_CONF_ERROR;
+    }
+
+    cmcf->traffic_class_index = (ngx_uint_t) index;
+    for (i = 0; i < n; i++) {
+        cmcf->traffic_class_names[i] = value[i + 2];
+    }
+    cmcf->traffic_class_n = n;
+
+    return NGX_CONF_OK;
+}
+
+
+/* Stores the class names init_shm_zone only checked (see queue.c). */
+static ngx_int_t
+ngx_http_cache_purge_init_module(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t  *cmcf;
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL) {
+        return NGX_OK;
+    }
+
+    return ngx_http_cache_purge_traffic_class_commit(cmcf, cycle->log);
 }
 
 
@@ -768,6 +906,13 @@ ngx_http_cache_purge_postconfiguration(ngx_conf_t *cf)
                                "path \"%V\"", name);
             return NGX_ERROR;
         }
+    }
+
+    if (cmcf->traffic_class_n != 0 && cmcf->queue_status_locations.nelts == 0) {
+        ngx_conf_log_error(NGX_LOG_WARN, cf, 0,
+                           "ngx_cache_purge: \"cache_purge_traffic_class\" "
+                           "has nothing to report without a "
+                           "\"cache_purge_queue_status\" location");
     }
 
     if (cmcf->shm_zone != NULL) {

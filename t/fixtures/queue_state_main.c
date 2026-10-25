@@ -189,6 +189,57 @@ int main(void)
 #endif
     ngx_http_cache_purge_stats(path)->sequence++;
 
+    /*
+     * cache_purge_traffic_class counters: slots that fit the existing stride,
+     * summed over process slots, scoped to one path, and never part of the
+     * HIT/MISS totals.
+     */
+    {
+        ngx_http_cache_purge_path_t  *other_path;
+        ngx_str_t                     other_name = ngx_string("/cache/b");
+        uint64_t                      hits, misses;
+        ngx_uint_t                    c;
+
+        assert(NGX_PURGE_CLASS_LAST == NGX_PURGE_METRICS - 1);
+        assert(NGX_PURGE_CLASS_BASE + 2 * NGX_CACHE_PURGE_CLASSES
+               == NGX_PURGE_METRICS);
+        assert(sizeof(ngx_http_cache_purge_stats_t) <= 192);
+#if (NGX_PTR_SIZE == 8)
+        assert(path->stats_stride == 192);   /* the layout the SHM version guards */
+#endif
+        ngx_http_cache_purge_queue_status_snapshot(&queue, path, &snap);
+        hits = snap.cache.hits;
+        misses = snap.cache.misses;
+
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE + 2 * 1, 4);
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE + 2 * 1 + 1, 5);
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE
+                                      + 2 * (NGX_CACHE_PURGE_CLASSES - 1) + 1, 7);
+        ngx_cache_purge_slot = 1;   /* another process adds to the same class slot */
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE + 2 * 1, 6);
+        ngx_cache_purge_slot = 0;
+        ngx_http_cache_purge_queue_status_snapshot(&queue, path, &snap);
+        assert(snap.cache.class_hits[1] == 10 && snap.cache.class_misses[1] == 5);
+        assert(snap.cache.class_hits[0] == 0 && snap.cache.class_misses[0] == 0);
+        assert(snap.cache.class_hits[2] == 0 && snap.cache.class_misses[2] == 7);
+        assert(snap.cache.hits == hits && snap.cache.misses == misses);
+
+        test_lock(&slab.mutex);
+        other_path = ngx_http_cache_purge_path_get(&queue, &other_name);
+        test_unlock(&slab.mutex);
+        assert(other_path != NULL && other_path != path);
+        ngx_http_cache_purge_queue_status_snapshot(&queue, other_path, &snap);
+        for (c = 0; c < NGX_CACHE_PURGE_CLASSES; c++) {
+            assert(snap.cache.class_hits[c] == 0 && snap.cache.class_misses[c] == 0);
+        }
+
+        /* Class counters saturate like every other counter. */
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE, (uint64_t) -1);
+        ngx_http_cache_purge_stat_add(path, NGX_PURGE_CLASS_BASE, 9);
+        ngx_http_cache_purge_queue_status_snapshot(&queue, path, &snap);
+        assert(snap.cache.class_hits[0] == (uint64_t) -1);
+    }
+
     fail_alloc = 1;
     assert(ngx_http_cache_purge_enqueue(&request, &cache, &a, 0, NULL) == NGX_AGAIN);
     assert(queue.size == 0 && path->rbtree.root == path->rbtree.sentinel);
