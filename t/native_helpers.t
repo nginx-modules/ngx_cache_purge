@@ -267,6 +267,31 @@ subtest 'traffic class names bind to stable shared-zone slots' => sub {
     run("$tmp/class");
 };
 
+subtest 'shared zone layout is tied to its version and another version is refused' => sub {
+    my $nginx = $ENV{NGINX_SOURCE};
+    BAIL_OUT('NGINX_SOURCE must name a configured source tree') unless $nginx;
+    $nginx = abs_path($nginx);
+    my @inc = map { "-I$nginx/$_" }
+              qw(src/core src/event src/event/modules src/os/unix objs
+                 src/http src/http/modules src/http/v2 src/http/v3);
+    unshift @inc, "-I$ENV{NGINX_BUILD_DIR}" if $ENV{NGINX_BUILD_DIR};
+    my ($types) = $source =~ /(typedef\s+struct\s+ngx_http_cache_purge_queue_item_s
+                              .*?}\s+ngx_http_cache_purge_queue_stat_t;)/sx;
+    die 'missing queue types' unless defined $types;
+    my $code = "#include <ngx_config.h>\n#include <ngx_core.h>\n"
+               . "#include <ngx_http.h>\n#include <assert.h>\n"
+               . "#include <stddef.h>\n"
+               . "#include \"$root/ngx_cache_purge_invalidation.h\"\n";
+    $code .= "$1\n" while $source =~ /^(#define NGX_CACHE_PURGE_\w+[^\n]*)/mg;
+    $code .= $types . "\n" . fixture('shm_zone_guard_shim');
+    $code .= function('traffic_class_bind') . function('traffic_class_commit');
+    $code .= function('init_shm_zone');
+    $code .= fixture('shm_zone_guard_main');
+    write_file("$tmp/zone.c", $code);
+    run(@cc, @asan, @inc, "$tmp/zone.c", '-o', "$tmp/zone");
+    run("$tmp/zone");
+};
+
 subtest 'native manager callback units and callback/data preservation' => sub {
     my $nginx = abs_path($ENV{NGINX_SOURCE} || die 'NGINX_SOURCE is required');
     my @inc = map { "-I$nginx/$_" }

@@ -140,6 +140,10 @@ Native fixtures compile extracted production helper bodies. Checks cover:
   empty, single-byte and maximum-length selectors, plus over-limit rejection.
 - Traffic class names bound to stable shared-zone slots: reorder, drop, re-add,
   refusal when no slot is free, and no slot consumed before `init_module`.
+- Shared-zone layout fingerprint per `NGX_CACHE_PURGE_SHM_VERSION` (struct
+  sizes and two metric indexes, not every member offset) and refusal of a zone
+  of another version by `init_shm_zone()` before any version-dependent field is
+  read or the zone is written.
 - A cache-manager callback prototype preserving both manager and loader data,
   including the seconds/milliseconds API boundary at NGINX 1.11.5. This is a
   prototype test, not a production manager backend or a performance comparison.
