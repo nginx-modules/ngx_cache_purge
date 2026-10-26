@@ -1193,7 +1193,9 @@ subtest "66 Vary representations, exact identity and reload, generation=$strict"
         }
         my @entries = grep { $_->[1] =~ m{(?:^|:)/cache/variants$} } cached_entries($s);
         is(scalar @entries, 66, 'all representations exist as native files');
-        reload_server($s) if $round == 2;
+        # Settle: with accept_mutex off a retiring worker still accepts
+        # connections and closes them unanswered, which fails the PURGE below.
+        reload_server($s, 1) if $round == 2;
         write_file("$s->{root}/version", $round + 1);
         is(request($s, '/cache/variants', 'PURGE')->{status}, 200, 'exact PURGE succeeds');
         for my $h (@headers) {
