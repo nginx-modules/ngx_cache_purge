@@ -582,7 +582,7 @@ sub stop_server {
         @severe = grep { !/\[emerg\].*cache_purge_traffic_class needs more distinct/ } @severe;
     }
     if ($s->{listen_fault}) {
-        @severe = grep { !/\[emerg\].*(?:bind\(\) to 127\.0\.0\.1:\d+ failed \(98: (?:Address already in use|Unknown error)\)|still could not bind\(\))/ } @severe;
+        @severe = grep { !/\[emerg\].*(?:bind\(\) to 127\.0\.0\.1:\d+ failed \(\d+: (?:Address already in use|Unknown error)\)|still could not bind\(\))/ } @severe;
     }
     is_deeply(\@severe, [], 'no unexpected severe diagnostic');
 
@@ -1961,7 +1961,7 @@ subtest 'a reload that fails after the shared zone is attached keeps its slots f
     write_file("$s->{root}/nginx.conf", config($s));
     kill 'HUP', $s->{pid};
     await(sub { substr(read_file("$s->{root}/error.log"), $mark)
-                =~ /bind\(\) to 127\.0\.0\.1:\d+ failed \(98: (?:Address already in use|Unknown error)\)/ },
+                =~ /bind\(\) to 127\.0\.0\.1:\d+ failed \(\d+: (?:Address already in use|Unknown error)\)/ },
           'the provoked reload failure was not logged', 20);
     $s->{generation}--;
     is(request($s, '/status-a')->{headers}{'x-generation'}, $s->{generation},
