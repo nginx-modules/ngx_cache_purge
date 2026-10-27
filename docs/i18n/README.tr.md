@@ -97,6 +97,8 @@ Yıldız yalnızca URI yolunun değil, değerlendirilmiş anahtarın son baytı 
 
 Anahtar nesilleri, PURGE sonrasındaki yeni isteklerin eski içeriği kullanmasını engeller; geç yazılan eski yanıtlar da buna dahildir. Dosyalar ayrıca silinir. Ad alanı geçersizleştirme kurallarını paylaşır; durum dizinini yeniden başlatmalar arasında koruyun.
 
+Ad alanı durumu düzgün kapanışta kaydedilir; planlı bir yeniden başlatma soğuk başlamak yerine aynı epoch ve geçersiz kılma kurallarını yeniden kullanır. Kapanış kancasına ulaşamayan bir çalıştırma işaret bırakır ve sonraki başlatma, geçersiz kılınan girdilerin erişilemez kalması için epoch'u değiştirir.
+
 <a id="conditional-refresh"></a>
 
 ### Önbelleği kaynak sunucuyla karşılaştırma (REFRESH)

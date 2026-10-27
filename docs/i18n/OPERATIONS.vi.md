@@ -10,6 +10,8 @@
 
 Với thế hệ, một lượt quét vật lý trên mỗi đường dẫn/không gian tên hợp nhất các vô hiệu hóa đã nhận. Trang REFRESH là thao tác HTTP riêng, không phải tác vụ hàng đợi xóa.
 
+Trạng thái namespace được ghi khi tắt máy đúng cách, nên lần khởi động lại có kế hoạch dùng lại epoch và các quy tắc; lần chạy không tới hook tắt máy để lại dấu đánh dấu và lần khởi động sau đổi epoch.
+
 | Yêu cầu và cấu hình | Duyệt tệp | Hoàn tất HTTP |
 |---|---|---|
 | Khóa chính xác kiểu cũ, có/không Vary | Worker yêu cầu; Vary thêm duyệt thư mục | Sau thao tác |

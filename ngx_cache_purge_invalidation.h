@@ -32,6 +32,19 @@ ngx_int_t ngx_http_cache_purge_generation_stale(
 ngx_int_t ngx_http_cache_purge_generation_current(
     ngx_http_cache_purge_namespace_t *ns, ngx_str_t *key, ngx_str_t *logical);
 
+/*
+ * Commit the namespace state to its state directory.  Called on graceful
+ * shutdown so a later start can keep the epoch and the invalidation rules.
+ * Returns NGX_ERROR when the snapshot could not be written; the running
+ * marker is then left in place and the next start rotates the epoch.
+ */
+void ngx_http_cache_purge_generation_set_owner(
+    ngx_http_cache_purge_namespace_t *ns, ngx_pid_t owner);
+ngx_int_t ngx_http_cache_purge_generation_persist(
+    ngx_http_cache_purge_namespace_t *ns);
+void ngx_http_cache_purge_generation_clear_running(
+    ngx_http_cache_purge_namespace_t *ns, ngx_pid_t owner);
+
 /* Consistent copy of the namespace generation state, for status reporting. */
 typedef struct {
     u_char      epoch[10];

@@ -10,6 +10,8 @@ Une **tâche** est une opération joker ou `purge_all`. Un **lot** compte les t�
 
 Avec les générations, un balayage physique par chemin et espace de noms regroupe les invalidations acceptées. Les pages REFRESH sont des opérations HTTP distinctes, pas des tâches de la file de purge.
 
+L'état de l'espace de noms est enregistré lors d'un arrêt propre : un redémarrage planifié réutilise l'époque et les règles ; une exécution sans hook d'arrêt laisse un marqueur et le démarrage suivant change d'époque.
+
 | Requête et configuration | Parcours des fichiers | Fin HTTP |
 |---|---|---|
 | Clé exacte historique, avec ou sans Vary | Worker de la requête ; Vary ajoute un parcours | Après l’opération |

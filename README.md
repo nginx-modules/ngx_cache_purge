@@ -115,6 +115,11 @@ including stale files written by older in-flight requests. See
 [generation-key operation](docs/OPERATIONS.md#generation-invalidation) for
 namespace persistence and cleanup constraints.
 
+Namespace state is committed on graceful shutdown, so a planned restart
+reuses the epoch and the invalidation rules instead of starting cold. A run
+that does not reach the shutdown hook leaves a marker behind, and the next
+start rotates the epoch so invalidated entries stay unreachable.
+
 <a id="conditional-refresh"></a>
 
 REFRESH checks cached proxy content against the origin without refilling

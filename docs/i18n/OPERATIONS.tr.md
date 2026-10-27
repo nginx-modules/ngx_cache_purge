@@ -10,6 +10,8 @@
 
 Nesil anahtarlarında her önbellek yolu/ad alanı için tek fiziksel tarama kabul edilen geçersizleştirmeleri birleştirir. REFRESH sayfaları kuyruk görevi değil, ayrı HTTP işlemleridir.
 
+Ad alanı durumu düzgün kapanışta kaydedilir; planlı yeniden başlatma aynı epoch ve kuralları kullanır, kapanış kancasına ulaşmayan çalıştırma işaret bırakır ve sonraki başlatma epoch'u değiştirir.
+
 | İstek ve yapılandırma | Dosya taraması | HTTP tamamlanması |
 |---|---|---|
 | Eski tam anahtar, Vary ile veya olmadan | İstek worker’ı; Vary dizin taraması ekler | İşlem sonrası |
