@@ -159,3 +159,47 @@ PURGE /purge/test*
 --- error_code: 202
 --- response_headers
 Content-Type: application/xml
+
+=== TEST 7a: refresh batch accepts an in-range value
+--- config
+    location /health {
+        cache_purge_refresh_batch 128;
+        return 200 "ok";
+    }
+--- request
+GET /health
+--- error_code: 200
+--- no_error_log
+[error]
+
+=== TEST 7b: refresh batch rejects zero
+--- config
+    location /health {
+        cache_purge_refresh_batch 0;
+        return 200 "ok";
+    }
+--- must_die
+--- error_log eval
+qr/cache_purge_refresh_batch.*out of range/
+
+=== TEST 7c: refresh batch rejects a value above the maximum
+--- config
+    location /health {
+        cache_purge_refresh_batch 257;
+        return 200 "ok";
+    }
+--- must_die
+--- error_log eval
+qr/cache_purge_refresh_batch.*out of range/
+
+=== TEST 7d: refresh batch inherits from the server level
+--- config
+    cache_purge_refresh_batch 64;
+    location /health {
+        return 200 "ok";
+    }
+--- request
+GET /health
+--- error_code: 200
+--- no_error_log
+[error]

@@ -29,6 +29,7 @@
 #define NGX_CACHE_PURGE_STATUS_NS_TAIL       48
 #define NGX_CACHE_PURGE_SHM_VERSION          7
 #define NGX_CACHE_PURGE_REFRESH_BATCH        32
+#define NGX_CACHE_PURGE_REFRESH_BATCH_MAX    256
 #define NGX_CACHE_PURGE_REFRESH_PROBES       16
 #define NGX_CACHE_PURGE_QUEUE_TIMEOUT        60000   /* ms */
 #define NGX_CACHE_PURGE_WALK_ENTRIES         64
@@ -240,6 +241,7 @@ typedef struct {
     ngx_str_t                    refresh_location;
     ngx_str_t                    refresh_prefix;
     ngx_msec_t                   refresh_timeout;
+    ngx_uint_t                   refresh_batch;
 # endif
 
 # if (NGX_HTTP_PROXY)
