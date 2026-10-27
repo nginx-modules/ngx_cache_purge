@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Ogranicza rozpoczynanie skanów/sond strony REFRESH, wraz z oczekiwaniem na skaner workera. Upływ czasu zatrzymuje nową pracę i oznacza odpowiedź niepełną. Aktywny HEAD kończy się według jawnie ustawionych `proxy_connect_timeout`, `proxy_send_timeout` i `proxy_read_timeout`. To nie twardy termin odpowiedzi i nie przerywa syscall. Rozłączenie/łagodne zamknięcie zatrzymuje nowe zgłoszenia, zachowując pamięć aktywnego wątku do natywnego zakończenia.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Określa, ile pasujących wpisów strona REFRESH zbiera przed odpowiedzią. Strona zawsze rozpoczyna skanowanie od katalogu głównego cache, więc selektor obejmujący wiele wpisów jest dzielony na kilka stron, a pozostałe katalogi są ponownie przemierzane na każdej z nich. Większa partia zmniejsza liczbę stron i powtarzalne przejścia, ale zwiększa pamięć na żądanie.

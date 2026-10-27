@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 限制 REFRESH 页中新扫描／探测的启动时间，包含等待 worker 扫描器的时间。到期后停止新工作并标记响应不完整。已运行的 HEAD 依赖核心 `proxy_connect_timeout`、`proxy_send_timeout` 和 `proxy_read_timeout` 完成，请显式设置它们。此值不是严格响应期限，也无法中断文件系统调用。断连或 graceful shutdown 会停止后续分派，并保留活动线程的存储直至原生完成回调。
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+设置单个 REFRESH 页面在返回前最多收集多少个匹配条目。页面总是从缓存根目录开始扫描，因此覆盖大量条目的选择条件会被拆成多页，而每页都要重新遍历尚未完成的目录；批次越大，页数越少，重复遍历也越少。代价是单次请求的内存占用随批次线性增长。

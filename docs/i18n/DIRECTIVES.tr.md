@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Worker tarayıcısını bekleme dahil REFRESH sayfasında yeni tarama/yoklama gönderimini sınırlar. Süre dolunca yeni iş durur, yanıt eksik işaretlenir. Etkin HEAD, açıkça ayarlamanız gereken `proxy_connect_timeout`, `proxy_send_timeout`, `proxy_read_timeout` sınırlarıyla biter. Kesin yanıt son süresi değildir, syscall kesemez. Kopma/zarif kapanış yeni gönderimi keser; etkin thread belleği yerel tamamlanmaya kadar tutulur.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Bir REFRESH sayfasının yanıt vermeden önce toplayacağı eşleşen girdi sayısını belirler. Sayfa taramaya her zaman önbellek kökünden başlar; çok sayıda girdiyi kapsayan bir seçici birden çok sayfaya bölünür ve kalan dizinler her sayfada yeniden dolaşılır. Daha büyük parti sayfa sayısını ve tekrarlanan dolaşmayı azaltır, ancak istek başına bellek kullanımını artırır.

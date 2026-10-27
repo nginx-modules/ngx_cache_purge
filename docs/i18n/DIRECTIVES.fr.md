@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Borne l’envoi de nouveaux scans/sondes par page, attente du scanner comprise. À expiration, le nouveau travail cesse et la réponse devient incomplète. Un HEAD actif termine selon `proxy_connect_timeout`, `proxy_send_timeout` et `proxy_read_timeout`, à configurer explicitement. Ce n’est ni une échéance absolue de réponse ni une interruption de syscall. Déconnexion et arrêt gracieux cessent les envois, en gardant la mémoire du thread actif jusqu’à sa fin native.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Fixe le nombre d'entrées correspondantes qu'une page REFRESH collecte avant de répondre. Une page commence toujours son parcours à la racine du cache : un sélecteur couvrant de nombreuses entrées est donc réparti sur plusieurs pages, et les répertoires restants sont reparcourus à chaque page. Un lot plus grand réduit le nombre de pages et les parcours répétés, au prix d'une mémoire par requête plus élevée.

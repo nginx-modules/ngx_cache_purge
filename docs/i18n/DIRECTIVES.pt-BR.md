@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Limita o despacho de novos scans/probes da página REFRESH, incluindo espera pelo scanner do worker. Ao expirar, para novos trabalhos e marca a resposta incompleta. Um HEAD ativo termina segundo `proxy_connect_timeout`, `proxy_send_timeout` e `proxy_read_timeout` do núcleo: configure-os explicitamente. Não é prazo rígido de resposta nem interrompe chamadas de sistema. Desconexão e encerramento gracioso impedem novos despachos, preservando memória de threads ativas até a conclusão nativa.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Define quantas entradas correspondentes uma página REFRESH coleta antes de responder. A página sempre inicia a varredura na raiz do cache, então um seletor que abrange muitas entradas é dividido em várias páginas e os diretórios pendentes são percorridos novamente em cada uma. Um lote maior reduz o número de páginas e a travessia repetida, ao custo de mais memória por requisição.

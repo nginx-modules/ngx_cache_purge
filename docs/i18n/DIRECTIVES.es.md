@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Limita el envío de nuevos recorridos/probes por página, incluida la espera del explorador del worker. Al expirar, detiene trabajo nuevo y marca respuesta incompleta. HEAD ya activo termina según `proxy_connect_timeout`, `proxy_send_timeout` y `proxy_read_timeout`: configúrelos explícitamente. No es un plazo absoluto de respuesta ni interrumpe una llamada al sistema. Desconexión y cierre ordenado detienen nuevos envíos, conservando memoria del hilo activo hasta la finalización nativa.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Define cuántas entradas coincidentes recoge una página REFRESH antes de responder. La página siempre inicia el recorrido en la raíz de la caché, así que un selector con muchas entradas se reparte en varias páginas y los directorios pendientes se recorren de nuevo en cada una. Un lote mayor reduce el número de páginas y el recorrido repetido, a costa de más memoria por petición.

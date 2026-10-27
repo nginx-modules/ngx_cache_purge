@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Giới hạn việc gửi scan/probe mới của trang REFRESH, cả chờ bộ quét worker. Hết thời gian thì dừng việc mới và đánh dấu phản hồi chưa đủ. HEAD đang chạy hoàn tất theo `proxy_connect_timeout`, `proxy_send_timeout`, `proxy_read_timeout`; hãy đặt rõ. Không phải hạn chót cứng cho phản hồi và không ngắt syscall. Ngắt kết nối/dừng nhẹ nhàng dừng gửi mới, giữ bộ nhớ luồng hoạt động tới hoàn tất bản địa.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Đặt số mục khớp mà một trang REFRESH thu thập trước khi trả lời. Trang luôn bắt đầu quét từ gốc cache, nên bộ chọn trải trên nhiều mục sẽ được chia thành nhiều trang và các thư mục còn lại bị duyệt lại ở mỗi trang. Lô lớn hơn giảm số trang và số lần duyệt lặp, nhưng tăng bộ nhớ cho mỗi yêu cầu.

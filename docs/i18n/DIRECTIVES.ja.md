@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 worker のスキャナー待機も含め、REFRESH ページの新規走査／プローブ開始を制限します。期限後は新しい処理を始めず、不完全な応答とします。実行中の HEAD は core の `proxy_connect_timeout`、`proxy_send_timeout`、`proxy_read_timeout` に従って終了するため、明示的に設定してください。厳密な応答期限ではなく、ファイルシステムのシステムコールを中断できません。切断と graceful shutdown では新規開始を止め、実行中スレッドの領域は core の完了通知まで保持します。
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+1 つの REFRESH ページが応答前に収集する一致エントリ数を設定します。ページは常にキャッシュのルートから走査を始めるため、多数のエントリにまたがるセレクタは複数ページに分割され、未完了のディレクトリはページごとに再走査されます。バッチを大きくするとページ数と再走査が減る一方、リクエストあたりのメモリ使用量は増えます。
