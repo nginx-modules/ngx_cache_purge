@@ -823,12 +823,14 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     stop_server($s);
     $s = start_server('strict', strict => 1, throttle => '60s');
     my $restarted = namespace_view($s, 'objects');
-    isnt($restarted->{epoch}, $view->{epoch}, 'full restart creates a new epoch');
-    is($restarted->{baseline}, '0000000000000001', 'full restart starts from a fresh baseline');
+    is($restarted->{epoch}, $view->{epoch}, 'graceful restart reuses the persisted epoch');
+    is($restarted->{baseline}, $view->{baseline}, 'graceful restart restores the baseline');
+    is($restarted->{serial}, $view->{serial}, 'graceful restart restores the serial');
     my @carried = cached_entries($s);
     is_deeply([ grep { classify_generation_file($_->[1], $restarted) ne 'stale' } @carried ], [],
-              'every file of the previous epoch is certainly stale after a restart');
-    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'full restart never reuses a persisted epoch');
+              'every file of the previous generation is certainly stale after a restart');
+    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'a restart does not resurrect an invalidated entry');
     stop_server($s);
 };
 
@@ -1873,6 +1875,67 @@ subtest 'capacity, duplicate tasks and reload ownership' => sub {
     drain($s);
     ok(!-e $normal, 'accepted task drained after background disable');
     stop_server($s);
+};
+
+# A graceful shutdown commits the namespace state; a later start must reuse
+# the epoch and the rule set.  Anything already invalidated has to stay
+# unreachable, so the check runs once with a live entry and once with one
+# that was invalidated before the restart.
+subtest 'graceful restart keeps live generations and rejects stale ones' => sub {
+    my $state = sub { "$_[0]{root}/purge-state/objects.state" };
+
+    my $s = start_server('restart-state', workers => 1, strict => 1);
+    warm($s);
+    await(sub { (request($s, '/cache/item')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'second entry did not warm');
+    stop_server($s);
+    ok(-e $state->($s), 'shutdown committed the namespace state');
+
+    my $live = start_server('restart-state', workers => 1, strict => 1);
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'an untouched entry survives a graceful restart');
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'the restored generation keeps matching');
+
+    # Publish an invalidation and shut down without reading the key again:
+    # a later GET would repopulate the new generation and hide a resurrection.
+    is(request($live, '/cache/warm', 'PURGE')->{status}, 200,
+       'invalidation is accepted before the second shutdown');
+    stop_server($live);
+
+    my $stale = start_server('restart-state', workers => 1, strict => 1);
+    is(request($stale, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'restart does not resurrect an invalidated entry');
+    is(request($stale, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'restart still serves the entries that were never invalidated');
+    stop_server($stale);
+};
+
+# Reject an existing snapshot when the previous run did not reach its
+# shutdown hook.  The snapshot has to be committed first, otherwise the
+# final MISS would pass even without the marker check.
+subtest 'an unclean shutdown rotates the epoch' => sub {
+    my $state = sub { "$_[0]{root}/purge-state/objects.state" };
+    my $marker = sub { "$_[0]{root}/purge-state/objects.running" };
+
+    my $seed = start_server('restart-unclean', workers => 1, strict => 1);
+    warm($seed);
+    stop_server($seed);
+    ok(-e $state->($seed), 'a snapshot exists before the unclean run');
+
+    my $s = start_server('restart-unclean', workers => 1, strict => 1);
+    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'the seed entry is restored');
+    ok(-e $marker->($s), 'the running marker is present while serving');
+    kill 'KILL', -$s->{pid};
+    waitpid($s->{pid}, 0);
+    delete $s->{pid};
+    ok(-e $marker->($s), 'a killed run leaves its marker behind');
+
+    my $again = start_server('restart-unclean', workers => 1, strict => 1);
+    is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'entry from the killed run is not reused');
+    stop_server($again);
 };
 
 done_testing();

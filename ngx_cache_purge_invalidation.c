@@ -24,6 +24,18 @@ struct ngx_http_cache_purge_generation_s {
     ngx_http_cache_purge_rule_t  *exact, *prefix, *allocated, *tail, *garbage;
 };
 
+/*
+ * Namespace state that outlives a worker: the epoch, the generation
+ * counters and the rule trie.  Losing them on a full restart resets every
+ * key to the baseline generation, which makes all existing cache files
+ * unreachable.  Persisting them keeps the reachable set identical while
+ * still leaving invalidated files unreachable, because their generation
+ * stays below the restored value.
+ *
+ * The snapshot is written on graceful shutdown only.  A run that does not
+ * reach the shutdown hook leaves the "running" marker behind, and the next
+ * start rotates the epoch instead of trusting a stale snapshot.
+ */
 typedef struct ngx_http_cache_purge_snapshot_s ngx_http_cache_purge_snapshot_t;
 struct ngx_http_cache_purge_snapshot_s {
     ngx_http_cache_purge_snapshot_t   *next;
@@ -36,6 +48,781 @@ typedef struct {
     ngx_http_cache_purge_snapshot_t  *snapshots;
     ngx_flag_t                        evaluating;
 } ngx_http_cache_purge_generation_request_t;
+
+
+/* -- persisted namespace state ----------------------------------------- */
+
+/*
+ * Namespace state that outlives a worker: the epoch, the generation
+ * counters and the rule trie.  Losing them on a full restart resets every
+ * key to the baseline generation, which makes all existing cache files
+ * unreachable.  Persisting them keeps the reachable set identical while
+ * still leaving invalidated files unreachable, because their generation
+ * stays below the restored value.
+ *
+ * The snapshot is written on graceful shutdown only.  A run that does not
+ * reach the shutdown hook leaves the running marker behind, and the next
+ * start rotates the epoch instead of trusting a stale snapshot.
+ *
+ * Every artifact is namespace-specific: a state directory may be shared by
+ * several namespaces, and they must not overwrite each other.
+ */
+#define NGX_CACHE_PURGE_STATE_SUFFIX   "state"
+#define NGX_CACHE_PURGE_TMP_SUFFIX     "tmp"
+#define NGX_CACHE_PURGE_RUNNING_SUFFIX "running"
+#define NGX_CACHE_PURGE_STATE_MAGIC    0x4e435047u  /* "NCPG" */
+#define NGX_CACHE_PURGE_STATE_VERSION  2
+#define NGX_CACHE_PURGE_NAMESPACE_VERSION  2
+#define NGX_CACHE_PURGE_STATE_MAX      (64 * 1024 * 1024)
+#define NGX_CACHE_PURGE_STATE_HEADER   64
+#define NGX_CACHE_PURGE_STATE_CRC      56
+
+typedef ngx_int_t (*ngx_http_cache_purge_rule_visit_pt)(void *ctx,
+    const u_char *key, size_t len, uint64_t generation);
+
+typedef struct {
+    ngx_http_cache_purge_rule_t  *node;
+    size_t                        depth;
+} ngx_http_cache_purge_rule_frame_t;
+
+typedef struct {
+    u_char      *p;
+    size_t       size;
+    ngx_uint_t   count;
+    u_char       kind;
+} ngx_http_cache_purge_rule_write_t;
+
+
+static u_char *
+ngx_http_cache_purge_put32(u_char *p, uint32_t v)
+{
+    *p++ = (u_char) (v >> 24);
+    *p++ = (u_char) (v >> 16);
+    *p++ = (u_char) (v >> 8);
+    *p++ = (u_char) v;
+    return p;
+}
+
+
+static u_char *
+ngx_http_cache_purge_put64(u_char *p, uint64_t v)
+{
+    p = ngx_http_cache_purge_put32(p, (uint32_t) (v >> 32));
+    return ngx_http_cache_purge_put32(p, (uint32_t) v);
+}
+
+
+static uint32_t
+ngx_http_cache_purge_get32(const u_char *p)
+{
+    return ((uint32_t) p[0] << 24) | ((uint32_t) p[1] << 16)
+           | ((uint32_t) p[2] << 8) | (uint32_t) p[3];
+}
+
+
+static uint64_t
+ngx_http_cache_purge_get64(const u_char *p)
+{
+    return ((uint64_t) ngx_http_cache_purge_get32(p) << 32)
+           | ngx_http_cache_purge_get32(p + 4);
+}
+
+
+/*
+ * Iterative pre-order walk over one rule trie.  An explicit frame array
+ * keeps the stack bounded by the longest stored selector, which can reach
+ * the logical key limit, so recursion is not safe here.
+ */
+static ngx_int_t
+ngx_http_cache_purge_rule_walk(ngx_http_cache_purge_generation_t *state,
+    ngx_http_cache_purge_rule_t *root, u_char *path, size_t capacity,
+    ngx_http_cache_purge_rule_visit_pt visit, void *ctx, ngx_log_t *log)
+{
+    ngx_http_cache_purge_rule_frame_t  *frames, *frame;
+    ngx_http_cache_purge_rule_t        *node;
+    size_t                              depth, sp;
+    ngx_int_t                           rc;
+
+    if (root == NULL) {
+        return NGX_OK;
+    }
+
+    frames = ngx_alloc((capacity + 2) * sizeof(*frames), log);
+    if (frames == NULL) {
+        return NGX_ERROR;
+    }
+
+    frames[0].node = root;
+    frames[0].depth = 0;
+    sp = 1;
+
+    for ( ;; ) {
+        if (sp == 0) {
+            break;
+        }
+
+        frame = &frames[sp - 1];
+        node = frame->node;
+
+        if (node == NULL) {
+            sp--;
+            continue;
+        }
+
+        frame->node = node->sibling;
+        depth = frame->depth;
+
+        if (depth >= capacity) {
+            ngx_free(frames);
+            return NGX_ERROR;
+        }
+
+        path[depth] = node->byte;
+
+        if (node->generation > state->baseline) {
+            rc = visit(ctx, path, depth + 1, node->generation);
+            if (rc != NGX_OK) {
+                ngx_free(frames);
+                return rc;
+            }
+        }
+
+        if (node->child != NULL) {
+            if (sp + 1 >= capacity + 2) {
+                ngx_free(frames);
+                return NGX_ERROR;
+            }
+            frames[sp].node = node->child;
+            frames[sp].depth = depth + 1;
+            sp++;
+        }
+    }
+
+    ngx_free(frames);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_rule_write(void *data, const u_char *key, size_t len,
+    uint64_t generation)
+{
+    ngx_http_cache_purge_rule_write_t *ctx = data;
+
+    ctx->size += 1 + 2 + 8 + len;
+    ctx->count++;
+
+    if (ctx->p == NULL) {
+        return NGX_OK;
+    }
+
+    *ctx->p++ = ctx->kind;
+    *ctx->p++ = (u_char) (len >> 8);
+    *ctx->p++ = (u_char) len;
+    ctx->p = ngx_http_cache_purge_put64(ctx->p, generation);
+    ngx_memcpy(ctx->p, key, len);
+    ctx->p += len;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_state_path(ngx_http_cache_purge_namespace_t *ns,
+    const char *suffix, u_char *buf, size_t size)
+{
+    u_char  *p;
+
+    p = ngx_snprintf(buf, size, "%V/%V.%s", &ns->state_path->name,
+                     &ns->name, suffix);
+    if (p == buf + size) {
+        return NGX_ERROR;
+    }
+
+    *p = '\0';
+    return NGX_OK;
+}
+
+
+/*
+ * A rename or a marker creation is only durable once the directory entry
+ * itself is on disk.  Without this sync a power loss can leave an older
+ * snapshot with no running marker, which would restore stale rules.
+ */
+static ngx_int_t
+ngx_http_cache_purge_sync_state_dir(ngx_http_cache_purge_namespace_t *ns)
+{
+#if (NGX_WIN32)
+    (void) ns;
+    return NGX_OK;
+#else
+    u_char    path[NGX_MAX_PATH + 1];
+    ngx_fd_t  fd;
+    ngx_int_t rc;
+
+    if (ns->state_path->name.len + 1 > sizeof(path)) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(path, ns->state_path->name.data, ns->state_path->name.len);
+    path[ns->state_path->name.len] = '\0';
+
+    fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot open state directory \"%s\"",
+                      path);
+        return NGX_ERROR;
+    }
+
+    rc = fsync(fd) == -1 ? NGX_ERROR : NGX_OK;
+
+    if (ngx_close_file(fd) == NGX_FILE_ERROR) {
+        rc = NGX_ERROR;
+    }
+
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot sync state directory \"%s\"",
+                      path);
+    }
+
+    return rc;
+#endif
+}
+
+
+void
+ngx_http_cache_purge_generation_clear_running(ngx_http_cache_purge_namespace_t *ns,
+    ngx_pid_t owner)
+{
+    u_char    path[NGX_MAX_PATH + 1];
+    u_char    buf[32];
+    ssize_t   n;
+    ngx_fd_t  fd;
+    long      pid;
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
+                                        path, sizeof(path) - 1)
+        != NGX_OK)
+    {
+        return;
+    }
+
+    fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        return;
+    }
+
+    n = ngx_read_fd(fd, buf, sizeof(buf) - 1);
+    (void) ngx_close_file(fd);
+
+    if (n <= 0) {
+        return;
+    }
+
+    buf[n] = '\0';
+    pid = strtol((char *) buf, NULL, 10);
+
+    /* An old master must not clear the marker of its successor. */
+    if (pid != (long) owner) {
+        return;
+    }
+
+    (void) ngx_delete_file(path);
+    (void) ngx_http_cache_purge_sync_state_dir(ns);
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_create_running(ngx_http_cache_purge_namespace_t *ns)
+{
+    u_char    path[NGX_MAX_PATH + 1];
+    u_char    buf[32];
+    u_char   *p;
+    ngx_fd_t  fd;
+    ssize_t   n;
+    size_t    len;
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
+                                        path, sizeof(path) - 1)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    fd = ngx_open_file(path, NGX_FILE_WRONLY|NGX_FILE_TRUNCATE,
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot create \"%s\"", path);
+        return NGX_ERROR;
+    }
+
+    p = ngx_snprintf(buf, sizeof(buf) - 1, "%P", ngx_pid);
+    len = p - buf;
+
+    n = ngx_write_fd(fd, buf, len);
+
+    if (n != (ssize_t) len) {
+        (void) ngx_close_file(fd);
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot write \"%s\"", path);
+        return NGX_ERROR;
+    }
+
+#if !(NGX_WIN32)
+    if (fsync(fd) == -1) {
+        (void) ngx_close_file(fd);
+        return NGX_ERROR;
+    }
+#endif
+
+    if (ngx_close_file(fd) == NGX_FILE_ERROR) {
+        return NGX_ERROR;
+    }
+
+    return ngx_http_cache_purge_sync_state_dir(ns);
+}
+
+
+/*
+ * Only ENOENT means the marker is absent.  Any other open error may be
+ * hiding a marker that exists, so the caller must not trust the snapshot.
+ */
+static ngx_int_t
+ngx_http_cache_purge_running_exists(ngx_http_cache_purge_namespace_t *ns)
+{
+    u_char    path[NGX_MAX_PATH + 1];
+    ngx_fd_t  fd;
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
+                                        path, sizeof(path) - 1)
+        != NGX_OK)
+    {
+        return 1;
+    }
+
+    fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        return ngx_errno == NGX_ENOENT ? 0 : 1;
+    }
+
+    (void) ngx_close_file(fd);
+    return 1;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_insert_rule(ngx_slab_pool_t *slab,
+    ngx_http_cache_purge_generation_t *state, ngx_str_t *key,
+    ngx_flag_t prefix, uint64_t generation)
+{
+    ngx_http_cache_purge_rule_t  *node, **link;
+    size_t                        i;
+    u_char                        c;
+
+    if (key->len == 0) {
+        return NGX_DECLINED;
+    }
+
+    link = prefix ? &state->prefix : &state->exact;
+    node = NULL;
+
+    for (i = 0; i < key->len; i++) {
+        c = prefix ? ngx_tolower(key->data[i]) : key->data[i];
+
+        while (*link != NULL && (*link)->byte != c) {
+            link = &(*link)->sibling;
+        }
+
+        if (*link == NULL) {
+            node = ngx_slab_calloc_locked(slab, sizeof(*node));
+            if (node == NULL) {
+                return NGX_ERROR;
+            }
+            node->byte = c;
+            node->allocated = state->allocated;
+            state->allocated = node;
+            if (state->tail == NULL) {
+                state->tail = node;
+            }
+            *link = node;
+        }
+
+        node = *link;
+        link = &node->child;
+    }
+
+    if (node == NULL) {
+        return NGX_DECLINED;
+    }
+
+    node->generation = generation;
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
+    ngx_slab_pool_t *slab)
+{
+    ngx_http_cache_purge_generation_t *state = ns->shared;
+    ngx_file_info_t                    fi;
+    ngx_fd_t                           fd;
+    ngx_str_t                          key;
+    uint64_t                           baseline, serial, generation;
+    uint32_t                           count, kind, crc, stored;
+    off_t                              file_size;
+    size_t                             len, ns_len, offset;
+    u_char                             path[NGX_MAX_PATH + 1];
+    u_char                            *buf, *p, *end;
+    ngx_int_t                          rc;
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_STATE_SUFFIX,
+                                        path, sizeof(path) - 1)
+        != NGX_OK)
+    {
+        return NGX_DECLINED;
+    }
+
+    if (ngx_file_info(path, &fi) == NGX_FILE_ERROR) {
+        return NGX_DECLINED;
+    }
+
+    file_size = ngx_file_size(&fi);
+
+    if (file_size < NGX_CACHE_PURGE_STATE_HEADER
+        || file_size > NGX_CACHE_PURGE_STATE_MAX)
+    {
+        return NGX_DECLINED;
+    }
+
+    buf = ngx_alloc((size_t) file_size, ns->pool->log);
+    if (buf == NULL) {
+        return NGX_DECLINED;
+    }
+
+    fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    offset = 0;
+    while (offset < (size_t) file_size) {
+        ssize_t n = ngx_read_fd(fd, buf + offset,
+                                (size_t) file_size - offset);
+        if (n <= 0) {
+            break;
+        }
+        offset += (size_t) n;
+    }
+
+    (void) ngx_close_file(fd);
+
+    if (offset != (size_t) file_size) {
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    if (ngx_http_cache_purge_get32(buf) != NGX_CACHE_PURGE_STATE_MAGIC
+        || ngx_http_cache_purge_get32(buf + 4)
+           != NGX_CACHE_PURGE_STATE_VERSION)
+    {
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    ns_len = ngx_http_cache_purge_get32(buf + 8);
+    count = ngx_http_cache_purge_get32(buf + 12);
+    baseline = ngx_http_cache_purge_get64(buf + 40);
+    serial = ngx_http_cache_purge_get64(buf + 48);
+    stored = ngx_http_cache_purge_get32(buf + NGX_CACHE_PURGE_STATE_CRC);
+
+    if (ns_len != ns->name.len
+        || NGX_CACHE_PURGE_STATE_HEADER + ns_len > (size_t) file_size
+        || ngx_memcmp(buf + NGX_CACHE_PURGE_STATE_HEADER, ns->name.data,
+                      ns_len)
+           != 0
+        || baseline == 0 || serial < baseline)
+    {
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    /* Recompute with the checksum field cleared, over the whole image. */
+    (void) ngx_http_cache_purge_put32(buf + NGX_CACHE_PURGE_STATE_CRC, 0);
+    ngx_crc32_init(crc);
+    (void) ngx_crc32_update(&crc, buf, (size_t) file_size);
+    ngx_crc32_final(crc);
+
+    if (crc != stored) {
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    state->baseline = baseline;
+    state->serial = serial;
+    ngx_memcpy(state->epoch, buf + 24, 10);
+
+    p = buf + NGX_CACHE_PURGE_STATE_HEADER + ns_len;
+    end = buf + (size_t) file_size;
+    rc = NGX_OK;
+
+    ngx_shmtx_lock(&slab->mutex);
+
+    for ( ;; ) {
+        if (count-- == 0) {
+            break;
+        }
+
+        if (p + 1 + 2 + 8 > end) {
+            rc = NGX_DECLINED;
+            break;
+        }
+
+        kind = *p++;
+        len = ((size_t) p[0] << 8) | (size_t) p[1];
+        p += 2;
+        generation = ngx_http_cache_purge_get64(p);
+        p += 8;
+
+        if (len == 0 || p + len > end || generation == 0) {
+            rc = NGX_DECLINED;
+            break;
+        }
+
+        key.data = p;
+        key.len = len;
+        p += len;
+
+        if (ngx_http_cache_purge_insert_rule(slab, state, &key,
+                                             kind == 1, generation)
+            != NGX_OK)
+        {
+            rc = NGX_DECLINED;
+            break;
+        }
+    }
+
+    if (rc == NGX_OK && p != end) {
+        rc = NGX_DECLINED;
+    }
+
+    ngx_shmtx_unlock(&slab->mutex);
+
+    if (rc != NGX_OK) {
+        /* Never leave a half-restored trie behind. */
+        if (state->allocated != NULL) {
+            state->tail->allocated = state->garbage;
+            state->garbage = state->allocated;
+            state->allocated = state->tail = NULL;
+        }
+        state->exact = state->prefix = NULL;
+        state->baseline = 1;
+        state->serial = 1;
+        ngx_memzero(state->epoch, 10);
+        ngx_free(buf);
+        return NGX_DECLINED;
+    }
+
+    ngx_free(buf);
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
+{
+    ngx_http_cache_purge_generation_t *state;
+    ngx_http_cache_purge_rule_write_t  sizing, writing;
+    ngx_slab_pool_t                   *slab;
+    uint64_t                           serial;
+    uint32_t                           crc;
+    size_t                             total, written;
+    u_char                             path[NGX_MAX_PATH + 1];
+    u_char                             tmp[NGX_MAX_PATH + 1];
+    u_char                             keybuf[NGX_CACHE_PURGE_LOGICAL_KEY_MAX + 1];
+    u_char                            *buf, *p;
+    ngx_fd_t                           fd;
+    ngx_int_t                          rc;
+    ssize_t                            n;
+
+    if (ns->shared == NULL) {
+        return NGX_OK;
+    }
+
+    state = ns->shared;
+    slab = (ngx_slab_pool_t *) ns->zone->shm.addr;
+
+    ngx_shmtx_lock(&slab->mutex);
+    serial = state->serial;
+
+    ngx_memzero(&sizing, sizeof(sizing));
+    sizing.kind = 0;
+
+    rc = ngx_http_cache_purge_rule_walk(state, state->exact, keybuf,
+                                        NGX_CACHE_PURGE_LOGICAL_KEY_MAX,
+                                        ngx_http_cache_purge_rule_write,
+                                        &sizing, ns->pool->log);
+    if (rc == NGX_OK) {
+        sizing.kind = 1;
+        rc = ngx_http_cache_purge_rule_walk(state, state->prefix, keybuf,
+                                            NGX_CACHE_PURGE_LOGICAL_KEY_MAX,
+                                            ngx_http_cache_purge_rule_write,
+                                            &sizing, ns->pool->log);
+    }
+
+    if (rc != NGX_OK) {
+        ngx_shmtx_unlock(&slab->mutex);
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, 0,
+                      "ngx_cache_purge: cannot size the namespace snapshot "
+                      "for \"%V\"", &ns->name);
+        return NGX_ERROR;
+    }
+
+    total = NGX_CACHE_PURGE_STATE_HEADER + ns->name.len + sizing.size;
+
+    if (total > NGX_CACHE_PURGE_STATE_MAX) {
+        ngx_shmtx_unlock(&slab->mutex);
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, 0,
+                      "ngx_cache_purge: namespace snapshot for \"%V\" is %uz "
+                      "bytes, above the %uz byte limit; keeping the previous "
+                      "snapshot", &ns->name, total,
+                      (size_t) NGX_CACHE_PURGE_STATE_MAX);
+        return NGX_ERROR;
+    }
+
+    buf = ngx_alloc(total, ns->pool->log);
+    if (buf == NULL) {
+        ngx_shmtx_unlock(&slab->mutex);
+        return NGX_ERROR;
+    }
+
+    p = ngx_http_cache_purge_put32(buf, NGX_CACHE_PURGE_STATE_MAGIC);
+    p = ngx_http_cache_purge_put32(p, NGX_CACHE_PURGE_STATE_VERSION);
+    p = ngx_http_cache_purge_put32(p, (uint32_t) ns->name.len);
+    p = ngx_http_cache_purge_put32(p, sizing.count);
+    p = ngx_http_cache_purge_put32(p, 0);
+    p = ngx_http_cache_purge_put32(p, 0);
+    ngx_memcpy(p, state->epoch, 10);
+    p += 10;
+    ngx_memzero(p, 6);
+    p += 6;
+    p = ngx_http_cache_purge_put64(p, state->baseline);
+    p = ngx_http_cache_purge_put64(p, state->serial);
+    p = ngx_http_cache_purge_put32(p, 0);   /* checksum, filled below */
+    p = ngx_http_cache_purge_put32(p, 0);
+    ngx_memcpy(p, ns->name.data, ns->name.len);
+    p += ns->name.len;
+
+    ngx_memzero(&writing, sizeof(writing));
+    writing.p = p;
+
+    rc = ngx_http_cache_purge_rule_walk(state, state->exact, keybuf,
+                                        NGX_CACHE_PURGE_LOGICAL_KEY_MAX,
+                                        ngx_http_cache_purge_rule_write,
+                                        &writing, ns->pool->log);
+    if (rc == NGX_OK) {
+        writing.kind = 1;
+        rc = ngx_http_cache_purge_rule_walk(state, state->prefix, keybuf,
+                                            NGX_CACHE_PURGE_LOGICAL_KEY_MAX,
+                                            ngx_http_cache_purge_rule_write,
+                                            &writing, ns->pool->log);
+    }
+
+    ngx_shmtx_unlock(&slab->mutex);
+
+    if (rc != NGX_OK || (size_t) (writing.p - buf) != total) {
+        ngx_free(buf);
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, 0,
+                      "ngx_cache_purge: cannot serialize the namespace "
+                      "snapshot for \"%V\"", &ns->name);
+        return NGX_ERROR;
+    }
+
+    ngx_crc32_init(crc);
+    (void) ngx_crc32_update(&crc, buf, (size_t) (writing.p - buf));
+    ngx_crc32_final(crc);
+    (void) ngx_http_cache_purge_put32(buf + NGX_CACHE_PURGE_STATE_CRC, crc);
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_STATE_SUFFIX,
+                                        path, sizeof(path) - 1)
+        != NGX_OK
+        || ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_TMP_SUFFIX,
+                                           tmp, sizeof(tmp) - 1)
+        != NGX_OK)
+    {
+        ngx_free(buf);
+        return NGX_ERROR;
+    }
+
+    fd = ngx_open_file(tmp, NGX_FILE_WRONLY|NGX_FILE_TRUNCATE,
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot create \"%s\"", tmp);
+        ngx_free(buf);
+        return NGX_ERROR;
+    }
+
+    written = 0;
+    rc = NGX_OK;
+
+    while (written < total) {
+        n = ngx_write_fd(fd, buf + written, total - written);
+        if (n <= 0) {
+            rc = NGX_ERROR;
+            break;
+        }
+        written += (size_t) n;
+    }
+
+    if (rc == NGX_OK) {
+#if !(NGX_WIN32)
+        if (fsync(fd) == -1) {
+            rc = NGX_ERROR;
+        }
+#endif
+    }
+
+    if (ngx_close_file(fd) == NGX_FILE_ERROR) {
+        rc = NGX_ERROR;
+    }
+
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot write \"%s\"", tmp);
+        (void) ngx_delete_file(tmp);
+        ngx_free(buf);
+        return NGX_ERROR;
+    }
+
+    ngx_free(buf);
+
+    ngx_shmtx_lock(&slab->mutex);
+
+    if (state->serial != serial) {
+        /* A newer invalidation owns the snapshot. */
+        ngx_shmtx_unlock(&slab->mutex);
+        (void) ngx_delete_file(tmp);
+        return NGX_OK;
+    }
+
+    rc = ngx_rename_file(tmp, path) == 0 ? NGX_OK : NGX_ERROR;
+
+    ngx_shmtx_unlock(&slab->mutex);
+
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot replace \"%s\"", path);
+        (void) ngx_delete_file(tmp);
+        return NGX_ERROR;
+    }
+
+    return ngx_http_cache_purge_sync_state_dir(ns);
+}
 
 
 static ngx_int_t
@@ -56,11 +843,12 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
                           "shared state; restart nginx", &ns->name);
             return NGX_ERROR;
         }
-        if (state->version != 1) {
+        if (state->version != NGX_CACHE_PURGE_NAMESPACE_VERSION) {
             ngx_log_error(NGX_LOG_EMERG, zone->shm.log, 0,
                           "ngx_cache_purge: namespace \"%V\" has shared state "
-                          "version %ui, expected 1; restart nginx",
-                          &ns->name, state->version);
+                          "version %ui, expected %d; restart nginx",
+                          &ns->name, state->version,
+                          NGX_CACHE_PURGE_NAMESPACE_VERSION);
             return NGX_ERROR;
         }
         if (state->state_path.len != ns->state_path->name.len
@@ -81,12 +869,35 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
     if (state == NULL) {
         return NGX_ERROR;
     }
-    state->version = 1;
+    state->version = NGX_CACHE_PURGE_NAMESPACE_VERSION;
     state->serial = state->baseline = 1;
     state->state_path.len = ns->state_path->name.len;
     state->state_path.data = (u_char *) (state + 1);
     ngx_memcpy(state->state_path.data, ns->state_path->name.data,
                state->state_path.len);
+
+    slab->data = state;
+    ns->shared = state;
+
+    /*
+     * Restore only when the previous run reached its shutdown hook.  A
+     * leftover running marker means invalidation rules may not have been
+     * committed, so the epoch must rotate instead: a file whose rule was
+     * lost would otherwise become reachable again.
+     */
+    if (!ngx_http_cache_purge_running_exists(ns)
+        && ngx_http_cache_purge_generation_restore(ns, slab) == NGX_OK)
+    {
+        /*
+         * The marker must exist before any invalidation is accepted;
+         * otherwise a later crash would let the next start trust this
+         * snapshot and resurrect invalidated entries.
+         */
+        if (ngx_http_cache_purge_create_running(ns) != NGX_OK) {
+            return NGX_ERROR;
+        }
+        return NGX_OK;
+    }
 
     /* Persistent O_EXCL markers prevent epoch reuse after a full restart.
      * The configured state directory must be retained with its cache. */
@@ -100,8 +911,10 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
     }
     ngx_memcpy(state->epoch, file.name.data + file.name.len - 10, 10);
     ngx_pool_run_cleanup_file(ns->pool, file.fd);
-    slab->data = state;
-    ns->shared = state;
+
+    if (ngx_http_cache_purge_create_running(ns) != NGX_OK) {
+        return NGX_ERROR;
+    }
     return NGX_OK;
 }
 

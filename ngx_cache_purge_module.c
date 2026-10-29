@@ -221,6 +221,47 @@ static ngx_http_module_t  ngx_http_cache_purge_module_ctx = {
     ngx_http_cache_purge_merge_loc_conf     /* merge loc conf    */
 };
 
+/*
+ * A planned shutdown is the only point where the namespace rules can be
+ * committed without adding file I/O to the invalidation path.  When the
+ * commit fails, every running marker is kept so the next start rotates the
+ * epoch rather than trusting a partially written snapshot.
+ */
+static void
+ngx_http_cache_purge_exit_master(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t   *cmcf;
+    ngx_http_cache_purge_namespace_t  **namespaces;
+    ngx_uint_t                          i;
+    ngx_flag_t                          failed;
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL || cmcf->namespaces.nelts == 0) {
+        return;
+    }
+
+    namespaces = cmcf->namespaces.elts;
+    failed = 0;
+
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        if (ngx_http_cache_purge_generation_persist(namespaces[i])
+            != NGX_OK)
+        {
+            failed = 1;
+        }
+    }
+
+    if (failed) {
+        return;
+    }
+
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        ngx_http_cache_purge_generation_clear_running(namespaces[i], ngx_pid);
+    }
+}
+
+
 ngx_module_t  ngx_http_cache_purge_module = {
     NGX_MODULE_V1,
     &ngx_http_cache_purge_module_ctx,
@@ -232,7 +273,7 @@ ngx_module_t  ngx_http_cache_purge_module = {
     NULL,                                   /* init thread  */
     NULL,                                   /* exit thread  */
     ngx_http_cache_purge_exit_worker,       /* exit process */
-    NULL,                                   /* exit master  */
+    ngx_http_cache_purge_exit_master,       /* exit master  */
     NGX_MODULE_V1_PADDING
 };
 
