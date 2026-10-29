@@ -133,6 +133,12 @@ static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
       NGX_HTTP_LOC_CONF_OFFSET,
       offsetof(ngx_http_cache_purge_loc_conf_t, refresh_timeout), NULL },
 
+    { ngx_string("cache_purge_refresh_batch"),
+      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_num_slot,
+      NGX_HTTP_LOC_CONF_OFFSET,
+      offsetof(ngx_http_cache_purge_loc_conf_t, refresh_batch), NULL },
+
     { ngx_string("proxy_cache_purge"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_1MORE,
       ngx_http_proxy_cache_purge_conf,
@@ -1601,6 +1607,7 @@ ngx_http_cache_purge_create_loc_conf(ngx_conf_t *cf)
 
 # if (NGX_HTTP_PROXY)
     conf->refresh_timeout = NGX_CONF_UNSET_MSEC;
+    conf->refresh_batch = NGX_CONF_UNSET_UINT;
 # endif
 
     /*
@@ -1676,6 +1683,8 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
         conf->refresh             = prev->refresh;
     }
     ngx_conf_merge_msec_value(conf->refresh_timeout, prev->refresh_timeout, 10000);
+    ngx_conf_merge_uint_value(conf->refresh_batch, prev->refresh_batch,
+                              NGX_CACHE_PURGE_REFRESH_BATCH);
     if (conf->refresh_location.data == NULL) {
         conf->refresh_location = prev->refresh_location;
         conf->refresh_prefix = prev->refresh_prefix;
@@ -1699,6 +1708,16 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
                           "ngx_cache_purge: \"cache_purge_refresh_timeout\" "
                           "%M ms is out of range, expected 1 to 3600000 ms",
                           conf->refresh_timeout);
+        return NGX_CONF_ERROR;
+    }
+    if (conf->refresh_batch == 0
+        || conf->refresh_batch > NGX_CACHE_PURGE_REFRESH_BATCH_MAX)
+    {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                          "ngx_cache_purge: \"cache_purge_refresh_batch\" "
+                          "%ui is out of range, expected 1 to %d",
+                          conf->refresh_batch,
+                          NGX_CACHE_PURGE_REFRESH_BATCH_MAX);
         return NGX_CONF_ERROR;
     }
 # endif

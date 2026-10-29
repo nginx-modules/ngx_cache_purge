@@ -320,3 +320,25 @@ Sets how long a page may keep starting new scan/probe work, including time spent
 An active HEAD still finishes under `proxy_connect_timeout`, `proxy_send_timeout` and `proxy_read_timeout`; set those explicitly in the profile. This directive is not a hard response deadline and cannot interrupt a filesystem syscall.
 
 Client disconnect and graceful shutdown stop further dispatch. If an I/O thread is still running, its storage remains allocated until NGINX reports completion.
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Sets how many matching entries one REFRESH page may collect before it replies.
+
+A page always starts its scan at the cache root, so a selector that spans many
+entries is delivered through several pages and the pending directories are
+walked again on each one. A larger batch lowers the number of pages, and
+therefore the amount of repeated traversal, for the same selector.
+
+The trade-off is per-request memory: every collected entry reserves a fixed
+native key buffer, so the allocation grows linearly with the batch size. Keep
+the default for small or interactive selectors and raise it for unattended
+whole-prefix refreshes over large cache trees, where fewer and longer pages
+cost less than many short ones.
