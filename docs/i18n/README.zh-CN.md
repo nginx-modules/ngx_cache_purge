@@ -10,8 +10,8 @@
 - [安装](#installation)
 - [使用方法](#usage)
   - [部分键清理](#partial-key-purge)
-  - [世代失效](#generation-invalidation)
-  - **REFRESH** — [向源站检查缓存内容（REFRESH）](#conditional-refresh)
+  - [按 generation 失效](#generation-invalidation)
+  - **[REFRESH](#conditional-refresh)** — 向源站检查缓存内容
 - [配置示例](#localized-examples)
 - [安全](#security)
 - [迁移](#migration)
@@ -28,26 +28,26 @@
 - **独立清理 location** — 通过 `proxy_cache_purge zone key` 指定正则捕获的键，无需 `proxy_pass`
 - **通配符／部分匹配** — 末尾的 `*` 触发缓存目录遍历并删除匹配条目
 - **`purge_all`** — 用一次请求删除缓存区内的全部条目
-- **后台队列** — 通过有预算限制的事件循环分片或可选的 NGINX 线程池延后遍历；批量大小和暂停时间可配置
+- **后台队列** — 通过有界的事件循环分片或可选的 NGINX 线程池延后遍历；批量大小和暂停时间可配置
 - **Vary 感知清理** — 精确键清理后，删除共享同一键的 gzip、Vary 等文件变体
 - **响应格式** — `json`（默认）、`html`、`xml`、`text`、`none`
 - **命名线程池** — 可继承的线程池选择；不支持线程的构建及 Windows 使用增量回退路径
-- **运行中任务去重** — 遍历期间收到重复请求时，索引中保留一个任务，最多预约一次后续重跑
+- **运行中任务去重** — 遍历期间收到重复请求时，索引中只保留一个任务，并最多安排一次重放
 - **状态监控** — 按缓存提供队列、删除和 HIT/MISS 指标，读取时不获取共享队列互斥锁
-- **世代键** — 对精确键、前缀和命名空间执行失效，无需在 PURGE 请求中进行磁盘 I/O；迟到的旧写入仍不可访问
-- **[向源站检查缓存内容（REFRESH）](#conditional-refresh)**
+- **generation 键** — 对精确键、前缀和命名空间执行失效，无需在 PURGE 请求中进行磁盘 I/O；迟到的旧写入仍不可访问
+- **[REFRESH](#conditional-refresh)** — 向源站检查缓存内容
 
 <a id="compatibility"></a>
 
 ## 兼容性
 
-生产环境请使用仍受维护的 NGINX 版本。主要面向 POSIX/UNIX；Windows 支持为实验性。线程可选。 [NGINX / CI](../../t/TESTING.md#compatibility-matrix).
+生产环境请使用仍受维护的 NGINX 版本。主要面向 POSIX/UNIX；Windows 支持为实验性。线程可选。参见[已测试的版本与平台](../../t/TESTING.md#compatibility-matrix)。
 
 <a id="distribution-packages"></a>
 
 ## 发行版软件包
 
-部分发行版和 ports 项目提供此分支的安装包，但不一定是 v4。安装前请核对软件包版本及 NGINX ABI 兼容性。详情参见[软件包及其来源](../DISTRIBUTIONS.md)。
+部分发行版和 ports 项目提供此分支的安装包，但不一定是 v4。安装前请核对软件包版本及 NGINX ABI 兼容性。详情参见[软件包及其来源](DISTRIBUTIONS.zh-CN.md)。
 
 <a id="installation"></a>
 
@@ -67,7 +67,7 @@ make install
 make modules
 ```
 
-请使用与服务器上安装的 NGINX 版本完全一致的源代码。`--with-compat` 并不保证任意 NGINX 版本或 C 库之间的兼容性。详见[动态模块与发布归档](../BINARY_MODULES.md)（英文）。
+请使用与服务器上安装的 NGINX 版本完全一致的源代码。`--with-compat` 并不保证任意 NGINX 版本或 C 库之间的兼容性。详见[动态模块与发布归档](BINARY_MODULES.zh-CN.md)。
 
 <a id="usage"></a>
 
@@ -79,7 +79,7 @@ make modules
 
 ### 部分键清理
 
-在**求值后的缓存键**末尾添加 `*`，按前缀匹配且不区分大小写。精确键和 Vary 匹配仍区分大小写。物理清理前缀最多 511 字节，不含末尾的 `*`。超长前缀只记录一次日志，并返回 `400 invalid_selector`，不遍历文件。
+在**求值后的缓存键**末尾加 `*` 可按前缀匹配；前缀比较不区分大小写。精确键和 Vary 匹配仍区分大小写。物理清理前缀最多 511 字节，不含末尾的 `*`。超长前缀只记录一次日志，并返回 `400 invalid_selector`，不遍历文件。
 
 启用 `cache_purge_key` 时匹配逻辑表达式，长度上限为 8096 字节（含末尾 `*`）。
 
@@ -93,33 +93,33 @@ PURGE /images/header*
 
 <a id="generation-invalidation"></a>
 
-### 世代失效
+### 按 generation 失效
 
-使用键世代可让 PURGE 完成后的新请求无法命中旧内容，包括稍后才写入的旧响应。文件会另行清理。命名空间共享失效规则；重启时请保留其状态目录。
+每个逻辑键的 `generation` 由命名空间的 `serial` 推导，而不是每个键各自加一：`serial` 在每次失效时递增，匹配的规则取该值，因此先失效 A、再失效 B 时，B 的 generation 可能从 1 跳到 3。单调性只在同一个 `epoch` 内成立。generation 变化后，PURGE 完成后的新请求就无法命中旧内容，包括稍后才写入的旧响应。物理删除随后由后台清理完成。命名空间共享同一套失效规则；其状态目录必须与缓存一起保留。
 
 <a id="conditional-refresh"></a>
 
 ### 向源站检查缓存内容（REFRESH）
 
-REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站表示发送 HEAD 检查。已知商品页面过期时，直接使用 PURGE。REFRESH 不下载新内容，不预热空缓存，也不延长 TTL。 [HTTP / REFRESH](../REFRESH.md).
+REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站发送条件式 HEAD 请求。已知商品页面过期时，直接使用 PURGE。REFRESH 不下载新内容，不预热空缓存，也不延长 TTL。详见 [HTTP / REFRESH 说明](REFRESH.zh-CN.md)。
 
-| origin 原始结果 | 操作／结果 |
+| 源站返回 | 操作／结果 |
 |---|---|
 | `304` | 保留；`kept` |
-| `200`、`404`、`410` | 条件式世代失效并延迟清理；`invalidated` |
+| `200`、`404`、`410` | 递增 generation 并延迟清理；`invalidated` |
 | 其他状态 | 保留；`upstream_status` |
 | 无 origin 状态／传输故障 | 保留；`transport_error` |
 | Vary 元数据 | 不发送 HEAD；`skipped_vary` |
-| 无效映射或配置档 | 保留；`skipped_profile` |
-| 世代已被替换 | 不再次失效；`raced_replaced` |
+| 无效的映射或探测配置 | 保留；`skipped_profile` |
+| generation 已被替换 | 不再次失效；`raced_replaced` |
 | 内部失效／分配失败 | 保留；`invalidation_error` |
-| 页停止前未分派／未完成 | `undispatched`；游标不会越过该项 |
+| 本页停止前仍未分派或未完成的工作 | `undispatched`；游标不会越过该项 |
 
 <a id="localized-examples"></a>
 
 ## 配置示例
 
-完整示例包括使用 REFRESH 的商品目录以及常规 PURGE 配置。 [英文配置示例](../EXAMPLES.md)。
+完整示例包含使用 REFRESH 的商品目录以及常规 PURGE 配置，见[配置示例](EXAMPLES.zh-CN.md)。
 
 
 <a id="choosing-a-mode"></a>
@@ -130,10 +130,10 @@ REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站表示发送 HEA
 |---|---|---|
 | 删除已知过期的条目，并等待删除操作结束 | PURGE，关闭后台队列 | `200 purged` 或 `200 no_match`；错误返回 4xx/5xx |
 | 安排按前缀或全缓存清理 | PURGE，设置 `cache_purge_background_queue on` | `202 accepted`；等待清理期间仍可能返回旧条目 |
-| 防止新请求使用旧内容，包括延迟写入的文件 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`；新请求使用新世代的键，文件随后清理 |
-| 检查源站内容是否变化 | 键世代 + `proxy_cache_refresh` + 内部配置位置 | `200`，附带逐条结果和续页信息；不会预热缓存 |
+| 防止新请求使用旧内容，包括延迟写入的文件 | `cache_purge_namespace` + `cache_purge_key` + PURGE | `200 invalidated`；新请求使用递增后 generation 的键，文件随后清理 |
+| 检查源站内容是否变化 | generation 键 + `proxy_cache_refresh` + 内部探测 location | `200`，附带逐条结果和续页信息；不会预热缓存 |
 
-这些机制可以组合使用：切换世代也会安排文件清理。仅开启后台队列无法防止延迟写入带来的旧内容。参见 [v4 示例](#localized-examples)、[普通 PURGE 示例](#localized-examples)及 [HTTP 响应说明](../HTTP_RESPONSES.md)（英文）。
+这些机制可以组合使用：递增 generation 也会安排文件清理。仅开启后台队列无法防止延迟写入带来的旧内容。参见 [v4 示例](#localized-examples)、[普通 PURGE 示例](#localized-examples) 以及 [HTTP 响应说明](HTTP_RESPONSES.zh-CN.md)。
 
 <details>
 <summary>配置示例 — 7 个示例</summary>
@@ -144,7 +144,7 @@ REFRESH 使用缓存的 ETag 和 Last-Modified，向同一源站表示发送 HEA
 
 此完整示例在本机 8080 端口接收请求，并转发给 8081 端口的应用。应用应在 Host 为 `shop.example.com` 时提供 `/products/42`。请替换应用地址、域名及可写的缓存和状态目录。
 
-`shop.example.com` 是 HTTP Host 域名，不是目录。`/products/42` 是商品 URI。`catalog:` 是固定的缓存键前缀，不是主机名。前缀加上包含查询参数的完整 URI 构成逻辑键，例如 `catalog:/products/42`。REFRESH 配置移除 `catalog:`，向同一应用检查 `/products/42`。
+`shop.example.com` 是 HTTP Host 域名，不是目录。`/products/42` 是商品 URI。`catalog:` 是固定的缓存键前缀，不是主机名。前缀加上包含查询参数的完整 URI 构成逻辑键，例如 `catalog:/products/42`。REFRESH 配置会剥离 `catalog:` 前缀，向同一应用探测 `/products/42`。
 
 ```nginx
 events {}
@@ -209,13 +209,13 @@ curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/42' \
   'http://127.0.0.1:8080/admin/refresh'
 ```
 
-商品已变更时，发送 PURGE。这里 `200 invalidated` 表示新请求不能命中旧世代；下次 GET 会访问应用。
+商品已变更时，发送 PURGE。这里 `200 invalidated` 表示新请求不能命中旧 generation；下次 GET 会访问应用。
 
 ```sh
 curl -i -X PURGE 'http://127.0.0.1:8080/products/42'
 ```
 
-检查所有商品时使用 `catalog:/products/*`。若 `complete: false`，保持选择条件不变，将返回值替换 `<next_cursor>` 后继续。先解决 HTTP 错误，再重试。
+检查所有商品时使用 `catalog:/products/*`。若 `complete: false`，保持选择条件不变，把返回的 `next_cursor` 原样用于下一次请求。先解决 HTTP 错误，再重试。
 
 ```sh
 curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
@@ -229,7 +229,7 @@ curl -i -X REFRESH -H 'X-Cache-Key: catalog:/products/*' \
 
 ### 配置示例
 
-前五个代码块分别是完整的 `nginx.conf` 配置示例，请选择其中一个。最后一个代码块用于在现有 `http` 配置中启用 Vary 处理。NGINX 在本机的 8080 端口接收请求；`catalog_backend` 是上游组名，应用地址为 `127.0.0.1:8081`。`shop.example.com` 是发送给应用的 HTTP Host。部署时请替换这些地址，并使用 NGINX 可写的缓存目录。
+前五个代码块分别是完整的 `nginx.conf` 配置示例，请选择其中一个。最后一个代码块用于在现有 `http` 配置中启用 Vary 处理。NGINX 在本机的 8080 端口接收请求；`catalog_backend` 是 upstream 组名，应用地址为 `127.0.0.1:8081`。`shop.example.com` 是发送给应用的 HTTP Host。部署时请替换这些地址，并使用 NGINX 可写的缓存目录。
 
 <a id="basic--inline-purge-method"></a>
 
@@ -289,7 +289,7 @@ http {
             proxy_cache_key "$host$uri$is_args$args";
         }
 
-        # 从 URI 提取缓存键，并以缓存区/键的形式传入。
+        # 从 URI 中取出缓存键，以「缓存区 + 键」的形式传入。
         # 此 location 无需 proxy_pass 或 proxy_cache。
         location ~ ^/purge(/.*) {
             allow             127.0.0.1;
@@ -431,7 +431,7 @@ http {
 
 ## 迁移
 
-共享内存布局变更需要完整重启。方法／ACL 语法和协议处理器保持可用。v4 默认使用 JSON，响应头和正文提供一致的结果代码，缺失条目返回 `200 no_match`，`cache_purge_legacy_status` 仅产生警告。请依据 [HTTP 响应契约](../HTTP_RESPONSES.md) 更新客户端。队列容量包含已分配任务；过载请求等待接纳。运行中的重复任务可以预约再次遍历。
+共享内存布局变更需要完整重启。方法／ACL 语法和各协议处理器保持可用。v4 默认使用 JSON，响应头和正文提供一致的结果代码，缺失条目返回 `200 no_match`，`cache_purge_legacy_status` 仅产生警告。请依据 [HTTP 响应契约](../HTTP_RESPONSES.md) 更新客户端。队列容量包含已分配的任务；过载时请求会等待准入。运行中的重复任务可以安排一次重放。
 
 <a id="documentation"></a>
 
@@ -440,10 +440,9 @@ http {
 - [指令参考](DIRECTIVES.zh-CN.md)
 - [更多配置示例](#localized-examples)
 - [运行与故障排查](OPERATIONS.zh-CN.md)
-- [HTTP 与 REFRESH 限制（英文）](../REFRESH.md)
+- [HTTP 与 REFRESH 限制](REFRESH.zh-CN.md)
 - [迁移到 v4](MIGRATION.zh-CN.md)
-- [实现架构（英文）](../ARCHITECTURE.md)
-- [测试](OPERATIONS.zh-CN.md#testing)
+- [实现架构](ARCHITECTURE.zh-CN.md)
 - [开发与测试（英文）](../../t/TESTING.md)
 
 <a id="see-also"></a>
