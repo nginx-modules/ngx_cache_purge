@@ -10,6 +10,8 @@ Uma **tarefa** é uma operação com curinga ou `purge_all`. Um **lote** é o n�
 
 Com chaves de geração, uma varredura física por caminho de cache e namespace agrega todas as invalidações aceitas. Páginas REFRESH são operações HTTP separadas, não tarefas da fila de limpeza.
 
+O estado do namespace é gravado no desligamento ordenado, então um reinício planejado reutiliza a época e as regras; uma execução sem o hook de desligamento deixa um marcador e a próxima inicialização troca de época.
+
 | Requisição e configuração | Percurso dos arquivos | Conclusão HTTP |
 |---|---|---|
 | Chave exata legada, com ou sem Vary | Worker da requisição; Vary acrescenta um percurso | Após a operação |

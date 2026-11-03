@@ -97,6 +97,8 @@ Gwiazdka musi kończyć obliczony klucz, nie tylko ścieżkę URI. Uwzględnij p
 
 Generacje kluczy blokują nowym żądaniom dostęp do starej treści po PURGE, także gdy wcześniejsza odpowiedź zostanie zapisana później. Pliki są usuwane osobno. Przestrzeń nazw współdzieli reguły unieważniania; zachowaj jej katalog stanu między restartami.
 
+Stan przestrzeni nazw jest zapisywany przy prawidłowym zamknięciu, więc planowany restart używa tej samej epoki i tych samych reguł unieważniania zamiast startować z pustym cache. Jeśli uruchomienie nie dotarło do hooka zamknięcia, pozostaje znacznik, a następny start zmienia epokę, aby unieważnione wpisy pozostały nieosiągalne.
+
 <a id="conditional-refresh"></a>
 
 ### Sprawdzanie pamięci podręcznej na serwerze źródłowym (REFRESH)

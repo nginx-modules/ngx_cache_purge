@@ -10,6 +10,8 @@
 
 Przy generacjach jedno fizyczne przejście na ścieżkę i przestrzeń nazw scala zaakceptowane invalidacje. Strony REFRESH są osobnymi operacjami HTTP, nie zadaniami kolejki PURGE.
 
+Stan przestrzeni nazw jest zapisywany przy prawidłowym zamknięciu, więc planowany restart używa tej samej epoki i reguł; uruchomienie bez hooka zamknięcia pozostawia znacznik, a następny start zmienia epokę.
+
 | Żądanie i konfiguracja | Przejście plików | Zakończenie HTTP |
 |---|---|---|
 | Historyczny dokładny klucz, z Vary lub bez | Worker żądania; Vary dodaje przejście katalogu | Po operacji |

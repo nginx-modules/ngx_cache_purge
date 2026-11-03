@@ -212,6 +212,34 @@ ngx_http_cache_purge_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 /* -- worker lifecycle --------------------------------------------------- */
 
 
+static void
+ngx_http_cache_purge_set_owner(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t   *cmcf;
+    ngx_http_cache_purge_namespace_t  **namespaces;
+    ngx_uint_t                          i;
+    ngx_pid_t                           owner;
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL || cmcf->namespaces.nelts == 0) {
+        return;
+    }
+
+#if (NGX_WIN32)
+    owner = ngx_pid;
+#else
+    /* A worker's parent is the master that owns this shared memory. */
+    owner = (ngx_process == NGX_PROCESS_SINGLE) ? ngx_pid : getppid();
+#endif
+    namespaces = cmcf->namespaces.elts;
+
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        ngx_http_cache_purge_generation_set_owner(namespaces[i], owner);
+    }
+}
+
+
 ngx_int_t
 ngx_http_cache_purge_init_worker(ngx_cycle_t *cycle)
 {
@@ -230,6 +258,8 @@ ngx_http_cache_purge_init_worker(ngx_cycle_t *cycle)
     {
         return NGX_OK;
     }
+
+    ngx_http_cache_purge_set_owner(cycle);
 
     if (ngx_http_cycle_get_module_main_conf(cycle, ngx_http_core_module)
         == NULL)

@@ -97,6 +97,8 @@ El asterisco debe ser el último byte de la clave evaluada, no solo de la ruta U
 
 Las generaciones de claves impiden que nuevas solicitudes obtengan contenido antiguo después de PURGE, incluso si una respuesta se escribe tarde. Los archivos se eliminan por separado. Un espacio de nombres comparte reglas de invalidación; conserve su directorio de estado entre reinicios.
 
+El estado del espacio de nombres se guarda al apagar ordenadamente, de modo que un reinicio planificado reutiliza la época y las reglas de invalidación en lugar de arrancar en frío. Si una ejecución no llega al hook de apagado, deja un marcador y el siguiente arranque rota la época para que las entradas invalidadas sigan siendo inaccesibles.
+
 <a id="conditional-refresh"></a>
 
 ### Comprobar la caché con el origen (REFRESH)

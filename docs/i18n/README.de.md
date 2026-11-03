@@ -97,6 +97,8 @@ Der Stern muss das letzte Byte des ausgewerteten Schlüssels sein, nicht nur des
 
 Schlüsselgenerationen verhindern, dass neue Anfragen nach PURGE alte Inhalte treffen, auch bei verspäteten Schreibvorgängen. Dateien werden separat gelöscht. Ein Namensraum teilt Invalidierungsregeln; sein Zustandsverzeichnis muss Neustarts überdauern.
 
+Der Namespace-Zustand wird beim geordneten Herunterfahren gespeichert. Ein geplanter Neustart verwendet daher dieselbe Epoche und dieselben Invalidierungsregeln weiter, statt mit kaltem Cache zu starten. Erreicht ein Lauf den Shutdown-Hook nicht, bleibt eine Markierung zurück; der nächste Start rotiert die Epoche, damit invalidierte Einträge unerreichbar bleiben.
+
 <a id="conditional-refresh"></a>
 
 ### Cache-Inhalte beim Ursprungsserver prüfen (REFRESH)

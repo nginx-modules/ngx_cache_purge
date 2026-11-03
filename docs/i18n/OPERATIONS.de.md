@@ -10,6 +10,8 @@ Ein **Auftrag** ist eine Platzhalter- oder `purge_all`-Operation. Eine **Gruppe*
 
 Mit Generationsschlüsseln fasst ein physischer Durchlauf je Cache-Pfad und Namespace alle angenommenen Invalidierungen zusammen. REFRESH-Seiten sind eigene HTTP-Operationen, keine PURGE-Aufgaben.
 
+Der Namespace-Zustand wird beim geordneten Herunterfahren gespeichert; ein geplanter Neustart verwendet daher dieselbe Epoche und dieselben Regeln, und ein Lauf ohne Shutdown-Hook hinterlässt eine Markierung, die beim nächsten Start die Epoche rotiert.
+
 | Anfrage und Konfiguration | Dateidurchlauf | HTTP-Abschluss |
 |---|---|---|
 | Legacy: exakter Schlüssel, mit oder ohne Vary-Abgleich | Anfrage-Worker; Vary ergänzt einen Verzeichnisdurchlauf | Nach der Operation |

@@ -10,6 +10,8 @@
 
 Dengan generasi, satu penyapuan fisik per jalur/namespace menggabungkan seluruh invalidasi yang diterima. Halaman REFRESH adalah operasi HTTP terpisah, bukan tugas antrean purge.
 
+Status namespace disimpan saat shutdown rapi, sehingga restart terencana memakai ulang epoch dan aturan; proses tanpa hook shutdown meninggalkan penanda dan start berikutnya mengganti epoch.
+
 | Permintaan dan konfigurasi | Penelusuran file | Penyelesaian HTTP |
 |---|---|---|
 | Kunci tepat lama, dengan/tanpa Vary | Worker permintaan; Vary menambah penelusuran | Setelah operasi |

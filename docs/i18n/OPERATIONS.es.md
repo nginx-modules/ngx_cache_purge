@@ -10,6 +10,8 @@ Una **tarea** es una operación con comodín o `purge_all`. Un **lote** es el n�
 
 Con generaciones, un barrido físico por ruta y espacio de nombres agrupa todas las invalidaciones aceptadas. Las páginas REFRESH son operaciones HTTP separadas, no tareas de la cola de purga.
 
+El estado del espacio de nombres se guarda al apagar ordenadamente, de modo que un reinicio planificado reutiliza la época y las reglas; una ejecución sin hook de apagado deja un marcador y el siguiente arranque rota la época.
+
 | Petición y configuración | Recorrido de archivos | Finalización HTTP |
 |---|---|---|
 | Clave exacta heredada, con o sin Vary | Worker de la petición; Vary añade un recorrido | Tras la operación |

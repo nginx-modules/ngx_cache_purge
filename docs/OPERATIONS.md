@@ -8,7 +8,7 @@ Configuration reference: [directives](DIRECTIVES.md).
 
 Use generation keys when newly arriving requests must stop using stale content as soon as PURGE completes. A request already fetching from the origin may finish later, but its old cache write cannot become a HIT for new requests. Physical files are deleted separately.
 
-A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
+A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. The state is committed on graceful shutdown, so a planned restart reuses the epoch and the rules; a run that does not reach the shutdown hook leaves a marker and the next start rotates the epoch. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
 
 <a id="reading-cache-files"></a>
 
