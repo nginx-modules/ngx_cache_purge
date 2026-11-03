@@ -229,22 +229,22 @@ location = /cache_purge_queue_status {
 | `files.bytes` | 整数／字节 | 成功 unlink 文件的估算逻辑大小 |
 | `responses.hit`, `responses.miss` | 整数／主请求 | 在 log phase 观察到的核心 HIT 与 MISS 判定 |
 | `responses.hit_ratio` | 数值／0..1 | HIT / (HIT + MISS)，两者均未观察到时为 0 |
-| `logical.invalidations` | 整数／决定数 | 已发布的世代失效，包括重复请求和 REFRESH 决定 |
+| `logical.invalidations` | 整数／决定数 | 已发布的 generation 失效，包括重复请求和 REFRESH 决定 |
 | `cleanup.scan_errors` | 整数／错误数 | 后台元数据、打开、读取、关闭或分配错误 |
 | `cleanup.retries` | 整数／扫描次数 | 因清理失败而安排的额外扫描 |
 | `cleanup.exhausted` | 整数／任务数 | 三次重试失败后终止的清理任务 |
 
-`namespaces` 返回已配置的 `cache_purge_namespace`，不受当前 location 所选缓存的限制：使用同一命名空间的所有缓存路径共享世代状态。每个条目都在持有对应命名空间锁时复制。各条目分别采样，因此整个列表不是同一时刻的全局快照。
+`namespaces` 返回已配置的 `cache_purge_namespace`，不受当前 location 所选缓存的限制：使用同一命名空间的所有缓存路径共享 generation 状态。每个条目都在持有对应命名空间锁时复制。各条目分别采样，因此整个列表不是同一时刻的全局快照。
 
 | 字段 | 类型／单位 | 含义 |
 |---|---|---|
 | `name` | 字符串 | 缓存键前缀 `p4:<name>:` 中的命名空间名称 |
 | `epoch` | 字符串／10 位数字 | 命名空间的当前 epoch；完整重启会创建新值 |
-| `baseline` | 字符串／16 位小写十六进制数 | 未被规则提升的键的世代；整个命名空间失效时将其设为 `serial` |
+| `baseline` | 字符串／16 位小写十六进制数 | 未被规则提升的键的 generation；整个命名空间失效时将其设为 `serial` |
 | `serial` | 字符串／16 位小写十六进制数 | 从 1 开始的序列号，在本 epoch 内每次发布失效时递增 |
 | `rules` | 布尔值 | 存在精确匹配或前缀规则时为 `true`；整个命名空间失效会清除这些规则，包括共享内存不足导致失效范围扩大时 |
 
-`baseline` 和 `serial` 与缓存键中的世代采用相同的固定宽度，可按字符串比较。列表因响应容量而截断时，`namespaces_complete` 为 `false`。已返回的条目仍可使用，缺失的命名空间应视为未知。参见[在世代模式下读取缓存文件](OPERATIONS.zh-CN.md#reading-cache-files)。
+`baseline` 和 `serial` 与缓存键中的 generation 采用相同的固定宽度，可按字符串比较。列表因响应容量而截断时，`namespaces_complete` 为 `false`。已返回的条目仍可使用，缺失的命名空间应视为未知。参见[在 generation 模式下读取缓存文件](OPERATIONS.zh-CN.md#reading-cache-files)。
 
 `pending.full` 统计全缓存操作；键为 `*` 的通配符仍是独立操作类型。`active` 包括线程池等待者。活动任务不计入 `queue.size` 和 `pending.total`，但占用接纳容量。
 
@@ -282,7 +282,7 @@ Context: http
 
 默认关闭，因为每次精确清理都会增加一次完整目录遍历。存在多个 `Vary`/`gzip_vary` 表示时可启用。即使主条目已不存在，也会遍历并清理变体。通配符和 `purge_all` 已覆盖变体。精确 Vary 键区分大小写，最多 511 字节；超长键在删除任何文件前返回 `400 invalid_selector`。
 
-世代失效无需此选项即可覆盖逻辑键的全部表示。
+generation 失效无需此选项即可覆盖逻辑键的全部表示。
 
 <a id="cache_purge_namespace"></a>
 
@@ -294,7 +294,7 @@ Default: none
 Context: http
 ```
 
-在 location 绑定前声明世代命名空间。名称为 1–32 个 ASCII 字母、数字、`_` 或 `-`；SHM 至少为八个原生页。使用缓存和临时根目录之外的独立持久状态目录。核心通过独占创建的持久标记分配重启 epoch。只要对应缓存可能仍存在，就必须保留这些小文件；保留缓存却删除状态可能导致旧 epoch 被重用。不保证断电／fsync 持久性。普通 reload 保留 epoch 和规则；修改大小、路径或移除命名空间需要完全重启。命名空间 SHM 与任务队列分别指定大小。
+在 location 绑定前声明 generation 命名空间。名称为 1–32 个 ASCII 字母、数字、`_` 或 `-`；SHM 至少为八个原生页。使用缓存和临时根目录之外的独立持久状态目录。核心通过独占创建的持久标记分配重启 epoch。只要对应缓存可能仍存在，就必须保留这些小文件；保留缓存却删除状态可能导致旧 epoch 被重用。不保证断电／fsync 持久性。普通 reload 保留 epoch 和规则；修改大小、路径或移除命名空间需要完全重启。命名空间 SHM 与任务队列分别指定大小。
 
 <a id="cache_purge_key"></a>
 
@@ -318,7 +318,7 @@ Default: off
 Context: location
 ```
 
-创建仅接受主请求的显式 REFRESH 端点，其他方法返回 `405`。需要绑定 `cache_purge_key`，原生表达式使用 `$cache_purge_key`，并配置 refresh 配置档。逻辑键选择精确键、末尾 `*` 的前缀，或用 `*` 选择此缓存路径中的整个命名空间。使用核心访问控制／认证保护此 location。REFRESH 仅支持代理缓存，PURGE 仍支持全部四种协议。
+创建仅接受主请求的显式 REFRESH 端点，其他方法返回 `405`。需要绑定 `cache_purge_key`，原生表达式使用 `$cache_purge_key`，并配置 refresh 探测配置。逻辑键选择精确键、末尾 `*` 的前缀，或用 `*` 选择此缓存路径中的整个命名空间。使用核心访问控制／认证保护此 location。REFRESH 仅支持代理缓存，PURGE 仍支持全部四种协议。
 
 <a id="cache_purge_refresh_profile"></a>
 
