@@ -23,11 +23,16 @@
 #define NGX_CACHE_PURGE_KEY_MAX_LEN          512
 #define NGX_CACHE_PURGE_ENTRY_KEY_MAX        8192
 #define NGX_CACHE_PURGE_STATUS_BODY_MAX      8192
+
+/* cache_purge_traffic_class: number of named classes and the longest name. */
+#define NGX_CACHE_PURGE_CLASSES              3
+#define NGX_CACHE_PURGE_CLASS_NAME_MAX       32
+
 /* Widest "namespaces" entry (32-byte name) and the closing text after the
  * last entry; the list stops early and says so instead of failing the reply. */
 #define NGX_CACHE_PURGE_STATUS_NS_MAX        160
 #define NGX_CACHE_PURGE_STATUS_NS_TAIL       48
-#define NGX_CACHE_PURGE_SHM_VERSION          7
+#define NGX_CACHE_PURGE_SHM_VERSION          8
 #define NGX_CACHE_PURGE_REFRESH_BATCH        32
 #define NGX_CACHE_PURGE_REFRESH_PROBES       16
 #define NGX_CACHE_PURGE_QUEUE_TIMEOUT        60000   /* ms */
@@ -127,6 +132,9 @@ enum {
     NGX_PURGE_DELETED, NGX_PURGE_DELETE_ERRORS, NGX_PURGE_DELETED_BYTES,
     NGX_PURGE_HIT, NGX_PURGE_MISS, NGX_PURGE_INVALIDATED,
     NGX_PURGE_SCAN_ERRORS, NGX_PURGE_RETRIED, NGX_PURGE_EXHAUSTED,
+    /* HIT and MISS of each class slot: BASE + 2 * slot (+ 1 for MISS). */
+    NGX_PURGE_CLASS_BASE,
+    NGX_PURGE_CLASS_LAST = NGX_PURGE_CLASS_BASE + 2 * NGX_CACHE_PURGE_CLASSES - 1,
     NGX_PURGE_METRICS
 };
 
@@ -136,12 +144,22 @@ typedef struct {
     volatile uint64_t    value[NGX_PURGE_METRICS];
 } ngx_http_cache_purge_stats_t;
 
+/*
+ * The class counters use slots that were padding in the 192 byte (3 x 64) stride,
+ * so the per-path shared memory does not grow. Do not add metrics past this.
+ */
+typedef char ngx_http_cache_purge_stats_fit[
+    (sizeof(ngx_http_cache_purge_stats_t) <= 192) ? 1 : -1];
+
 typedef struct {
     uint64_t  pending, pending_full, active;
     uint64_t  overflow, deleted, deduplicated, waiting;
     uint64_t  errors, bytes, hits, misses;
     uint64_t  invalidated;
     uint64_t  scan_errors, retries, exhausted;
+    /* Indexed by class slot of the zone, not by position in the directive. */
+    uint64_t  class_hits[NGX_CACHE_PURGE_CLASSES];
+    uint64_t  class_misses[NGX_CACHE_PURGE_CLASSES];
 } ngx_http_cache_purge_cache_stat_t;
 
 /* The zone owns names independently of pending tasks. */
@@ -181,6 +199,15 @@ struct ngx_http_cache_purge_queue_s {
     ngx_uint_t                          max_size;
     ngx_http_cache_purge_path_t        *paths;
     ngx_http_cache_purge_protection_t  *protections;
+    /*
+     * cache_purge_traffic_class: the class counters of this zone sit in
+     * NGX_CACHE_PURGE_CLASSES slots and survive reloads. A name keeps the slot
+     * it was first given (class_names[slot]), so a different order or a dropped
+     * name does not show old counts under another name.
+     */
+    ngx_uint_t                          class_n;
+    u_char                              class_names[NGX_CACHE_PURGE_CLASSES]
+                                            [NGX_CACHE_PURGE_CLASS_NAME_MAX + 1];
 };
 
 struct ngx_http_cache_purge_main_conf_s {
@@ -198,6 +225,17 @@ struct ngx_http_cache_purge_main_conf_s {
      * Disabled by default because it adds a full cache walk per purge request.
      */
     ngx_flag_t                          vary_aware;
+    /*
+     * cache_purge_traffic_class: the variable whose value names the class of
+     * every counted HIT/MISS request (traffic_class_n == 0 = off). Classes are
+     * subsets of the totals; requests matching none of the names are only in
+     * the totals. traffic_class_slot[i] is the zone slot of name i; it is set
+     * when the shared zone is attached.
+     */
+    ngx_uint_t                          traffic_class_index;
+    ngx_uint_t                          traffic_class_n;
+    ngx_str_t                           traffic_class_names[NGX_CACHE_PURGE_CLASSES];
+    ngx_uint_t                          traffic_class_slot[NGX_CACHE_PURGE_CLASSES];
     ngx_array_t                         queue_status_locations;
     ngx_array_t                         namespaces;
     ngx_array_t                        *paths;
@@ -395,6 +433,9 @@ void
 ngx_http_cache_purge_exit_worker(ngx_cycle_t *cycle);
 ngx_int_t
 ngx_http_cache_purge_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data);
+ngx_int_t
+ngx_http_cache_purge_traffic_class_commit(ngx_http_cache_purge_main_conf_t *cmcf,
+    ngx_log_t *log);
 ngx_int_t
 ngx_http_cache_purge_init_worker(ngx_cycle_t *cycle);
 ngx_uint_t

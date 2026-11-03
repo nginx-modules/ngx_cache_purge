@@ -42,7 +42,7 @@ An NGINX module for removing entries from `FastCGI`, `proxy`, `SCGI` and `uWSGI`
   unavailable or on Windows.
 - **Active-work deduplication** — coalesce duplicate purge requests during a
   walk with at most one pending replay.
-- **Status metrics** — per-cache queue, deletion and HIT/MISS statistics.
+- **Status metrics** — per-cache queue, deletion and HIT/MISS statistics, optionally split by traffic class.
 - **Generation keys** — invalidate exact keys, prefixes or namespaces without
   synchronous deletion; late writes to old generations remain unreachable.
 - **REFRESH** — check cached proxy content against the origin without

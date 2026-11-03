@@ -4,7 +4,7 @@
 
 # Configuration examples
 
-The first five blocks are alternative complete `nginx.conf` examples. The Vary block adds handling to an existing `http` section. The last example demonstrates the opt-in v4 generation-key and REFRESH flow. NGINX listens locally on port 8080; `catalog_backend` names the application at `127.0.0.1:8081`. `shop.example.com` is its HTTP Host. Replace the addresses and writable cache directory for your deployment.
+The first five blocks and the three traffic-class blocks are alternative complete `nginx.conf` examples. The Vary block adds handling to an existing `http` section. The last example demonstrates the opt-in v4 generation-key and REFRESH flow. NGINX listens locally on port 8080; `catalog_backend` names the application at `127.0.0.1:8081`. `shop.example.com` is its HTTP Host. Replace the addresses and writable cache directory for your deployment.
 
 ## In this guide
 
@@ -16,6 +16,7 @@ The first five blocks are alternative complete `nginx.conf` examples. The Vary b
 - [Purge all entries](#purge-all-entries)
 - [Response format overrides](#json-responses-with-per-location-override)
 - [Vary-aware purge](#vary-aware-purge)
+- [Traffic classes in the status endpoint](#traffic-classes-in-the-status-endpoint)
 - [Generation-key PURGE and REFRESH: product catalog](#generation-and-refresh-example)
 
 <a id="choosing-a-mode"></a>
@@ -220,6 +221,151 @@ http {
 ```
 
 After purging a key, all gzip and Vary variants stored at different filesystem paths are also removed automatically.
+
+## Traffic classes in the status endpoint
+
+`cache_purge_traffic_class` can be written only once in the `http` section; a second one is refused with `directive is duplicate`. The three examples below are complete `nginx.conf` files and alternatives: pick the one that matches your question, and do not combine them.
+
+### Bots versus people
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    map $http_user_agent $traffic {
+        default  human;
+
+        # AI crawlers, AI search and user-triggered AI fetchers
+        ~*(ClaudeBot|Claude-User|Claude-SearchBot|anthropic-ai|Claude-Web)      ai_bot;
+        ~*(GPTBot|OAI-SearchBot|ChatGPT-User|OAI-AdsBot)                        ai_bot;
+        ~*(PerplexityBot|Perplexity-User)                                       ai_bot;
+        ~*(GoogleOther|Google-CloudVertexBot)                                   ai_bot;
+        ~*(meta-externalagent|meta-webindexer|meta-externalfetcher)             ai_bot;
+        ~*(Amazonbot|Amzn-SearchBot|Amzn-User)                                  ai_bot;
+        ~*(Bytespider|CCBot|DuckAssistBot|Diffbot|MistralAI-|Ai2Bot|cohere-ai)  ai_bot;
+
+        # every other crawler
+        ~*(bot|spider|crawl|slurp)  bot;
+    }
+
+    cache_purge_traffic_class $traffic human ai_bot bot;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+        }
+
+        location = /cache_purge_queue_status {
+            allow 127.0.0.1;
+            deny  all;
+            cache_purge_queue_status /var/cache/nginx;
+        }
+    }
+}
+```
+
+`cache.responses.classes` then reports HIT and MISS counts for `human`, `ai_bot` and `bot` next to the totals. NGINX tries the `map` expressions in the order written and the first match wins, so list the specific `ai_bot` expressions before the generic `bot` one. The zone keeps three class slots until a full restart, so choose the names before deploying; see [`cache_purge_traffic_class`](DIRECTIVES.md#cache_purge_traffic_class).
+
+### Probes and warm-up scripts versus real users
+
+Uptime checks, health probes and warm-up scripts request the same few URLs all day and report almost only HITs, which lifts the total hit ratio. Give them their own classes. `geo` marks the monitoring network (`10.0.0.0/8` here), and one `map` combines that mark with the User-Agent, so external monitoring services are caught as well.
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    geo $remote_addr $monitor_net {
+        default     0;
+        10.0.0.0/8  1;
+    }
+    # The first matching pattern wins. The key is "<0|1>:<User-Agent>".
+    map "$monitor_net:$http_user_agent" $traffic {
+        default                                          real;
+        "~*cache-warmer"                                 warmup;
+        "~^1:"                                           monitor;
+        "~*(UptimeRobot|Pingdom|StatusCake|kube-probe)"  monitor;
+    }
+    cache_purge_traffic_class $traffic monitor warmup real;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   "$host$uri$is_args$args";
+        }
+
+        location = /cache_purge_queue_status {
+            allow 127.0.0.1;
+            deny  all;
+            cache_purge_queue_status /var/cache/nginx;
+        }
+    }
+}
+```
+
+`cache.responses.classes.real.hit_ratio` is what visitors experience; the total also contains the probes. Put your own monitoring addresses in the `geo` block and your own tool names in the `map`.
+
+### Measuring a cache change on a canary cohort
+
+To judge a cache change on live traffic, give it to a small cohort and compare its hit ratio with the rest. Here the canary cohort's cache key leaves out the query string, so tracking parameters stop creating separate entries. The same `$cohort` variable feeds the cache key and the counters, and the cohort name is part of the canary key, so the two cohorts never share an entry.
+
+```nginx
+events {}
+http {
+    upstream catalog_backend { server 127.0.0.1:8081; }
+    proxy_cache_path /var/cache/nginx keys_zone=main:10m;
+
+    map $cookie_canary $cohort {
+        default stable;
+        "1"     canary;
+    }
+    map $cohort $cache_key {
+        default "$host$uri$is_args$args";
+        canary  "canary:$host$uri";
+    }
+    cache_purge_traffic_class $cohort stable canary;
+
+    server {
+        listen 127.0.0.1:8080;
+        server_name shop.example.com;
+
+        location / {
+            proxy_pass        http://catalog_backend;
+            proxy_cache       main;
+            proxy_cache_valid 200 10m;
+            proxy_set_header Host shop.example.com;
+            add_header X-Cache-Status $upstream_cache_status always;
+            proxy_cache_key   $cache_key;
+        }
+
+        location = /cache_purge_queue_status {
+            allow 127.0.0.1;
+            deny  all;
+            cache_purge_queue_status /var/cache/nginx;
+        }
+    }
+}
+```
+
+Use `$http_x_canary` instead of `$cookie_canary` to select the cohort with a header. This is only valid when the application returns the same content whatever the query string. A new cohort starts with a cold cache, so compare the ratios after a warm-up period, not from the first request.
 
 <a id="generation-and-refresh-example"></a>
 

@@ -79,6 +79,17 @@ sub config {
     my $count = $s->{workers} || $workers;
     my $pool = $s->{threads} ? 'thread_pool cleanup threads=2 max_queue=1;' : '';
     my $selection = $s->{threads} ? 'cache_purge_thread_pool cleanup;' : '';
+    # cache_purge_traffic_class: classes => [names]; the class comes from the
+    # X-Class header, or with class_map from the User-Agent through a map.
+    my $class_conf = '';
+    if ($s->{classes}) {
+        my $var = $s->{class_var} || '$http_x_class';
+        if ($s->{class_map}) {
+            $class_conf = "map \$http_user_agent \$npp_class { default human; \"Googlebot/2.1\" bot; }\n    ";
+            $var = '$npp_class';
+        }
+        $class_conf .= "cache_purge_traffic_class $var @{ $s->{classes} };";
+    }
     my $key = $s->{strict} ? '$cache_purge_key' : '$uri';
     my $logical = $s->{logical_key} || '$uri';
     my $origin_port = $s->{origin_port} || $s->{port};
@@ -172,6 +183,7 @@ events { worker_connections 1024; accept_mutex off; }
 http {
     access_log off;
     $selection
+    $class_conf
     $namespace
     $gateway_http
     client_body_temp_path $s->{root}/client-temp;
@@ -283,6 +295,37 @@ sub status {
     # Fields are approximate aligned loads, not a cross-worker transaction.
     # Admission uses locked control state, never these monitoring snapshots.
     return $v;
+}
+
+# cache_purge_traffic_class helpers. Class names come from the X-Class request
+# header (or, with class_map, from the User-Agent through a map).
+sub class_status {
+    my ($s, $uri) = @_;
+    my $r = request($s, $uri || '/status-a');
+    die "status response: $r->{status} $r->{content}" if $r->{status} != 200;
+    my $v = decode_json($r->{content});
+    return ($v, $v->{cache}{responses}{classes}, $r->{content});
+}
+
+sub send_class {
+    my ($s, $uri, $class, $method) = @_;
+    return request($s, $uri, $method || 'GET',
+                   defined $class ? { 'X-Class' => $class } : {});
+}
+
+# Reload that nginx must refuse. Returns true when the old generation is still
+# the one serving, after the refusal appeared in the error log.
+sub reload_refused {
+    my ($s, $pattern) = @_;
+    my $mark = length read_file("$s->{root}/error.log");
+    my $old = $s->{generation};
+    $s->{generation}++;
+    write_file("$s->{root}/nginx.conf", config($s));
+    kill 'HUP', $s->{pid};
+    await(sub { substr(read_file("$s->{root}/error.log"), $mark) =~ $pattern },
+          'the refused reload was not logged', 20);
+    $s->{generation} = $old;
+    return (request($s, '/status-a')->{headers}{'x-generation'} // '-1') eq $old;
 }
 
 # One namespace from the status "namespaces" list.
@@ -535,6 +578,12 @@ sub stop_server {
             !/\[crit\].*ngx_cache_purge: .* "\Q$s->{cache}\E" failed \(\d+: Not a directory\)/
         } @severe;
     }
+    if ($s->{class_rejected}) {
+        @severe = grep { !/\[emerg\].*cache_purge_traffic_class needs more distinct/ } @severe;
+    }
+    if ($s->{listen_fault}) {
+        @severe = grep { !/\[emerg\].*(?:bind\(\) to 127\.0\.0\.1:\d+ failed \(\d+: (?:Address already in use|Unknown error)\)|still could not bind\(\))/ } @severe;
+    }
     is_deeply(\@severe, [], 'no unexpected severe diagnostic');
 
 }
@@ -600,13 +649,30 @@ sub fixture {
     return $path;
 }
 
-sub reload_server {
+# Worker pids the master has started and not yet reported as exited.
+sub live_workers {
     my ($s) = @_;
+    my $log = read_file("$s->{root}/error.log");
+    my %live;
+    $live{$1} = 1 while $log =~ /start worker process (\d+)/g;
+    delete $live{$1} while $log =~ /worker process (\d+) exited/g;
+    return sort { $a <=> $b } keys %live;
+}
+
+# With $settle, also wait until every worker of the previous generation has
+# exited. A retiring worker keeps accepting connections until it handles the
+# quit signal (accept_mutex is off), so a request sent right after the first
+# new-generation reply can still be answered by the old configuration.
+sub reload_server {
+    my ($s, $settle) = @_;
+    my %old = map { $_ => 1 } ($settle ? live_workers($s) : ());
     $s->{generation}++;
     write_file("$s->{root}/nginx.conf", config($s));
     kill 'HUP', $s->{pid};
     await(sub { (request($s, '/status-a')->{headers}{'x-generation'} || '-1')
                 eq $s->{generation} }, 'new generation did not serve a response');
+    await(sub { !grep { $old{$_} } live_workers($s) },
+          'the previous generation did not exit') if $settle;
 }
 
 sub check_config {
@@ -1127,7 +1193,9 @@ subtest "66 Vary representations, exact identity and reload, generation=$strict"
         }
         my @entries = grep { $_->[1] =~ m{(?:^|:)/cache/variants$} } cached_entries($s);
         is(scalar @entries, 66, 'all representations exist as native files');
-        reload_server($s) if $round == 2;
+        # Settle: with accept_mutex off a retiring worker still accepts
+        # connections and closes them unanswered, which fails the PURGE below.
+        reload_server($s, 1) if $round == 2;
         write_file("$s->{root}/version", $round + 1);
         is(request($s, '/cache/variants', 'PURGE')->{status}, 200, 'exact PURGE succeeds');
         for my $h (@headers) {
@@ -1727,6 +1795,196 @@ subtest 'log-phase HIT/MISS accounting and named pool validation' => sub {
         like(read_file("$s->{root}/config.log"), qr/unknown_pool.*unknown|unknown.*unknown_pool/,
              'core pool validation diagnostic');
     }
+    stop_server($s);
+};
+
+subtest 'traffic class HIT/MISS counters are subsets of the totals' => sub {
+    # Default worker count: the class counters of every process slot are summed.
+    my $s = start_server('classes', classes => [qw(bot human)]);
+    warm($s);
+    my $totals = sub { my ($v) = class_status($s); $v->{cache}{responses} };
+    await(sub { my $t = $totals->(); $t->{hit} >= 1 && $t->{miss} >= 1 },
+          'warm-up was not observed');
+    my (undef, undef, $raw) = class_status($s);
+    like($raw, qr/"hit_ratio":\d\.\d{6},"classes":\{"bot":\{"hit":0,"miss":0,"hit_ratio":0\.000000\},"human":\{"hit":0,"miss":0,"hit_ratio":0\.000000\}\}\}\},"namespaces":\[/,
+         'classes sit inside responses, in configuration order, all zero before any class traffic');
+
+    write_file("$s->{root}/origin/fresh", 'fresh fixture');
+    my $before = $totals->();
+    my (%seen, $counted);
+    my $send = sub {
+        my ($n, $uri, $class) = @_;
+        for (1 .. $n) {
+            my $x = send_class($s, $uri, $class)->{headers}{'x-cache'} || '';
+            $seen{ defined $class ? $class : '-' }{$x}++;
+            $seen{'*'}{$x}++;
+            $counted++ if $x eq 'HIT' || $x eq 'MISS';
+        }
+    };
+    $send->(12, '/cache/warm', 'bot');
+    $send->(7,  '/cache/warm', 'human');
+    $send->(5,  '/cache/warm', 'other');   # a value that names no class: totals only
+    $send->(3,  '/cache/warm', undef);     # variable not found: totals only
+    $send->(2,  '/cache/warm', 'bots');    # a prefix of a name is not the name
+    $send->(2,  '/cache/warm', 'Bot');     # a different letter case is a different name
+    $send->(2,  '/cache/fresh', 'human');  # a MISS, then (normally) a HIT
+    # Never counted, whatever the header says: no cache is involved.
+    send_class($s, '/health', 'bot');
+    send_class($s, '/cache/none*', 'bot', 'PURGE');
+    send_class($s, '/status-a', 'bot');
+
+    await(sub {
+        my $t = $totals->();
+        ($t->{hit} + $t->{miss}) - ($before->{hit} + $before->{miss}) == $counted;
+    }, 'counted requests were not observed');
+    my ($v, $c) = class_status($s);
+    for my $name (qw(bot human)) {
+        is($c->{$name}{hit},  $seen{$name}{HIT}  || 0, "$name HIT count");
+        is($c->{$name}{miss}, $seen{$name}{MISS} || 0, "$name MISS count");
+        my $n = $c->{$name}{hit} + $c->{$name}{miss};
+        cmp_ok(abs($c->{$name}{hit_ratio} - ($n ? $c->{$name}{hit} / $n : 0)), '<', 1e-6,
+               "$name hit_ratio");
+    }
+    cmp_ok($seen{human}{MISS} || 0, '>=', 1, 'the fresh URI produced a class MISS');
+    is($v->{cache}{responses}{hit} - $before->{hit}, $seen{'*'}{HIT} || 0,
+       'totals carry every HIT, classified or not');
+    cmp_ok($c->{bot}{hit} + $c->{human}{hit}, '<', $v->{cache}{responses}{hit} - $before->{hit},
+           'classes are a strict subset of the totals');
+    stop_server($s);
+};
+
+subtest 'traffic class variable can be a map result' => sub {
+    my $s = start_server('classes-map', workers => 1, classes => [qw(bot human)],
+                         class_map => 1);
+    warm($s);
+    my $count = sub { my ($v, $c) = class_status($s); [ $c->{bot}{hit}, $c->{human}{hit} ] };
+    await(sub { my $t = (class_status($s))[0]->{cache}{responses}; $t->{hit} >= 1 },
+          'warm-up was not observed');
+    my $b = $count->();
+    request($s, '/cache/warm', 'GET', { 'User-Agent' => 'Googlebot/2.1' }) for 1 .. 4;
+    request($s, '/cache/warm', 'GET', { 'User-Agent' => 'Mozilla/5.0' }) for 1 .. 3;
+    await(sub { my $a = $count->(); $a->[0] - $b->[0] == 4 && $a->[1] - $b->[1] >= 3 },
+          'map-derived classes were not counted');
+    my $a = $count->();
+    is($a->[0] - $b->[0], 4, 'bot user agents counted under bot');
+    is($a->[1] - $b->[1], 3, 'other user agents counted under human');
+    stop_server($s);
+};
+
+subtest 'without the directive the status reply is unchanged' => sub {
+    my $s = start_server('classes-off', workers => 1);
+    my $r = request($s, '/status-a');
+    unlike($r->{content}, qr/classes/, 'no classes member');
+    like($r->{content}, qr/"responses":\{"hit":\d+,"miss":\d+,"hit_ratio":\d\.\d{6}\}\},"namespaces":\[/,
+         'responses closes right after hit_ratio');
+    ok(!exists decode_json($r->{content})->{cache}{responses}{classes}, 'no classes key');
+    status($s);   # the documented field set is still complete
+    stop_server($s);
+};
+
+subtest 'class counters follow names across reload, reorder, drop and re-add' => sub {
+    my $s = start_server('classes-reload', workers => 1, classes => [qw(bot human)]);
+    warm($s);
+    my $hits = sub {
+        my (undef, $c) = class_status($s);
+        return { map { $_ => $c->{$_}{hit} } keys %$c };
+    };
+    my $send = sub { my ($class, $n) = @_; send_class($s, '/cache/warm', $class) for 1 .. $n };
+
+    $send->('bot', 3);
+    $send->('human', 2);
+    await(sub { my $h = $hits->(); ($h->{bot} // -1) == 3 && ($h->{human} // -1) == 2 },
+          'initial class counts were not observed');
+
+    $s->{classes} = [qw(human bot)];
+    reload_server($s, 1);
+    is_deeply($hits->(), { bot => 3, human => 2 }, 'reorder keeps every count under its name');
+    my (undef, undef, $raw) = class_status($s);
+    like($raw, qr/"classes":\{"human":.*"bot":/, 'the reply follows the new order');
+
+    $s->{classes} = [qw(human)];
+    reload_server($s, 1);
+    is_deeply($hits->(), { human => 2 }, 'a dropped name leaves the reply');
+    $send->('human', 4);
+    $send->('bot', 5);   # not a class any more: totals only
+    await(sub { ($hits->()->{human} // -1) == 6 }, 'human traffic after the drop');
+
+    $s->{classes} = [qw(bot human)];
+    reload_server($s, 1);
+    is_deeply($hits->(), { bot => 3, human => 6 },
+              're-added name resumes its old count; traffic sent while dropped is not attributed');
+    stop_server($s);
+};
+
+subtest 'a refused class reload keeps the old configuration and consumes no slot' => sub {
+    my $s = start_server('classes-slots', workers => 1, classes => [qw(a b)]);
+    $s->{class_rejected} = 1;
+    my $refused = qr/\[emerg\].*cache_purge_traffic_class needs more distinct class names/;
+    my $names = sub { my (undef, $c) = class_status($s); [ sort keys %$c ] };
+
+    # Two new names, one free slot: refused as a whole.
+    $s->{classes} = [qw(c d)];
+    is(check_config($s, config($s)), 0, 'nginx -t cannot see the shared-zone limit')
+        or diag(read_file("$s->{root}/config.log"));
+    ok(reload_refused($s, $refused), 'two new names with one free slot: old generation keeps serving');
+    is_deeply($names->($s), [qw(a b)], 'the live reply still reports the old classes');
+
+    # The refused names did not take the free slot.
+    $s->{classes} = [qw(a b c)];
+    reload_server($s, 1);
+    $s->{classes} = [qw(c b a)];
+    reload_server($s, 1);
+    is_deeply($names->($s), [qw(a b c)], 'all three slots are usable after a refusal');
+
+    # Zone full: a fourth distinct name is refused, known names still work.
+    $s->{classes} = [qw(a b d)];
+    ok(reload_refused($s, $refused), 'a fourth distinct name is refused');
+    $s->{classes} = [qw(c a b)];
+    reload_server($s, 1);
+    is_deeply($names->($s), [qw(a b c)], 'the refusal changed nothing');
+    stop_server($s);
+};
+
+# A reload that fails after the zone is attached (here: a listener that cannot
+# be bound) must leave every class slot free; see traffic_class_bind in queue.c.
+subtest 'a reload that fails after the shared zone is attached keeps its slots free' => sub {
+    my $busy = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0, Listen => 1)
+        or die $!;
+    my $s = start_server('classes-leak', workers => 1, classes => [qw(a b)]);
+    $s->{listen_fault} = 1;
+    $s->{class_rejected} = 1;   # only used if the later reload is refused
+
+    $s->{classes} = [qw(a b c)];
+    $s->{extra_locations} = 'listen 127.0.0.1:' . $busy->sockport . ';';
+    my $mark = length read_file("$s->{root}/error.log");
+    $s->{generation}++;
+    write_file("$s->{root}/nginx.conf", config($s));
+    kill 'HUP', $s->{pid};
+    await(sub { substr(read_file("$s->{root}/error.log"), $mark)
+                =~ /bind\(\) to 127\.0\.0\.1:\d+ failed \(\d+: (?:Address already in use|Unknown error)\)/ },
+          'the provoked reload failure was not logged', 20);
+    $s->{generation}--;
+    is(request($s, '/status-a')->{headers}{'x-generation'}, $s->{generation},
+       'the failed reload left the old configuration serving');
+
+    $s->{extra_locations} = '';
+    $s->{classes} = [qw(a b d)];
+    ok(eval { reload_server($s, 1); 1 }, 'a later valid configuration still finds a free slot')
+        or diag($@);
+    stop_server($s);
+};
+
+subtest 'status reply with long class names and many namespaces stays bounded' => sub {
+    my @long = map { ('c' x 31) . $_ } qw(a b c);   # three 32-byte names
+    my $s = start_server('classes-budget', strict => 1, workers => 1,
+                         extra_namespaces => 80, classes => \@long);
+    my $r = request($s, '/status-a');
+    is($r->{status}, 200, 'classes plus a cut namespace list is still a normal reply');
+    cmp_ok(length $r->{content}, '<', 8192, 'the reply stays inside the 8 KiB reply buffer');
+    my ($v, $c) = class_status($s);
+    is_deeply([ sort keys %$c ], [ sort @long ], 'every class is reported ahead of the namespaces');
+    ok(!$v->{namespaces_complete}, 'the cut is still flagged');
+    cmp_ok(scalar @{ $v->{namespaces} }, '>=', 40, 'a useful part of the namespace list remains');
     stop_server($s);
 };
 

@@ -87,7 +87,7 @@ Use the [status endpoint](DIRECTIVES.md#cache_purge_queue_status) to observe pen
 
 | Level | Condition |
 |---|---|
-| `warn` | Excessive key length, removed task pool or clamped setting |
+| `warn` | Excessive key length, removed task pool, clamped setting or traffic classes without a status location |
 | `error` | Access denied, cache lookup or REFRESH profile failure, exhausted cleanup retries; core pool or Windows read failure |
 | `crit` | File open/stat/deletion or directory operation failure; POSIX core read failure |
 | `alert` | File close failure |
@@ -118,6 +118,7 @@ See [logging checks](../t/TESTING.md#logging-contracts) for tested diagnostics.
 | Queue drains slowly | Measure task duration and storage contention before increasing batch size or reducing the pause. |
 | Clients expect the former `412`/`404` miss status | Remove `cache_purge_legacy_status`; handle `200` with `Cache-Purge-Code: no_match`. |
 | Vary variants remain | Enable `cache_purge_vary_aware`; check the primary purge result and the 511-byte variant-key limit. |
+| Reload refused: `cache_purge_traffic_class needs more distinct class names` | The zone keeps three class slots until a full restart, and a name keeps its slot even when dropped. A fourth distinct name is refused at reload, and `nginx -t` cannot detect it. Reuse existing names or restart NGINX. |
 | Accepted work appears incomplete | Check active tasks, recovery and file errors. `202` is not a completion receipt; suspected SHM corruption requires a restart. |
 
 <a id="temporary-directories"></a>
