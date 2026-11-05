@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Membatasi pengiriman scan/probe baru dalam halaman REFRESH, termasuk menunggu pemindai worker. Kedaluwarsa menghentikan pekerjaan baru dan menandai respons tidak lengkap. HEAD yang aktif selesai menurut `proxy_connect_timeout`, `proxy_send_timeout`, dan `proxy_read_timeout`; atur eksplisit. Bukan tenggat respons keras, dan tidak memutus syscall. Putus koneksi/penghentian anggun menghentikan pengiriman sambil mempertahankan memori thread aktif sampai penyelesaian native.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Mengatur berapa banyak entri yang cocok yang dikumpulkan satu halaman REFRESH sebelum membalas. Halaman selalu memulai pemindaian dari akar cache, sehingga pemilih yang mencakup banyak entri dibagi ke beberapa halaman dan direktori yang tersisa ditelusuri ulang di setiap halaman. Batch lebih besar mengurangi jumlah halaman dan penelusuran berulang, tetapi menambah memori per permintaan.

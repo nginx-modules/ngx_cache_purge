@@ -56,11 +56,13 @@ typedef struct {
     ngx_path_t                     path;
     ngx_str_t                      filter;
     u_char                         after[32];
-    ngx_http_cache_refresh_entry_t entries[NGX_CACHE_PURGE_REFRESH_BATCH];
     ngx_uint_t                     count;
     ngx_flag_t                     more, complete, failed, timed_out;
     ngx_msec_t                     deadline;
     ngx_atomic_t                   cancelled;
+    ngx_uint_t                     capacity;
+    /* Must stay last: the scan is allocated with room for capacity entries. */
+    ngx_http_cache_refresh_entry_t entries[1];
 } ngx_http_cache_refresh_scan_t;
 
 typedef struct {
@@ -297,7 +299,7 @@ ngx_http_cache_refresh_collect(void *data, ngx_str_t *path)
             largest = i;
         }
     }
-    if (scan->count == NGX_CACHE_PURGE_REFRESH_BATCH) {
+    if (scan->count == scan->capacity) {
         scan->more = 1;
         if (ngx_memcmp(hash, scan->entries[largest].hash, 32) >= 0) {
             return;
@@ -648,10 +650,13 @@ ngx_http_cache_refresh_step(ngx_event_t *ev)
         return;
     }
     if (job->scan == NULL) {
-        scan = ngx_pcalloc(job->pool, sizeof(*scan));
+        scan = ngx_pcalloc(job->pool, sizeof(*scan)
+                           + (job->conf->refresh_batch - 1)
+                             * sizeof(ngx_http_cache_refresh_entry_t));
         if (scan == NULL) {
             goto failed;
         }
+        scan->capacity = job->conf->refresh_batch;
         job->scan = scan;
         ngx_cache_refresh_current = job;
         main = ngx_http_get_module_main_conf(r, ngx_http_cache_purge_module);

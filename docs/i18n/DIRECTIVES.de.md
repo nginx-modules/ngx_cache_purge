@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Begrenzt neue Scan-/Probe-Aufträge einer REFRESH-Seite einschließlich Wartezeit auf den Worker-Scanner. Nach Ablauf startet keine neue Arbeit und die Antwort ist unvollständig. Ein laufender HEAD endet unter Core-`proxy_connect_timeout`, `proxy_send_timeout` und `proxy_read_timeout`; diese explizit setzen. Dies ist keine harte Antwortfrist und unterbricht keinen Dateisystemaufruf. Disconnect und Graceful Shutdown stoppen weitere Aufträge; Speicher aktiver Threads bleibt bis zum nativen Abschluss erhalten.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+Legt fest, wie viele passende Einträge eine REFRESH-Seite vor der Antwort sammelt. Eine Seite beginnt ihre Suche immer im Cache-Wurzelverzeichnis; ein Selektor über viele Einträge wird daher auf mehrere Seiten verteilt, und die noch offenen Verzeichnisse werden auf jeder Seite erneut durchlaufen. Ein größerer Batch senkt die Seitenzahl und damit die wiederholte Traversierung, erhöht aber den Speicherbedarf pro Anfrage linear.

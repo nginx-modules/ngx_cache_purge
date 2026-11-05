@@ -346,3 +346,16 @@ Range:   1ms .. 1h
 ```
 
 Worker 스캐너 대기를 포함해 REFRESH 페이지의 새 스캔/검사 제출을 제한합니다. 만료되면 새 작업을 멈추고 응답을 미완료로 표시합니다. 이미 실행 중인 HEAD는 명시적으로 설정해야 하는 코어 `proxy_connect_timeout`, `proxy_send_timeout`, `proxy_read_timeout`에 따라 끝납니다. 엄격한 응답 마감 시간이 아니며 시스템 호출을 중단하지 못합니다. 연결 해제/정상 종료 시 새 제출을 멈추되 활성 스레드 저장소는 네이티브 완료까지 유지합니다.
+
+<a id="cache_purge_refresh_batch"></a>
+
+## `cache_purge_refresh_batch`
+
+```text
+Syntax:  cache_purge_refresh_batch <number>;
+Default: 32
+Context: http, server, location
+Range:   1 .. 256
+```
+
+REFRESH 페이지가 응답 전에 수집할 일치 항목 수를 설정합니다. 페이지는 항상 캐시 루트에서 스캔을 시작하므로, 많은 항목을 포함하는 선택자는 여러 페이지로 나뉘고 남은 디렉터리는 페이지마다 다시 순회됩니다. 배치를 키우면 페이지 수와 반복 순회가 줄지만 요청당 메모리 사용량이 늘어납니다.

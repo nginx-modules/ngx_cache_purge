@@ -84,6 +84,8 @@ sub config {
     my $origin_port = $s->{origin_port} || $s->{port};
     my $profile_host = $s->{profile_host} || 'origin.test';
     my $refresh_timeout = $s->{refresh_timeout} || '10s';
+    my $refresh_batch = $s->{refresh_batch}
+        ? "cache_purge_refresh_batch $s->{refresh_batch};" : '';
     my $namespace = $s->{strict}
         ? "cache_purge_namespace objects 1m $s->{root}/purge-state;\n"
           . "cache_purge_key objects $logical;" : '';
@@ -100,6 +102,7 @@ sub config {
             proxy_cache_refresh a \$cache_purge_key;
             cache_purge_refresh_profile /probe /cache;
             cache_purge_refresh_timeout $refresh_timeout;
+            $refresh_batch
             allow 127.0.0.1; deny all;
         }
         location = /bad-key {
@@ -922,6 +925,32 @@ subtest 'unreadable scan roots return an explicit HTTP problem' => sub {
         is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'HIT', 'failed scan preserves the entry');
         stop_server($s);
     }
+};
+
+subtest 'refresh batch size is configurable' => sub {
+    my $s = start_server('refresh-batch', strict => 1, refresh_batch => 2);
+    warm($s);
+    write_file("$s->{root}/origin/third", 'cache fixture third');
+    for my $path (qw(/cache/item /cache/third)) {
+        await(sub { (request($s, $path)->{headers}{'x-cache'} || '') eq 'HIT' },
+              "$path did not warm");
+    }
+
+    # Three matching entries and a page size of two: the first page must be
+    # bounded by the configured value, and the cursor must return the rest.
+    my $first = refresh($s, '/cache/*');
+    is(scalar @{ $first->{results} }, 2, 'a page honours the configured batch');
+    ok(!$first->{complete}, 'the first page reports remaining work');
+
+    my $second = refresh($s, '/cache/*', $first->{next_cursor});
+    is(scalar @{ $second->{results} }, 1, 'the continuation returns the remainder');
+    ok($second->{complete}, 'the continuation completes the scan');
+
+    my %hashes;
+    $hashes{$_->{hash}}++ for @{ $first->{results} }, @{ $second->{results} };
+    is(scalar keys %hashes, 3, 'pagination covers every matching entry');
+    ok(!grep({ $_ > 1 } values %hashes), 'no entry is reported twice');
+    stop_server($s);
 };
 
 subtest 'REFRESH conditional decisions and bounded continuation' => sub {
