@@ -265,7 +265,7 @@ Default: none
 Context: http
 ```
 
-Groups logical keys that share invalidation rules. Declare the namespace before using it in `cache_purge_key`. Its name must contain 1–32 ASCII letters, digits, `_` or `-`. The shared-memory size must be at least eight system memory pages; this allocation is separate from the cleanup queue.
+Groups logical keys that share invalidation rules. Declare the namespace before using it in `cache_purge_key`. Its name must contain 1–32 ASCII letters, digits, `_` or `-`. The shared-memory size must be at least eight system memory pages; this allocation is separate from the cleanup queue. Each namespace must use a distinct state directory; sharing one is rejected because the lock and crash markers are directory-scoped.
 
 The master process owns the state directory. At startup it takes an exclusive `fcntl` write lock on `<state-directory>/.lock`, restores `<namespace>.state` when the previous shutdown was clean, creates `<namespace>.running` as an empty dirty marker, and creates a new 10-digit epoch file when it must start cold. A graceful shutdown persists the snapshot, fsyncs it, removes the dirty marker and releases the lock. A crashed run leaves the marker, so the next startup rotates the epoch.
 

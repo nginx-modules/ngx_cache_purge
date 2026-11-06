@@ -93,7 +93,7 @@ sub config {
     # Unused extra namespaces with the longest allowed name (32 bytes). They only
     # exist to make the status "namespaces" list outgrow its reply buffer.
     $namespace .= join '', map {
-        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state;", 'n' x 30, $_, $s->{root}
+        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state-%02d;", 'n' x 30, $_, $s->{root}, $_
     } 1 .. $s->{extra_namespaces} if $s->{strict} && $s->{extra_namespaces};
     my $vary = $s->{strict} ? '' : 'add_header Vary Accept-Encoding always;';
     my $refresh = $s->{strict} ? <<"REFRESH" : '';
@@ -2050,6 +2050,17 @@ subtest 'reload keeps the namespace and rejects zone identity changes' => sub {
        'refused reloads leave the old epoch serving');
     ok(-e $marker, 'refused reloads leave the old marker in place');
     is(request($s, '/health')->{status}, 200, 'the old server still serves');
+    stop_server($s);
+};
+
+subtest 'duplicate namespace state paths are rejected' => sub {
+    my $s = start_server('duplicate-state', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $text = config($s);
+    my $duplicate = "cache_purge_namespace duplicate 128k $s->{root}/purge-state;";
+    $text =~ s/(cache_purge_namespace [^\n]+purge-state;)/$1\n$duplicate/;
+    isnt(check_config($s, $text), 0,
+         'two namespaces must not share a state directory');
     stop_server($s);
 };
 

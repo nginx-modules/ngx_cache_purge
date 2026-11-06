@@ -419,8 +419,8 @@ ngx_http_cache_purge_state_unlock(ngx_http_cache_purge_namespace_t *ns)
 static ngx_int_t
 ngx_http_cache_purge_running_create(ngx_http_cache_purge_namespace_t *ns)
 {
-    u_char    path[NGX_MAX_PATH + 1];
-    ngx_fd_t  fd;
+    u_char      path[NGX_MAX_PATH + 1];
+    ngx_file_t  file;
 
     if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
                                         0, path, sizeof(path) - 1)
@@ -429,31 +429,52 @@ ngx_http_cache_purge_running_create(ngx_http_cache_purge_namespace_t *ns)
         return NGX_ERROR;
     }
 
-    /* Replace a planted entry instead of opening through it. */
-    (void) ngx_delete_file(path);
+    /*
+     * Publish the dirty marker atomically: a crash must leave the previous
+     * marker in place, never a half-created or deleted one.  The temporary
+     * file is created with O_EXCL and renamed over the destination, so a
+     * planted symlink cannot redirect the write either.
+     */
+    ngx_memzero(&file, sizeof(file));
+    file.fd = NGX_INVALID_FILE;
+    file.log = ns->pool->log;
 
-    fd = ngx_open_file(path, NGX_FILE_WRONLY|NGX_FILE_TRUNCATE,
-                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
-    if (fd == NGX_INVALID_FILE) {
+    if (ngx_create_temp_file(&file, ns->state_path, ns->pool, 1, 0,
+                             NGX_FILE_DEFAULT_ACCESS)
+        != NGX_OK)
+    {
         ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
-                      "ngx_cache_purge: cannot create \"%s\"", path);
+                      "ngx_cache_purge: cannot create a running marker for "
+                      "namespace \"%V\" in \"%V\"", &ns->name,
+                      &ns->state_path->name);
         return NGX_ERROR;
     }
 
 #if !(NGX_WIN32)
-    if (fsync(fd) == -1) {
-        (void) ngx_close_file(fd);
+    if (fsync(file.fd) == -1) {
         ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
-                      "ngx_cache_purge: cannot sync \"%s\"", path);
-        return NGX_ERROR;
+                      "ngx_cache_purge: cannot sync \"%V\"", &file.name);
+        goto failed;
     }
 #endif
 
-    if (ngx_close_file(fd) == NGX_FILE_ERROR) {
-        return NGX_ERROR;
+    ngx_pool_run_cleanup_file(ns->pool, file.fd);
+    file.fd = NGX_INVALID_FILE;
+
+    if (ngx_rename_file(file.name.data, path) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot replace \"%s\"", path);
+        goto failed;
     }
 
     return ngx_http_cache_purge_sync_state_dir(ns);
+
+failed:
+    if (file.fd != NGX_INVALID_FILE) {
+        ngx_pool_run_cleanup_file(ns->pool, file.fd);
+    }
+    (void) ngx_delete_file(file.name.data);
+    return NGX_ERROR;
 }
 
 
@@ -1274,6 +1295,8 @@ ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
     size_t size, const ngx_str_t *state_path)
 {
     ngx_http_cache_purge_namespace_t  *ns;
+    ngx_http_cache_purge_main_conf_t  *cmcf;
+    ngx_http_cache_purge_namespace_t  **existing;
     ngx_str_t                         zone_name;
     ngx_list_part_t                  *part;
     size_t                            i;
@@ -1318,6 +1341,23 @@ ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
     {
         return NULL;
     }
+
+    cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_purge_module);
+    existing = cmcf->namespaces.elts;
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        if (existing[i]->state_path->name.len == ns->state_path->name.len
+            && ngx_memcmp(existing[i]->state_path->name.data,
+                          ns->state_path->name.data,
+                          ns->state_path->name.len) == 0)
+        {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                "ngx_cache_purge: namespaces \"%V\" and \"%V\" use the same "
+                "state directory \"%V\"; use a separate directory per "
+                "namespace", &existing[i]->name, name, &ns->state_path->name);
+            return NULL;
+        }
+    }
+
     zone_name.len = sizeof("cache_purge_namespace:") - 1 + name->len;
     zone_name.data = ngx_pnalloc(cf->pool, zone_name.len);
     if (zone_name.data == NULL) {
