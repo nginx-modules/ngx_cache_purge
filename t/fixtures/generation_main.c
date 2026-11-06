@@ -55,7 +55,9 @@ int main(void)
     assert(state.serial == generation + 1);
     busy = 0;
     fail_alloc = allocations + 1;
-    assert(ngx_http_cache_purge_generation_invalidate(&ns, &b, 0, NULL) == NGX_OK);
+    assert(ngx_http_cache_purge_generation_invalidate(&ns, &b, 0, NULL)
+           == NGX_CACHE_PURGE_NAMESPACE_FULL);
+    assert(state.full == 1); /* explicit storage failure, not silent success */
     assert(ngx_http_cache_purge_generation_lookup(&state, &a) == state.serial);
     assert(state.exact == NULL && state.prefix == NULL); /* pressure broadens safely */
     fail_alloc = 0;

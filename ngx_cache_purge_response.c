@@ -57,7 +57,9 @@ static const ngx_http_cache_purge_response_t ngx_http_cache_purge_responses[] = 
     NGX_PURGE_RESPONSE(500, "key_mismatch", "Internal Server Error", "The configured cache key does not satisfy the namespace contract."),
     NGX_PURGE_RESPONSE(500, "delete_failed", "Internal Server Error", "At least one deletion failed; some files may already have been removed."),
     NGX_PURGE_RESPONSE(500, "scan_failed", "Internal Server Error", "The cache scan failed; some files may already have been processed."),
-    NGX_PURGE_RESPONSE(500, "internal_error", "Internal Server Error", "The operation could not be completed; consult the server error log.")
+    NGX_PURGE_RESPONSE(500, "internal_error", "Internal Server Error", "The operation could not be completed; consult the server error log."),
+    NGX_PURGE_RESPONSE(507, "namespace_full", "Insufficient Storage", "The cache purge namespace rule table is full; increase cache_purge_namespace and restart."),
+    NGX_PURGE_RESPONSE(507, "refresh_namespace_full", "Insufficient Storage", "The cache purge namespace rule table is full; all cache entries were invalidated.")
 };
 
 typedef char ngx_http_cache_purge_catalog_size[

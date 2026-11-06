@@ -8,7 +8,7 @@ Configuration reference: [directives](DIRECTIVES.md).
 
 Use generation keys when newly arriving requests must stop using stale content as soon as PURGE completes. A request already fetching from the origin may finish later, but its old cache write cannot become a HIT for new requests. Physical files are deleted separately.
 
-A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. The state is committed on graceful shutdown, so a planned restart reuses the epoch and the rules; a run that does not reach the shutdown hook leaves a marker and the next start rotates the epoch. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
+A namespace groups keys that share invalidation rules. Keep its state directory with the cache across restarts. The master process recreates the dirty marker at startup and takes an exclusive state-directory lock; a graceful shutdown commits the state, fsyncs it, removes the marker and releases the lock. A run that does not reach the shutdown hook leaves the marker, and the next start rotates the epoch. Consequently `nginx -t`/`-T` are pure configuration checks, a reload keeps the existing namespace, and a second live master cannot share the same state directory. Sharing a namespace across cache paths shares invalidation, while cleanup only targets the addressed path. See [performance tuning](#performance-tuning) before deployment.
 
 <a id="reading-cache-files"></a>
 

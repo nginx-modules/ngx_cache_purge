@@ -218,6 +218,7 @@ location = /cache_purge_queue_status {
 | `epoch` | String / 10 digits | Epoch of the running namespace state; a full restart starts a new one |
 | `baseline` | String / 16 lowercase hex digits | Live generation of every key that no rule has raised; a namespace-wide invalidation sets it to `serial` |
 | `serial` | String / 16 lowercase hex digits | Sequence number starting at 1, advanced by every published invalidation in this epoch |
+| `full` | Integer / events | Rule-allocation failures that reset this namespace; nonzero means `cache_purge_namespace` was exhausted |
 | `rules` | Boolean | `true` while an exact or prefix invalidation is active, until the next namespace-wide invalidation (shared-memory pressure can broaden an invalidation to the whole namespace as well) |
 
 `baseline` and `serial` use the 16-digit form of the generation in a cache key, so they compare as plain strings. `namespaces_complete` is `false` when the list was cut short to fit the reply. Returned entries remain usable; treat a missing namespace as unknown. See [reading cache files in generation mode](OPERATIONS.md#reading-cache-files) for how to use these fields.
@@ -266,9 +267,11 @@ Context: http
 
 Groups logical keys that share invalidation rules. Declare the namespace before using it in `cache_purge_key`. Its name must contain 1–32 ASCII letters, digits, `_` or `-`. The shared-memory size must be at least eight system memory pages; this allocation is separate from the cleanup queue.
 
-The state directory stores small marker files that distinguish full restarts. Keep it outside cache and temporary directories, and retain it for as long as the cache may exist. Creating a marker exclusively prevents reuse of an existing restart identifier. Deleting these markers while keeping cache files can make stale versions reachable again. No fsync/power-loss durability is promised.
+The master process owns the state directory. At startup it takes an exclusive `fcntl` write lock on `<state-directory>/.lock`, restores `<namespace>.state` when the previous shutdown was clean, creates `<namespace>.running` as an empty dirty marker, and creates a new 10-digit epoch file when it must start cold. A graceful shutdown persists the snapshot, fsyncs it, removes the dirty marker and releases the lock. A crashed run leaves the marker, so the next startup rotates the epoch.
 
-An ordinary reload retains the namespace state. Changing its size or path, or removing the namespace, requires a full restart.
+Keep the directory outside cache and temporary directories, and retain it for as long as the cache may exist. Deleting the state or epoch files while keeping cache files can make stale versions reachable again. `nginx -t` and `nginx -T` only validate the configuration; they do not lock, restore, rotate, create or remove any state. Two live masters (a second container or a binary upgrade) cannot share one state directory: the second start fails with an `[emerg]` lock diagnostic.
+
+An ordinary reload retains the namespace state. Changing its size, path or name, or adding/removing a namespace, requires a full restart. A startup that cannot fit the persisted rules into the configured shared zone fails with `[emerg]` and asks for a larger `cache_purge_namespace`; it does not silently start empty. Rule-allocation failure at runtime resets the namespace and returns `507 namespace_full` (`refresh_namespace_full` for REFRESH).
 
 ## `cache_purge_key`
 

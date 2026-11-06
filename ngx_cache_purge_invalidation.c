@@ -3,7 +3,7 @@
  * Distributed under the same BSD license as ngx_cache_purge_module.c.
  */
 #include <ngx_config.h>
-#include "ngx_cache_purge_invalidation.h"
+#include "ngx_cache_purge.h"
 
 #if (NGX_HTTP_CACHE)
 
@@ -18,11 +18,7 @@ struct ngx_http_cache_purge_rule_s {
 
 struct ngx_http_cache_purge_generation_s {
     ngx_uint_t                   version;
-    ngx_pid_t                    marker_pid;
-    ngx_pid_t                    owner;
-    ngx_int_t                  (*mark)(ngx_http_cache_purge_namespace_t *ns,
-                                      ngx_pid_t owner);
-    uint64_t                     serial, baseline;
+    uint64_t                     serial, baseline, full;
     u_char                       epoch[10];
     ngx_str_t                    state_path;
     ngx_http_cache_purge_rule_t  *exact, *prefix, *allocated, *tail, *garbage;
@@ -53,6 +49,12 @@ typedef struct {
     ngx_flag_t                        evaluating;
 } ngx_http_cache_purge_generation_request_t;
 
+/* Set once the master has acquired every namespace state lock. */
+static ngx_flag_t ngx_cache_purge_state_booted;
+
+static void ngx_http_cache_purge_generation_reset(
+    ngx_http_cache_purge_generation_t *state);
+
 
 /* -- persisted namespace state ----------------------------------------- */
 
@@ -74,9 +76,10 @@ typedef struct {
 #define NGX_CACHE_PURGE_STATE_SUFFIX   "state"
 #define NGX_CACHE_PURGE_TMP_SUFFIX     "tmp"
 #define NGX_CACHE_PURGE_RUNNING_SUFFIX "running"
+#define NGX_CACHE_PURGE_LOCK_NAME      ".lock"
 #define NGX_CACHE_PURGE_STATE_MAGIC    0x4e435047u  /* "NCPG" */
 #define NGX_CACHE_PURGE_STATE_VERSION  2
-#define NGX_CACHE_PURGE_NAMESPACE_VERSION  3
+#define NGX_CACHE_PURGE_NAMESPACE_VERSION  4
 #define NGX_CACHE_PURGE_STATE_MAX      (64 * 1024 * 1024)
 #define NGX_CACHE_PURGE_STATE_HEADER   64
 #define NGX_CACHE_PURGE_STATE_CRC      56
@@ -330,37 +333,97 @@ ngx_http_cache_purge_sync_state_dir(ngx_http_cache_purge_namespace_t *ns)
 }
 
 
-void
-ngx_http_cache_purge_generation_clear_running(
-    ngx_http_cache_purge_namespace_t *ns, ngx_pid_t owner)
+/*
+ * One process-wide lock per state directory.  fcntl record locks are owned
+ * by the process, not the descriptor, so forked workers inheriting the
+ * descriptor cannot keep the lock after the master exits.  flock on the
+ * directory itself would outlive the master through those inherited fds.
+ */
+static ngx_int_t
+ngx_http_cache_purge_state_lock(ngx_http_cache_purge_namespace_t *ns)
 {
-    u_char  path[NGX_MAX_PATH + 1];
+#if (NGX_WIN32)
+    ns->lock_fd = NGX_INVALID_FILE;
+    return NGX_OK;
+#else
+    u_char      path[NGX_MAX_PATH + 1];
+    u_char     *p;
+    ngx_fd_t    fd;
+    struct flock fl;
 
-    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
-                                        owner, path, sizeof(path) - 1)
-        != NGX_OK)
+    if (ns->state_path->name.len + sizeof("/" NGX_CACHE_PURGE_LOCK_NAME)
+        > sizeof(path))
     {
+        return NGX_ERROR;
+    }
+    p = ngx_snprintf(path, sizeof(path) - 1, "%V/%s",
+                     &ns->state_path->name, NGX_CACHE_PURGE_LOCK_NAME);
+    *p = '\0';
+
+    fd = ngx_open_file(path, NGX_FILE_RDWR, NGX_FILE_CREATE_OR_OPEN,
+                       NGX_FILE_DEFAULT_ACCESS);
+    if (fd == NGX_INVALID_FILE) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot open namespace lock \"%s\"",
+                      path);
+        return NGX_ERROR;
+    }
+
+    ngx_memzero(&fl, sizeof(fl));
+    fl.l_type = F_WRLCK;
+    fl.l_whence = SEEK_SET;
+
+    if (fcntl(fd, F_SETLK, &fl) == -1) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: namespace \"%V\" is locked by another "
+                      "live nginx master; a binary upgrade or a second "
+                      "container using the same state directory is not "
+                      "supported", &ns->name);
+        (void) ngx_close_file(fd);
+        return NGX_ERROR;
+    }
+
+    ns->lock_fd = fd;
+    return NGX_OK;
+#endif
+}
+
+
+static void
+ngx_http_cache_purge_state_unlock(ngx_http_cache_purge_namespace_t *ns)
+{
+#if !(NGX_WIN32)
+    struct flock fl;
+#endif
+
+    if (ns->lock_fd == NGX_INVALID_FILE) {
         return;
     }
 
-    (void) ngx_delete_file(path);
-    (void) ngx_http_cache_purge_sync_state_dir(ns);
+#if !(NGX_WIN32)
+    ngx_memzero(&fl, sizeof(fl));
+    fl.l_type = F_UNLCK;
+    fl.l_whence = SEEK_SET;
+    (void) fcntl(ns->lock_fd, F_SETLK, &fl);
+#endif
+
+    if (ngx_close_file(ns->lock_fd) == NGX_FILE_ERROR) {
+        ngx_log_error(NGX_LOG_ALERT, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot close the state lock for "
+                      "namespace \"%V\"", &ns->name);
+    }
+    ns->lock_fd = NGX_INVALID_FILE;
 }
 
 
 static ngx_int_t
-ngx_http_cache_purge_create_running(ngx_http_cache_purge_namespace_t *ns,
-    ngx_pid_t owner)
+ngx_http_cache_purge_running_create(ngx_http_cache_purge_namespace_t *ns)
 {
     u_char    path[NGX_MAX_PATH + 1];
-    u_char    buf[32];
-    u_char   *p;
     ngx_fd_t  fd;
-    ssize_t   n;
-    size_t    len;
 
     if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
-                                        owner, path, sizeof(path) - 1)
+                                        0, path, sizeof(path) - 1)
         != NGX_OK)
     {
         return NGX_ERROR;
@@ -377,27 +440,37 @@ ngx_http_cache_purge_create_running(ngx_http_cache_purge_namespace_t *ns,
         return NGX_ERROR;
     }
 
-    p = ngx_snprintf(buf, sizeof(buf) - 1, "%P", owner);
-    len = p - buf;
-
-    n = ngx_write_fd(fd, buf, len);
-
-    if (n != (ssize_t) len) {
-        (void) ngx_close_file(fd);
-        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
-                      "ngx_cache_purge: cannot write \"%s\"", path);
-        return NGX_ERROR;
-    }
-
 #if !(NGX_WIN32)
     if (fsync(fd) == -1) {
         (void) ngx_close_file(fd);
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot sync \"%s\"", path);
         return NGX_ERROR;
     }
 #endif
 
     if (ngx_close_file(fd) == NGX_FILE_ERROR) {
         return NGX_ERROR;
+    }
+
+    return ngx_http_cache_purge_sync_state_dir(ns);
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_running_remove(ngx_http_cache_purge_namespace_t *ns)
+{
+    u_char  path[NGX_MAX_PATH + 1];
+
+    if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_RUNNING_SUFFIX,
+                                        0, path, sizeof(path) - 1)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (ngx_delete_file(path) == NGX_FILE_ERROR) {
+        return ngx_errno == NGX_ENOENT ? NGX_DECLINED : NGX_ERROR;
     }
 
     return ngx_http_cache_purge_sync_state_dir(ns);
@@ -429,7 +502,9 @@ ngx_http_cache_purge_running_exists(ngx_http_cache_purge_namespace_t *ns)
         name = ngx_de_name(&dir);
         nlen = ngx_de_namelen(&dir);
 
-        if (nlen < tlen + 1 + len
+        /* Accept the current <namespace>.running marker and the legacy
+         * <namespace>.<pid>.running form left by older releases. */
+        if (nlen <= tlen + len
             || ngx_memcmp(name, token, tlen) != 0
             || name[tlen] != '.'
             || ngx_memcmp(name + nlen - len, ".running", len) != 0)
@@ -474,11 +549,17 @@ ngx_http_cache_purge_running_clear_all(ngx_http_cache_purge_namespace_t *ns)
         name = ngx_de_name(&dir);
         nlen = ngx_de_namelen(&dir);
 
-        if (nlen < tlen + 1 + len
+        if (nlen <= tlen + len
             || ngx_memcmp(name, token, tlen) != 0
             || name[tlen] != '.'
             || ngx_memcmp(name + nlen - len, ".running", len) != 0)
         {
+            continue;
+        }
+
+        /* The current marker is recreated before this sweep so a crash
+         * during boot still leaves a dirty namespace behind. */
+        if (nlen == tlen + 1 + len) {
             continue;
         }
 
@@ -549,7 +630,7 @@ ngx_http_cache_purge_insert_rule(ngx_slab_pool_t *slab,
 
 static ngx_int_t
 ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
-    ngx_slab_pool_t *slab)
+    ngx_slab_pool_t *slab, ngx_flag_t *too_large)
 {
     ngx_http_cache_purge_generation_t *state = ns->shared;
     ngx_file_info_t                    fi;
@@ -563,15 +644,17 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
     u_char                            *buf, *p, *end;
     ngx_int_t                          rc;
 
+    *too_large = 0;
+
     if (ngx_http_cache_purge_state_path(ns, NGX_CACHE_PURGE_STATE_SUFFIX,
                                         0, path, sizeof(path) - 1)
         != NGX_OK)
     {
-        return NGX_DECLINED;
+        return NGX_ERROR;
     }
 
     if (ngx_file_info(path, &fi) == NGX_FILE_ERROR) {
-        return NGX_DECLINED;
+        return ngx_errno == NGX_ENOENT ? NGX_DECLINED : NGX_ERROR;
     }
 
     file_size = ngx_file_size(&fi);
@@ -584,13 +667,13 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
 
     buf = ngx_alloc((size_t) file_size, ns->pool->log);
     if (buf == NULL) {
-        return NGX_DECLINED;
+        return NGX_ERROR;
     }
 
     fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
     if (fd == NGX_INVALID_FILE) {
         ngx_free(buf);
-        return NGX_DECLINED;
+        return NGX_ERROR;
     }
 
     offset = 0;
@@ -685,7 +768,8 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
                                              kind == 1, generation)
             != NGX_OK)
         {
-            rc = NGX_DECLINED;
+            rc = NGX_ERROR;
+            *too_large = 1;
             break;
         }
     }
@@ -708,21 +792,11 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
         state->serial = 1;
         ngx_memzero(state->epoch, 10);
         ngx_free(buf);
-        return NGX_DECLINED;
+        return rc;
     }
 
     ngx_free(buf);
     return NGX_OK;
-}
-
-
-void
-ngx_http_cache_purge_generation_set_owner(ngx_http_cache_purge_namespace_t *ns,
-    ngx_pid_t owner)
-{
-    if (ns->shared != NULL) {
-        ns->shared->owner = owner;
-    }
 }
 
 
@@ -923,13 +997,216 @@ ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
 }
 
 
+/*
+ * A new epoch is a persistent O_EXCL marker.  Keeping the marker files with
+ * the cache prevents an old epoch value from becoming reachable again.
+ */
+static ngx_int_t
+ngx_http_cache_purge_generation_new_epoch(
+    ngx_http_cache_purge_namespace_t *ns)
+{
+    ngx_http_cache_purge_generation_t  *state = ns->shared;
+    ngx_file_t                          file;
+
+    ngx_memzero(&file, sizeof(file));
+    file.fd = NGX_INVALID_FILE;
+    file.log = ns->pool->log;
+
+    if (ngx_create_temp_file(&file, ns->state_path, ns->pool, 1, 0,
+                             NGX_FILE_OWNER_ACCESS)
+        != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
+                      "ngx_cache_purge: cannot create a new epoch for "
+                      "namespace \"%V\" in \"%V\"; check the state directory "
+                      "and restart nginx", &ns->name, &ns->state_path->name);
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(state->epoch, file.name.data + file.name.len - 10, 10);
+    ngx_pool_run_cleanup_file(ns->pool, file.fd);
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_generation_boot_namespace(
+    ngx_http_cache_purge_namespace_t *ns)
+{
+    ngx_http_cache_purge_generation_t  *state = ns->shared;
+    ngx_slab_pool_t                    *slab;
+    ngx_flag_t                          too_large;
+    ngx_int_t                           rc;
+
+    if (state == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
+                      "ngx_cache_purge: namespace \"%V\" has no shared state; "
+                      "restart nginx", &ns->name);
+        return NGX_ERROR;
+    }
+
+    slab = (ngx_slab_pool_t *) ns->zone->shm.addr;
+
+    if (ngx_http_cache_purge_state_lock(ns) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    ns->boot_dirty = ngx_http_cache_purge_running_exists(ns);
+
+    if (ns->boot_dirty) {
+        ngx_log_error(NGX_LOG_WARN, ns->pool->log, 0,
+                      "ngx_cache_purge: namespace \"%V\" was not shut down "
+                      "cleanly; rotating its epoch", &ns->name);
+
+        /*
+         * Recreate the current marker before sweeping legacy markers.  A
+         * crash anywhere below must still leave a dirty namespace so the
+         * next start rotates instead of restoring the pre-crash snapshot.
+         */
+        if (ngx_http_cache_purge_running_create(ns) != NGX_OK) {
+            return NGX_ERROR;
+        }
+        ngx_http_cache_purge_running_clear_all(ns);
+        ngx_http_cache_purge_generation_reset(state);
+        state->baseline = state->serial = 1;
+        state->full = 0;
+
+        if (ngx_http_cache_purge_generation_new_epoch(ns) != NGX_OK) {
+            return NGX_ERROR;
+        }
+
+    } else {
+        rc = ngx_http_cache_purge_generation_restore(ns, slab, &too_large);
+
+        if (rc == NGX_DECLINED) {
+            state->baseline = state->serial = 1;
+            state->full = 0;
+
+            if (ngx_http_cache_purge_generation_new_epoch(ns) != NGX_OK) {
+                return NGX_ERROR;
+            }
+
+        } else if (rc != NGX_OK) {
+            if (too_large) {
+                ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
+                              "ngx_cache_purge: namespace \"%V\" persisted "
+                              "rules do not fit its %uz byte shared zone; "
+                              "increase cache_purge_namespace and restart "
+                              "nginx", &ns->name, ns->zone->shm.size);
+            } else {
+                ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
+                              "ngx_cache_purge: cannot restore the persisted "
+                              "state of namespace \"%V\"; check the state "
+                              "directory and restart nginx", &ns->name);
+            }
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_cache_purge_running_create(ns) != NGX_OK) {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+ngx_int_t
+ngx_http_cache_purge_generation_boot(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t   *cmcf;
+    ngx_http_cache_purge_namespace_t  **namespaces;
+    ngx_uint_t                          i, j;
+
+    if (ngx_test_config || ngx_dump_config) {
+        return NGX_OK;
+    }
+    if (ngx_cache_purge_state_booted) {
+        return NGX_OK;
+    }
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL) {
+        ngx_cache_purge_state_booted = 1;
+        return NGX_OK;
+    }
+
+    namespaces = cmcf->namespaces.elts;
+
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        if (ngx_http_cache_purge_generation_boot_namespace(namespaces[i])
+            != NGX_OK)
+        {
+            for (j = 0; j <= i; j++) {
+                if (namespaces[j]->lock_fd == NGX_INVALID_FILE) {
+                    continue;
+                }
+                if (!namespaces[j]->boot_dirty) {
+                    (void) ngx_http_cache_purge_running_remove(namespaces[j]);
+                }
+                ngx_http_cache_purge_state_unlock(namespaces[j]);
+            }
+            return NGX_ERROR;
+        }
+    }
+
+    ngx_cache_purge_state_booted = 1;
+    return NGX_OK;
+}
+
+
+void
+ngx_http_cache_purge_generation_shutdown(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t   *cmcf;
+    ngx_http_cache_purge_namespace_t  **namespaces;
+    ngx_uint_t                          i;
+
+    if (!ngx_cache_purge_state_booted) {
+        return;
+    }
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf != NULL) {
+        namespaces = cmcf->namespaces.elts;
+
+        for (i = 0; i < cmcf->namespaces.nelts; i++) {
+            if (ngx_http_cache_purge_generation_persist(namespaces[i])
+                == NGX_OK)
+            {
+                if (ngx_http_cache_purge_running_remove(namespaces[i])
+                    == NGX_ERROR)
+                {
+                    ngx_log_error(NGX_LOG_ERR, namespaces[i]->pool->log,
+                                  ngx_errno,
+                                  "ngx_cache_purge: cannot remove the running "
+                                  "marker of namespace \"%V\"",
+                                  &namespaces[i]->name);
+                }
+            }
+
+            ngx_http_cache_purge_state_unlock(namespaces[i]);
+        }
+    }
+
+    ngx_cache_purge_state_booted = 0;
+}
+
+
+/*
+ * Shared-zone initialization runs while nginx parses a configuration, which
+ * includes -t/-T, reload and the new master of a binary upgrade.  It must
+ * therefore stay purely in memory; the master lifecycle owns every
+ * persistent artifact and creates/restores it once in generation_boot().
+ */
 static ngx_int_t
 ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
 {
     ngx_http_cache_purge_namespace_t *old = data, *ns = zone->data;
     ngx_http_cache_purge_generation_t *state;
     ngx_slab_pool_t                    *slab;
-    ngx_file_t                         file;
 
     slab = (ngx_slab_pool_t *) zone->shm.addr;
     if (old != NULL || zone->shm.exists) {
@@ -960,7 +1237,19 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
             return NGX_ERROR;
         }
         ns->shared = state;
+        if (old != NULL) {
+            /* The lock outlives the old cycle that owns its descriptor. */
+            ns->lock_fd = old->lock_fd;
+        }
         return NGX_OK;
+    }
+
+    if (ngx_cache_purge_state_booted) {
+        ngx_log_error(NGX_LOG_EMERG, zone->shm.log, 0,
+                      "ngx_cache_purge: cache purge namespace zone identity "
+                      "changed; full restart required (zone \"%V\")",
+                      &zone->shm.name);
+        return NGX_ERROR;
     }
 
     state = ngx_slab_calloc(slab, sizeof(*state) + ns->state_path->name.len);
@@ -968,7 +1257,6 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
         return NGX_ERROR;
     }
     state->version = NGX_CACHE_PURGE_NAMESPACE_VERSION;
-    state->mark = ngx_http_cache_purge_create_running;
     state->serial = state->baseline = 1;
     state->state_path.len = ns->state_path->name.len;
     state->state_path.data = (u_char *) (state + 1);
@@ -977,32 +1265,6 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
 
     slab->data = state;
     ns->shared = state;
-
-    /*
-     * Restore only when the previous run reached its shutdown hook.  A
-     * leftover running marker means invalidation rules may not have been
-     * committed, so the epoch must rotate instead: a file whose rule was
-     * lost would otherwise become reachable again.
-     */
-    if (ngx_http_cache_purge_running_exists(ns)) {
-        ngx_http_cache_purge_running_clear_all(ns);
-
-    } else if (ngx_http_cache_purge_generation_restore(ns, slab) == NGX_OK) {
-        return NGX_OK;
-    }
-
-    /* Persistent O_EXCL markers prevent epoch reuse after a full restart.
-     * The configured state directory must be retained with its cache. */
-    ngx_memzero(&file, sizeof(file));
-    file.fd = NGX_INVALID_FILE;
-    file.log = zone->shm.log;
-    if (ngx_create_temp_file(&file, ns->state_path, ns->pool, 1, 0,
-                             NGX_FILE_OWNER_ACCESS) != NGX_OK)
-    {
-        return NGX_ERROR;
-    }
-    ngx_memcpy(state->epoch, file.name.data + file.name.len - 10, 10);
-    ngx_pool_run_cleanup_file(ns->pool, file.fd);
     return NGX_OK;
 }
 
@@ -1044,6 +1306,8 @@ ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
     }
     ns->name = *name;
     ns->pool = cf->pool;
+    ns->lock_fd = NGX_INVALID_FILE;
+    ns->boot_dirty = 0;
     ns->state_path = ngx_pcalloc(cf->pool, sizeof(ngx_path_t));
     if (ns->state_path == NULL) {
         return NULL;
@@ -1194,7 +1458,6 @@ ngx_http_cache_purge_generation_invalidate(ngx_http_cache_purge_namespace_t *ns,
     ngx_http_cache_purge_rule_t        *node, **link;
     ngx_slab_pool_t                    *slab;
     ngx_uint_t                         n;
-    ngx_pid_t                          owner;
     size_t                             i, len;
     ngx_flag_t                         prefix;
     u_char                             c, *epoch;
@@ -1226,21 +1489,6 @@ ngx_http_cache_purge_generation_invalidate(ngx_http_cache_purge_namespace_t *ns,
         return NGX_ERROR;
     }
 
-    /*
-     * The marker must exist before the rule change becomes visible, and it
-     * has to name the master that owns this shared memory.  Workers learn
-     * that pid from ngx_parent, so a daemonised start still removes the
-     * marker it created.
-     */
-    owner = state->owner;
-
-    if (state->marker_pid != owner) {
-        if (state->mark != NULL && state->mark(ns, owner) != NGX_OK) {
-            ngx_shmtx_unlock(&slab->mutex);
-            return NGX_ERROR;
-        }
-        state->marker_pid = owner;
-    }
     for (n = 0; n < 64 && state->garbage != NULL; n++) {
         node = state->garbage;
         state->garbage = node->allocated;
@@ -1268,11 +1516,15 @@ ngx_http_cache_purge_generation_invalidate(ngx_http_cache_purge_namespace_t *ns,
         if (*link == NULL) {
             node = ngx_slab_calloc_locked(slab, sizeof(*node));
             if (node == NULL) {
-                /* Bounded memory: pressure broadens invalidation to the
-                 * namespace; it never makes an invalidated key reachable. */
+                /*
+                 * Bounded memory: pressure broadens invalidation to the
+                 * namespace so an invalidated key never becomes reachable.
+                 * Report it explicitly instead of claiming success.
+                 */
                 ngx_http_cache_purge_generation_reset(state);
+                state->full++;
                 ngx_shmtx_unlock(&slab->mutex);
-                return NGX_OK;
+                return NGX_CACHE_PURGE_NAMESPACE_FULL;
             }
             node->byte = c;
             node->allocated = state->allocated;
@@ -1425,6 +1677,7 @@ ngx_http_cache_purge_generation_view(ngx_http_cache_purge_namespace_t *ns,
     ngx_memcpy(view->epoch, ns->shared->epoch, 10);
     view->serial = ns->shared->serial;
     view->baseline = ns->shared->baseline;
+    view->full = ns->shared->full;
     view->rules = ns->shared->exact != NULL || ns->shared->prefix != NULL;
     ngx_shmtx_unlock(&slab->mutex);
 }

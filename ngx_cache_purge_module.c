@@ -222,30 +222,14 @@ static ngx_http_module_t  ngx_http_cache_purge_module_ctx = {
 };
 
 /*
- * Single-process mode never runs the master hooks, so commit the namespace
- * state here; the normal exit path is the master hook below.
+ * Single-process mode never runs the master hooks, so it commits the
+ * namespace state and releases the state locks here instead.
  */
 static void
 ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle)
 {
-    ngx_http_cache_purge_main_conf_t   *cmcf;
-    ngx_http_cache_purge_namespace_t  **namespaces;
-    ngx_uint_t                          i;
-
     if (cycle != NULL && ngx_process == NGX_PROCESS_SINGLE) {
-        cmcf = ngx_http_cycle_get_module_main_conf(cycle,
-                                                ngx_http_cache_purge_module);
-        if (cmcf != NULL) {
-            namespaces = cmcf->namespaces.elts;
-            for (i = 0; i < cmcf->namespaces.nelts; i++) {
-                if (ngx_http_cache_purge_generation_persist(namespaces[i])
-                    == NGX_OK)
-                {
-                    ngx_http_cache_purge_generation_clear_running(
-                        namespaces[i], ngx_pid);
-                }
-            }
-        }
+        ngx_http_cache_purge_generation_shutdown(cycle);
     }
 
     ngx_http_cache_purge_exit_worker(cycle);
@@ -253,43 +237,15 @@ ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle)
 
 
 /*
- * A planned shutdown is the only point where the namespace rules can be
- * committed without adding file I/O to the invalidation path.  When the
- * commit fails, every running marker is kept so the next start rotates the
- * epoch rather than trusting a partially written snapshot.
+ * A planned shutdown is the only point where the namespace rules are
+ * committed.  The snapshot is persisted first, then the dirty marker is
+ * removed and the state lock released.  A failed snapshot keeps its marker
+ * so the next boot rotates the epoch instead of trusting stale rules.
  */
 static void
 ngx_http_cache_purge_exit_master(ngx_cycle_t *cycle)
 {
-    ngx_http_cache_purge_main_conf_t   *cmcf;
-    ngx_http_cache_purge_namespace_t  **namespaces;
-    ngx_uint_t                          i;
-    ngx_flag_t                          failed;
-
-    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
-                                               ngx_http_cache_purge_module);
-    if (cmcf == NULL || cmcf->namespaces.nelts == 0) {
-        return;
-    }
-
-    namespaces = cmcf->namespaces.elts;
-    failed = 0;
-
-    for (i = 0; i < cmcf->namespaces.nelts; i++) {
-        if (ngx_http_cache_purge_generation_persist(namespaces[i])
-            != NGX_OK)
-        {
-            failed = 1;
-        }
-    }
-
-    if (failed) {
-        return;
-    }
-
-    for (i = 0; i < cmcf->namespaces.nelts; i++) {
-        ngx_http_cache_purge_generation_clear_running(namespaces[i], ngx_pid);
-    }
+    ngx_http_cache_purge_generation_shutdown(cycle);
 }
 
 
