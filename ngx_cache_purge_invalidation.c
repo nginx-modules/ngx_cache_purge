@@ -504,7 +504,7 @@ ngx_http_cache_purge_running_exists(ngx_http_cache_purge_namespace_t *ns)
 
         /* Accept the current <namespace>.running marker and the legacy
          * <namespace>.<pid>.running form left by older releases. */
-        if (nlen <= tlen + len
+        if (nlen < tlen + len
             || ngx_memcmp(name, token, tlen) != 0
             || name[tlen] != '.'
             || ngx_memcmp(name + nlen - len, ".running", len) != 0)
@@ -549,7 +549,7 @@ ngx_http_cache_purge_running_clear_all(ngx_http_cache_purge_namespace_t *ns)
         name = ngx_de_name(&dir);
         nlen = ngx_de_namelen(&dir);
 
-        if (nlen <= tlen + len
+        if (nlen < tlen + len
             || ngx_memcmp(name, token, tlen) != 0
             || name[tlen] != '.'
             || ngx_memcmp(name + nlen - len, ".running", len) != 0)
@@ -559,7 +559,7 @@ ngx_http_cache_purge_running_clear_all(ngx_http_cache_purge_namespace_t *ns)
 
         /* The current marker is recreated before this sweep so a crash
          * during boot still leaves a dirty namespace behind. */
-        if (nlen == tlen + 1 + len) {
+        if (nlen == tlen + len) {
             continue;
         }
 

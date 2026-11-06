@@ -2149,22 +2149,40 @@ subtest 'an unclean shutdown rotates the epoch' => sub {
     my $epoch = namespace_view($s, 'objects')->{epoch};
     ok(-e $marker, 'boot creates the dirty marker');
     warm($s);
-    await(sub { (request($s, '/cache/item')->{headers}{'x-cache'} || '') eq 'HIT' },
-          'second entry did not warm');
 
-    kill 'KILL', -$s->{pid};
-    waitpid($s->{pid}, 0);
-    delete $s->{pid};
-    stop_origin($s);
+    # Commit a snapshot first.  A later crash must not restore this snapshot:
+    # it predates the invalidation below.  Without this step the test would
+    # pass even if running_exists() failed to see the dirty marker, because a
+    # missing snapshot also forces a new epoch.
+    stop_server($s);
+    ok(-e generation_state_path($s),
+       'graceful shutdown commits the namespace state');
+    ok(!-e $marker, 'graceful shutdown removes the dirty marker');
+
+    my $live = start_server('restart-unclean', workers => 1, strict => 1,
+                            throttle => '60s');
+    ok(-e $marker, 'the restarted master recreates the dirty marker');
+    is(namespace_view($live, 'objects')->{epoch}, $epoch,
+       'the restarted master reuses the committed epoch');
+    is(request($live, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'the committed entry is still cached after restart');
+    is(request($live, '/cache/warm', 'PURGE')->{status}, 200,
+       'the invalidation is accepted before the kill');
+    my $live_epoch = namespace_view($live, 'objects')->{epoch};
+
+    kill 'KILL', -$live->{pid};
+    waitpid($live->{pid}, 0);
+    delete $live->{pid};
+    stop_origin($live);
     ok(-e $marker, 'a killed run leaves its marker behind');
 
     my $again = start_server('restart-unclean', workers => 1, strict => 1,
                              throttle => '60s');
     ok(-e $marker, 'the next boot recreates the dirty marker');
-    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+    isnt(namespace_view($again, 'objects')->{epoch}, $live_epoch,
          'the next boot rotates the epoch');
-    is(request($again, '/cache/item')->{headers}{'x-cache'}, 'MISS',
-       'the rotated epoch does not reuse an entry from the killed run');
+    is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'the rotated epoch does not resurrect an invalidated entry');
     stop_server($again);
 };
 
