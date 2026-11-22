@@ -1793,6 +1793,25 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_http_cache_purge_main_conf_t  *cmcf;
     ngx_http_cache_purge_loc_conf_t  **location;
     ngx_flag_t                         purge_set;
+# if (NGX_HTTP_FASTCGI || NGX_HTTP_PROXY || NGX_HTTP_SCGI || NGX_HTTP_UWSGI)
+    ngx_flag_t                         any_pass;
+# endif
+# if (NGX_HTTP_FASTCGI)
+    ngx_http_fastcgi_loc_conf_t       *flcf;
+    ngx_flag_t                         pass_fastcgi;
+# endif
+# if (NGX_HTTP_PROXY)
+    ngx_http_proxy_loc_conf_t         *plcf;
+    ngx_flag_t                         pass_proxy;
+# endif
+# if (NGX_HTTP_SCGI)
+    ngx_http_scgi_loc_conf_t          *slcf;
+    ngx_flag_t                         pass_scgi;
+# endif
+# if (NGX_HTTP_UWSGI)
+    ngx_http_uwsgi_loc_conf_t         *ulcf;
+    ngx_flag_t                         pass_uwsgi;
+# endif
     /*
      * Save the local handler for explicit directives and named locations.
      * An if-block has no local handler: inherit the saved parent handler
@@ -1981,10 +2000,45 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     }
 # endif
 
+    /* prefer the protocol with an upstream in this location, as in 2.x */
+# if (NGX_HTTP_FASTCGI || NGX_HTTP_PROXY || NGX_HTTP_SCGI || NGX_HTTP_UWSGI)
+    any_pass = 0;
+# endif
+
 # if (NGX_HTTP_FASTCGI)
     ngx_http_cache_purge_merge_conf(&conf->fastcgi, &prev->fastcgi);
+    flcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_fastcgi_module);
+    pass_fastcgi = conf->fastcgi.enable
+                   && (flcf->upstream.upstream || flcf->fastcgi_lengths);
+    any_pass |= pass_fastcgi;
+# endif
 
-    if (conf->fastcgi.enable) {
+# if (NGX_HTTP_PROXY)
+    ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
+    plcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_proxy_module);
+    pass_proxy = conf->proxy.enable
+                 && (plcf->upstream.upstream || plcf->proxy_lengths);
+    any_pass |= pass_proxy;
+# endif
+
+# if (NGX_HTTP_SCGI)
+    ngx_http_cache_purge_merge_conf(&conf->scgi, &prev->scgi);
+    slcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_scgi_module);
+    pass_scgi = conf->scgi.enable
+                && (slcf->upstream.upstream || slcf->scgi_lengths);
+    any_pass |= pass_scgi;
+# endif
+
+# if (NGX_HTTP_UWSGI)
+    ngx_http_cache_purge_merge_conf(&conf->uwsgi, &prev->uwsgi);
+    ulcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_uwsgi_module);
+    pass_uwsgi = conf->uwsgi.enable
+                 && (ulcf->upstream.upstream || ulcf->uwsgi_lengths);
+    any_pass |= pass_uwsgi;
+# endif
+
+# if (NGX_HTTP_FASTCGI)
+    if (conf->fastcgi.enable && (pass_fastcgi || !any_pass)) {
         conf->conf             = &conf->fastcgi;
         conf->handler          = ngx_http_fastcgi_cache_purge_handler;
         conf->original_handler = (was_set_fastcgi || !clcf->noname)
@@ -1996,9 +2050,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 # endif
 
 # if (NGX_HTTP_PROXY)
-    ngx_http_cache_purge_merge_conf(&conf->proxy, &prev->proxy);
-
-    if (conf->proxy.enable) {
+    if (conf->proxy.enable && (pass_proxy || !any_pass)) {
         conf->conf             = &conf->proxy;
         conf->handler          = ngx_http_proxy_cache_purge_handler;
         conf->original_handler = (was_set_proxy || !clcf->noname)
@@ -2010,9 +2062,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 # endif
 
 # if (NGX_HTTP_SCGI)
-    ngx_http_cache_purge_merge_conf(&conf->scgi, &prev->scgi);
-
-    if (conf->scgi.enable) {
+    if (conf->scgi.enable && (pass_scgi || !any_pass)) {
         conf->conf             = &conf->scgi;
         conf->handler          = ngx_http_scgi_cache_purge_handler;
         conf->original_handler = (was_set_scgi || !clcf->noname)
@@ -2024,9 +2074,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 # endif
 
 # if (NGX_HTTP_UWSGI)
-    ngx_http_cache_purge_merge_conf(&conf->uwsgi, &prev->uwsgi);
-
-    if (conf->uwsgi.enable) {
+    if (conf->uwsgi.enable && (pass_uwsgi || !any_pass)) {
         conf->conf             = &conf->uwsgi;
         conf->handler          = ngx_http_uwsgi_cache_purge_handler;
         conf->original_handler = (was_set_uwsgi || !clcf->noname)
