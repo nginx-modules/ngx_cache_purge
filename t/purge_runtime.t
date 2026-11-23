@@ -156,6 +156,8 @@ REFRESH
             . "${g}_temp_path $s->{root}/gateway-temp;";
         # gateway_inherit keeps the server-level proxy_cache_purge (#83)
         my $proxy_purge = $s->{gateway_inherit} ? '' : 'proxy_cache_purge off;';
+        my $gateway_purge = $s->{gateway_no_purge} ? ''
+            : "${g}_cache_purge PURGE from 127.0.0.1;";
         my $gateway_if = $s->{gateway_if} ? 'if ($arg_t) { set $gateway_if 1; }' : '';
         $gateway_location = <<"GATEWAY";
         location /gateway/ {
@@ -169,7 +171,7 @@ REFRESH
             ${g}_param REQUEST_URI \$request_uri;
             $length_param
             ${g}_pass 127.0.0.1:$origin_port;
-            ${g}_cache_purge PURGE from 127.0.0.1;
+            $gateway_purge
             add_header X-Cache \$upstream_cache_status always;
         }
 GATEWAY
@@ -1001,6 +1003,30 @@ subtest 'inherited proxy_cache_purge does not take over *_pass locations' => sub
                "$protocol/if=$if: purged entry is unreachable");
             stop_server($s);
         }
+    }
+};
+
+subtest 'unrelated inherited purge does not intercept upstream PURGE' => sub {
+    for my $protocol (qw(fastcgi scgi uwsgi)) {
+        my $s = start_server("gateway-inherit-no-purge-$protocol", workers => 1,
+                             gateway => $protocol, gateway_inherit => 1,
+                             gateway_no_purge => 1, controlled_origin => 1,
+                             background => 0);
+        my $uri = '/gateway/first';
+        my $r = request($s, $uri);
+        is($r->{status}, 200, "$protocol: initial request reaches the upstream");
+        await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
+              "$protocol: native cache did not warm");
+
+        $r = request($s, $uri, 'PURGE');
+        is($r->{status}, 200, "$protocol: PURGE is forwarded to the upstream");
+        is($r->{content}, "$protocol origin content\n",
+           "$protocol: upstream response is preserved");
+        ok(!exists $r->{headers}{'cache-purge-code'},
+           "$protocol: inherited proxy purge did not handle the request");
+        is(request($s, $uri)->{headers}{'x-cache'}, 'HIT',
+           "$protocol: unrelated PURGE did not invalidate the native cache");
+        stop_server($s);
     }
 };
 
