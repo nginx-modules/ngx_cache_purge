@@ -58,7 +58,7 @@ sub function {
     my ($name, $text) = @_;
     $text = $source unless defined $text;
     $text =~ /((?:static\s+)?(?:ngx_inline\s+)?
-                 (?:ngx_uint_t|ngx_int_t|ngx_fd_t|ngx_msec_t|uint64_t|size_t|ssize_t|void|u_char|
+                 (?:ngx_uint_t|ngx_int_t|ngx_fd_t|ngx_msec_t|uint64_t|size_t|ssize_t|void|u_char|u_char\s*\*|
                     ngx_http_cache_purge_(?:path|stats)_t\s+\*)\n
                  ngx_http_cache_purge_\Q$name\E\([^;]*?\n\{.*?\n})/sx
         or die "missing function: $name";
@@ -159,6 +159,13 @@ subtest 'shutdown leaves unfinished thread state intact' => sub {
                . function('exit_worker') . fixture('worker_shutdown_main'));
     run(@cc, "$tmp/exit.c", '-o', "$tmp/exit");
     run("$tmp/exit");
+};
+
+subtest 'daemonized master does not start the early shutdown watchdog' => sub {
+    write_file("$tmp/daemon-watchdog.c", fixture('daemon_watchdog_shim')
+               . function('init_module') . fixture('daemon_watchdog_main'));
+    run(@cc, "$tmp/daemon-watchdog.c", '-o', "$tmp/daemon-watchdog");
+    run("$tmp/daemon-watchdog");
 };
 
 subtest 'bounded traversal and allocation-error cleanup' => sub {
@@ -262,18 +269,20 @@ subtest 'generation rules and conditional invalidation' => sub {
     $generation =~ /(typedef struct ngx_http_cache_purge_rule_s.*?)(?=typedef struct ngx_http_cache_purge_snapshot_s)/s
         or die 'missing generation state';
     my $code = "#include <ngx_config.h>\n#include <assert.h>\n#include <stdio.h>\n"
-               . "#include \"$root/ngx_cache_purge_invalidation.h\"\n" . $1
-               . fixture('generation_shim');
+               . "#include \"$root/ngx_cache_purge_invalidation.h\"\n" . $1;
+    $code .= "$1\n" while $generation =~ /^(#define NGX_CACHE_PURGE_\w+[^\n]*)/mg;
+    $code .= fixture('generation_shim') . fixture('generation_snapshot_shim');
     my $strings = read_file("$nginx/src/core/ngx_string.c");
     $strings =~ /(ngx_int_t\nngx_hextoi\(.*?\n})/s or die 'missing hextoi';
     $code .= "$1\n";
     $code .= join("\n", map { function($_, $generation) }
                    qw(generation_lookup generation_reset generation_decode
+                      put32 put64 rule_walk rule_write generation_persist_locked
                       generation_invalidate generation_stale generation_current));
     $code .= fixture('no_leak_check') if $ENV{TEST_NGINX_NO_LEAK_CHECK};
     write_file("$tmp/generation.c", $code . fixture('generation_main'));
-    run(@cc, @asan, @inc, "$tmp/generation.c", '-o', "$tmp/generation");
-    run("$tmp/generation");
+    run(@cc, @asan, '-Wno-unused-parameter', @inc, "$tmp/generation.c", '-o', "$tmp/generation");
+    run("$tmp/generation", $tmp);
 };
 
 subtest 'bounded native cache-header reader' => sub {

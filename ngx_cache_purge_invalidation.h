@@ -45,6 +45,7 @@ ngx_int_t ngx_http_cache_purge_generation_current(
  */
 ngx_int_t ngx_http_cache_purge_generation_boot(ngx_cycle_t *cycle);
 void ngx_http_cache_purge_generation_shutdown(ngx_cycle_t *cycle);
+ngx_int_t ngx_http_cache_purge_generation_persist_early(ngx_cycle_t *cycle);
 ngx_int_t ngx_http_cache_purge_generation_persist(
     ngx_http_cache_purge_namespace_t *ns);
 

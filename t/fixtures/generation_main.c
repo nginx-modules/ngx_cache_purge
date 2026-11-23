@@ -1,4 +1,4 @@
-int main(void)
+int main(int argc, char **argv)
 {
     ngx_http_cache_purge_generation_t state;
     ngx_http_cache_purge_namespace_t ns;
@@ -99,6 +99,56 @@ int main(void)
     assert(state.serial == (uint64_t) -1 && !locked);
     buffer[3] = 'x';
     assert(ngx_http_cache_purge_generation_stale(&ns, &key) == NGX_DECLINED);
+
+    /* Once an early snapshot starts, a late mutation must not escape it. */
+    {
+        ngx_pool_t    pool;
+        ngx_log_t     log;
+        ngx_path_t    path;
+        ngx_str_t     one, two;
+        ngx_http_cache_purge_rule_t  *node;
+        uint64_t      serial;
+
+        assert(argc == 2);
+        memset(&pool, 0, sizeof(pool));
+        memset(&log, 0, sizeof(log));
+        memset(&path, 0, sizeof(path));
+        pool.log = &log;
+        path.name.data = (u_char *) argv[1];
+        path.name.len = strlen(argv[1]);
+        ns.pool = &pool;
+        ns.state_path = &path;
+        ns.name.data = (u_char *) "images";
+        ns.name.len = 6;
+        one.data = (u_char *) "a";
+        one.len = 1;
+        two.data = (u_char *) "b";
+        two.len = 1;
+
+        state.serial = state.baseline = 1;
+        state.full = 0;
+        state.exact = state.prefix = NULL;
+        state.allocated = state.tail = state.garbage = NULL;
+
+        assert(ngx_http_cache_purge_generation_invalidate(&ns, &one,
+                                                          0, NULL) == NGX_OK);
+        serial = state.serial;
+        assert(ngx_http_cache_purge_generation_persist_locked(&ns, 1)
+               == NGX_OK);
+        assert(ngx_http_cache_purge_generation_invalidate(&ns, &two,
+                                                          0, NULL) == NGX_ABORT);
+        assert(state.serial == serial);
+
+        while (state.allocated != NULL) {
+            node = state.allocated;
+            state.allocated = node->allocated;
+            ngx_shmtx_lock(&slab.mutex);
+            ngx_slab_free_locked(&slab, node);
+            ngx_shmtx_unlock(&slab.mutex);
+        }
+    }
+
+    assert(live == 0 && !locked);
     puts("generation, conditional admission, memory pressure and rollover checked");
     return 0;
 }

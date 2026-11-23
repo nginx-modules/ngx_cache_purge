@@ -18,6 +18,7 @@ struct ngx_http_cache_purge_rule_s {
 
 struct ngx_http_cache_purge_generation_s {
     ngx_uint_t                   version;
+    ngx_flag_t                   draining;
     uint64_t                     serial, baseline, full;
     u_char                       epoch[10];
     ngx_str_t                    state_path;
@@ -32,9 +33,10 @@ struct ngx_http_cache_purge_generation_s {
  * still leaving invalidated files unreachable, because their generation
  * stays below the restored value.
  *
- * The snapshot is written on graceful shutdown only.  A run that does not
- * reach the shutdown hook leaves the "running" marker behind, and the next
- * start rotates the epoch instead of trusting a stale snapshot.
+ * The snapshot is written as soon as a shutdown signal is observed and again
+ * on final exit.  A run killed before a successful snapshot leaves the
+ * "running" marker behind, and the next start rotates the epoch instead of
+ * trusting a stale snapshot.
  */
 typedef struct ngx_http_cache_purge_snapshot_s ngx_http_cache_purge_snapshot_t;
 struct ngx_http_cache_purge_snapshot_s {
@@ -66,9 +68,10 @@ static void ngx_http_cache_purge_generation_reset(
  * still leaving invalidated files unreachable, because their generation
  * stays below the restored value.
  *
- * The snapshot is written on graceful shutdown only.  A run that does not
- * reach the shutdown hook leaves the running marker behind, and the next
- * start rotates the epoch instead of trusting a stale snapshot.
+ * The snapshot is written as soon as a shutdown signal is observed and again
+ * on final exit.  A run killed before a successful snapshot leaves the
+ * running marker behind, and the next start rotates the epoch instead of
+ * trusting a stale snapshot.
  *
  * Every artifact is namespace-specific: a state directory may be shared by
  * several namespaces, and they must not overwrite each other.
@@ -79,7 +82,7 @@ static void ngx_http_cache_purge_generation_reset(
 #define NGX_CACHE_PURGE_LOCK_NAME      ".lock"
 #define NGX_CACHE_PURGE_STATE_MAGIC    0x4e435047u  /* "NCPG" */
 #define NGX_CACHE_PURGE_STATE_VERSION  2
-#define NGX_CACHE_PURGE_NAMESPACE_VERSION  4
+#define NGX_CACHE_PURGE_NAMESPACE_VERSION  5
 #define NGX_CACHE_PURGE_STATE_MAX      (64 * 1024 * 1024)
 #define NGX_CACHE_PURGE_STATE_HEADER   64
 #define NGX_CACHE_PURGE_STATE_CRC      56
@@ -821,8 +824,9 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
 }
 
 
-ngx_int_t
-ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
+static ngx_int_t
+ngx_http_cache_purge_generation_persist_locked(
+    ngx_http_cache_purge_namespace_t *ns, ngx_flag_t trylock)
 {
     ngx_http_cache_purge_generation_t *state;
     ngx_http_cache_purge_rule_write_t  sizing, writing;
@@ -846,7 +850,17 @@ ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
     state = ns->shared;
     slab = (ngx_slab_pool_t *) ns->zone->shm.addr;
 
-    ngx_shmtx_lock(&slab->mutex);
+    if (trylock) {
+        if (!ngx_shmtx_trylock(&slab->mutex)) {
+            return NGX_AGAIN;
+        }
+    } else {
+        ngx_shmtx_lock(&slab->mutex);
+    }
+    if (trylock) {
+        /* No mutation may follow the snapshot that drops the dirty marker. */
+        state->draining = 1;
+    }
     serial = state->serial;
 
     ngx_memzero(&sizing, sizeof(sizing));
@@ -994,13 +1008,20 @@ ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
 
     ngx_free(buf);
 
-    ngx_shmtx_lock(&slab->mutex);
+    if (trylock) {
+        if (!ngx_shmtx_trylock(&slab->mutex)) {
+            (void) ngx_delete_file(tmp);
+            return NGX_AGAIN;
+        }
+    } else {
+        ngx_shmtx_lock(&slab->mutex);
+    }
 
     if (state->serial != serial) {
         /* A newer invalidation owns the snapshot. */
         ngx_shmtx_unlock(&slab->mutex);
         (void) ngx_delete_file(tmp);
-        return NGX_OK;
+        return trylock ? NGX_AGAIN : NGX_OK;
     }
 
     rc = ngx_rename_file(tmp, path) != NGX_FILE_ERROR ? NGX_OK : NGX_ERROR;
@@ -1015,6 +1036,13 @@ ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
     }
 
     return ngx_http_cache_purge_sync_state_dir(ns);
+}
+
+
+ngx_int_t
+ngx_http_cache_purge_generation_persist(ngx_http_cache_purge_namespace_t *ns)
+{
+    return ngx_http_cache_purge_generation_persist_locked(ns, 0);
 }
 
 
@@ -1213,6 +1241,56 @@ ngx_http_cache_purge_generation_shutdown(ngx_cycle_t *cycle)
     }
 
     ngx_cache_purge_state_booted = 0;
+}
+
+
+/*
+ * Persist the current generation rules and drop dirty markers, but keep every
+ * directory lock until the master actually exits.  A busy shared-zone mutex
+ * or an I/O error leaves the corresponding marker in place for crash-safe
+ * epoch rotation on the next boot.
+ */
+ngx_int_t
+ngx_http_cache_purge_generation_persist_early(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t   *cmcf;
+    ngx_http_cache_purge_namespace_t  **namespaces;
+    ngx_uint_t                          i;
+    ngx_int_t                           rc, result;
+
+    if (!ngx_cache_purge_state_booted) {
+        return NGX_OK;
+    }
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL) {
+        return NGX_OK;
+    }
+
+    result = NGX_OK;
+    namespaces = cmcf->namespaces.elts;
+
+    for (i = 0; i < cmcf->namespaces.nelts; i++) {
+        rc = ngx_http_cache_purge_generation_persist_locked(namespaces[i], 1);
+
+        if (rc == NGX_OK) {
+            rc = ngx_http_cache_purge_running_remove(namespaces[i]);
+            if (rc == NGX_ERROR) {
+                ngx_log_error(NGX_LOG_ERR, namespaces[i]->pool->log, ngx_errno,
+                              "ngx_cache_purge: cannot remove the running "
+                              "marker of namespace \"%V\"",
+                              &namespaces[i]->name);
+                result = NGX_ERROR;
+            }
+        } else if (rc == NGX_ERROR) {
+            result = NGX_ERROR;
+        } else if (rc == NGX_AGAIN && result == NGX_OK) {
+            result = NGX_AGAIN;
+        }
+    }
+
+    return result;
 }
 
 
@@ -1512,6 +1590,10 @@ ngx_http_cache_purge_generation_invalidate(ngx_http_cache_purge_namespace_t *ns,
      * no code acquires the admission lock while holding a namespace lock. */
     if (!ngx_shmtx_trylock(&slab->mutex)) {
         return NGX_AGAIN;
+    }
+    if (state->draining) {
+        ngx_shmtx_unlock(&slab->mutex);
+        return NGX_ABORT;
     }
     if (expected != NULL
         && (ngx_http_cache_purge_generation_decode(ns, expected, &logical,

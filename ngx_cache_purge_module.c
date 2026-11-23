@@ -31,6 +31,12 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#if !(NGX_WIN32)
+#include <pthread.h>
+#include <unistd.h>
+#endif
+
+
 
 #include "ngx_cache_purge.h"
 #include "ngx_cache_purge_upstream.h"
@@ -38,6 +44,10 @@
 #if (NGX_HTTP_CACHE)
 
 /* -- module commands ---------------------------------------------------- */
+
+
+static ngx_int_t
+ngx_http_cache_purge_init_module(ngx_cycle_t *cycle);
 
 
 static ngx_int_t
@@ -221,6 +231,147 @@ static ngx_http_module_t  ngx_http_cache_purge_module_ctx = {
     ngx_http_cache_purge_merge_loc_conf     /* merge loc conf    */
 };
 
+#if !(NGX_WIN32)
+static pthread_t               ngx_cache_purge_shutdown_thread;
+static ngx_cycle_t            *volatile ngx_cache_purge_shutdown_cycle;
+static volatile ngx_flag_t     ngx_cache_purge_shutdown_stop;
+static volatile ngx_flag_t     ngx_cache_purge_shutdown_done;
+static ngx_flag_t              ngx_cache_purge_shutdown_started;
+static ngx_flag_t              ngx_cache_purge_atfork_registered;
+static pthread_mutex_t         ngx_cache_purge_fork_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+
+static void
+ngx_http_cache_purge_atfork_prepare(void)
+{
+    (void) pthread_mutex_lock(&ngx_cache_purge_fork_mutex);
+}
+
+
+static void
+ngx_http_cache_purge_atfork_parent(void)
+{
+    (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
+}
+
+
+static void
+ngx_http_cache_purge_atfork_child(void)
+{
+    (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
+}
+
+
+static void *
+ngx_http_cache_purge_shutdown_watchdog(void *arg)
+{
+    (void) arg;
+
+    while (!ngx_cache_purge_shutdown_stop) {
+        if (!ngx_cache_purge_shutdown_done && (ngx_quit || ngx_terminate)) {
+            (void) pthread_mutex_lock(&ngx_cache_purge_fork_mutex);
+
+            if (ngx_http_cache_purge_generation_persist_early(
+                    ngx_cache_purge_shutdown_cycle) == NGX_OK)
+            {
+                ngx_cache_purge_shutdown_done = 1;
+                (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
+                break;
+            }
+
+            (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
+        }
+
+        usleep(100000);
+    }
+
+    return NULL;
+}
+
+
+static ngx_int_t
+ngx_http_cache_purge_shutdown_watchdog_start(ngx_cycle_t *cycle)
+{
+    int       rc, restore_rc;
+    sigset_t  set, oldset;
+
+    if (ngx_cache_purge_shutdown_started || ngx_test_config || ngx_dump_config) {
+        return NGX_OK;
+    }
+
+    if (!ngx_cache_purge_atfork_registered) {
+        rc = pthread_atfork(ngx_http_cache_purge_atfork_prepare,
+                            ngx_http_cache_purge_atfork_parent,
+                            ngx_http_cache_purge_atfork_child);
+        if (rc != 0) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, rc,
+                          "ngx_cache_purge: cannot register fork handlers");
+            return NGX_ERROR;
+        }
+        ngx_cache_purge_atfork_registered = 1;
+    }
+
+    ngx_cache_purge_shutdown_stop = 0;
+    ngx_cache_purge_shutdown_done = 0;
+
+    /*
+     * The master uses sigsuspend() and must receive every process signal on
+     * its own thread.  Block signals before creation so the watchdog inherits
+     * the mask from its first instruction, then restore the master's mask.
+     */
+    sigfillset(&set);
+    rc = pthread_sigmask(SIG_BLOCK, &set, &oldset);
+    if (rc != 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, rc,
+                      "ngx_cache_purge: cannot block watchdog signals");
+        return NGX_ERROR;
+    }
+
+    rc = pthread_create(&ngx_cache_purge_shutdown_thread, NULL,
+                        ngx_http_cache_purge_shutdown_watchdog, cycle);
+    restore_rc = pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+    if (restore_rc != 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, restore_rc,
+                      "ngx_cache_purge: cannot restore master signals");
+        if (rc == 0) {
+            ngx_cache_purge_shutdown_stop = 1;
+            (void) pthread_join(ngx_cache_purge_shutdown_thread, NULL);
+        }
+        return NGX_ERROR;
+    }
+
+    if (rc != 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, rc,
+                      "ngx_cache_purge: cannot create the shutdown watchdog");
+        return NGX_ERROR;
+    }
+
+    ngx_cache_purge_shutdown_started = 1;
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_cache_purge_shutdown_watchdog_stop(ngx_cycle_t *cycle)
+{
+    int  rc;
+
+    if (!ngx_cache_purge_shutdown_started) {
+        return;
+    }
+
+    ngx_cache_purge_shutdown_stop = 1;
+    rc = pthread_join(ngx_cache_purge_shutdown_thread, NULL);
+    if (rc != 0) {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, rc,
+                      "ngx_cache_purge: cannot join the shutdown watchdog");
+    }
+
+    ngx_cache_purge_shutdown_started = 0;
+}
+#endif
+
+
 /*
  * Single-process mode never runs the master hooks, so it commits the
  * namespace state and releases the state locks here instead.
@@ -229,6 +380,9 @@ static void
 ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle)
 {
     if (cycle != NULL && ngx_process == NGX_PROCESS_SINGLE) {
+#if !(NGX_WIN32)
+        ngx_http_cache_purge_shutdown_watchdog_stop(cycle);
+#endif
         ngx_http_cache_purge_generation_shutdown(cycle);
     }
 
@@ -237,14 +391,17 @@ ngx_http_cache_purge_exit_process(ngx_cycle_t *cycle)
 
 
 /*
- * A planned shutdown is the only point where the namespace rules are
- * committed.  The snapshot is persisted first, then the dirty marker is
- * removed and the state lock released.  A failed snapshot keeps its marker
- * so the next boot rotates the epoch instead of trusting stale rules.
+ * The watchdog has stopped before the final idempotent snapshot.  The dirty
+ * marker is removed before the state lock is released.  A failed snapshot
+ * keeps its marker so the next boot rotates the epoch instead of trusting
+ * stale rules.
  */
 static void
 ngx_http_cache_purge_exit_master(ngx_cycle_t *cycle)
 {
+#if !(NGX_WIN32)
+    ngx_http_cache_purge_shutdown_watchdog_stop(cycle);
+#endif
     ngx_http_cache_purge_generation_shutdown(cycle);
 }
 
@@ -255,7 +412,7 @@ ngx_module_t  ngx_http_cache_purge_module = {
     ngx_http_cache_purge_module_commands,
     NGX_HTTP_MODULE,
     NULL,                                   /* init master  */
-    NULL,                                   /* init module  */
+    ngx_http_cache_purge_init_module,       /* init module  */
     ngx_http_cache_purge_init_worker,       /* init process */
     NULL,                                   /* init thread  */
     NULL,                                   /* exit thread  */
@@ -263,6 +420,44 @@ ngx_module_t  ngx_http_cache_purge_module = {
     ngx_http_cache_purge_exit_master,       /* exit master  */
     NGX_MODULE_V1_PADDING
 };
+
+static ngx_int_t
+ngx_http_cache_purge_init_module(ngx_cycle_t *cycle)
+{
+    ngx_http_cache_purge_main_conf_t  *cmcf;
+#if !(NGX_WIN32)
+    ngx_core_conf_t                   *ccf;
+#endif
+
+    cmcf = ngx_http_cycle_get_module_main_conf(cycle,
+                                               ngx_http_cache_purge_module);
+    if (cmcf == NULL) {
+        return NGX_OK;
+    }
+
+    if (ngx_http_cache_purge_generation_boot(cycle) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+#if !(NGX_WIN32)
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    if (cmcf->namespaces.nelts != 0
+        && (!ccf->daemon || ngx_cache_purge_shutdown_started))
+    {
+        /* Daemon mode forks after this hook and cannot retain the thread. */
+        /* Reload keeps the thread but replaces the cycle it must inspect. */
+        ngx_cache_purge_shutdown_cycle = cycle;
+        if (ngx_http_cache_purge_shutdown_watchdog_start(cycle) != NGX_OK) {
+            ngx_http_cache_purge_generation_shutdown(cycle);
+            return NGX_ERROR;
+        }
+    }
+#endif
+
+    return NGX_OK;
+}
+
+
 
 /* Each worker owns one fixed key array and one active walk. */
 /* -- main configuration ------------------------------------------------- */

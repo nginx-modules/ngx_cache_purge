@@ -71,6 +71,7 @@ sub config {
     my ($s) = @_;
     my $user = $> == 0 ? 'user root;' : '';
     my $background = $s->{background} ? 'on' : 'off';
+    my $daemon = $s->{daemon} ? 'on' : 'off';
     my $legacy = exists $s->{legacy} ? "cache_purge_legacy_status $s->{legacy};" : '';
     my $response = $s->{default_response} ? '' : 'cache_purge_response_type json;';
     my $extra_locations = $s->{extra_locations} || '';
@@ -86,7 +87,6 @@ sub config {
     my $refresh_timeout = $s->{refresh_timeout} || '10s';
     my $namespace_name = $s->{namespace_name} || 'objects';
     my $namespace_size = $s->{namespace_size} || '1m';
- (fix: move namespace state ownership to the master lifecycle)
     my $namespace = $s->{strict}
         ? "cache_purge_namespace $namespace_name $namespace_size $s->{root}/purge-state;\n"
           . "cache_purge_key $namespace_name $logical;" : '';
@@ -166,7 +166,7 @@ GATEWAY
     } qw(html json xml text none);
     return <<EOF;
 $user
-daemon off;
+daemon $daemon;
 worker_processes $count;
 $pool
 pid $s->{root}/nginx.pid;
@@ -310,7 +310,6 @@ sub reload_refused {
     return (request($s, '/status-a')->{headers}{'x-generation'} // '-1') eq $old;
 }
 
- (fix: move namespace state ownership to the master lifecycle)
 # One namespace from the status "namespaces" list.
 sub namespace_view {
     my ($s, $name) = @_;
@@ -528,14 +527,49 @@ sub start_server {
         return $s;
     }
     await(sub {
-        if (waitpid($pid, WNOHANG) == $pid) {
+        if (!$s->{daemon} && waitpid($pid, WNOHANG) == $pid) {
             delete $s->{pid};
             die read_file("$s->{root}/process.log");
         }
         my $health = request($s, '/health');
         $health->{status} == 200 && ($health->{content} || '') eq 'ready';
     }, 'nginx did not start');
+    if ($s->{daemon}) {
+        waitpid($pid, WNOHANG);
+        my $master = read_file("$s->{root}/nginx.pid");
+        chomp $master;
+        $s->{pid} = $master;
+    }
     return $s;
+}
+
+sub pid_running {
+    my ($pid) = @_;
+    return 0 unless kill 0, $pid;
+    open my $fh, '<', "/proc/$pid/stat" or return 0;
+    my $stat = <$fh>;
+    close $fh;
+    return $stat !~ /^\d+ \(.*\) Z /;
+}
+
+sub live_workers {
+    my ($s) = @_;
+    my @pids;
+    for my $path (glob '/proc/[0-9]*/stat') {
+        open my $fh, '<', $path or next;
+        my $line = <$fh>;
+        close $fh;
+        my ($pid, $state, $ppid) = $line =~ /^(\d+) \([^)]*\) (\S+) (\d+) /
+            if $line;
+        next unless defined $ppid && $ppid == $s->{pid} && $state ne 'Z';
+
+        open my $cmdline, '<', "/proc/$pid/cmdline" or next;
+        local $/;
+        my $title = <$cmdline>;
+        close $cmdline;
+        push @pids, $pid if $title && $title =~ /nginx: worker process/;
+    }
+    return @pids;
 }
 
 sub stop_server {
@@ -545,8 +579,16 @@ sub stop_server {
     kill 'QUIT', $pid;
     my $rc;
     my $ok = eval {
-        await(sub { return 0 unless waitpid($pid, WNOHANG) == $pid;
-                    $rc = $?; return 1; }, 'graceful exit stalled', 15);
+        await(sub {
+            if ($s->{daemon}) {
+                return 0 if pid_running($pid);
+                $rc = 0;
+                return 1;
+            }
+            return 0 unless waitpid($pid, WNOHANG) == $pid;
+            $rc = $?;
+            return 1;
+        }, 'graceful exit stalled', 15);
         1;
     };
     if (!$ok) { kill 'TERM', -$pid; waitpid($pid, 0); die $@; }
@@ -599,7 +641,6 @@ sub stop_server {
         } @severe;
     }
     diag("severe diagnostics:\n" . join("\n", @severe)) if @severe;
- (fix: move namespace state ownership to the master lifecycle)
     is_deeply(\@severe, [], 'no unexpected severe diagnostic');
 
 }
@@ -1989,6 +2030,29 @@ subtest 'graceful restart keeps live generations and rejects stale ones' => sub 
     stop_server($stale);
 };
 
+subtest 'daemon mode commits generation state at final master exit' => sub {
+    my $s = start_server('daemon-state', workers => 1, strict => 1,
+                         throttle => '60s', daemon => 1);
+    my $marker = running_marker_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    warm($s);
+    await(sub { (request($s, '/cache/item')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'daemon-mode entry did not warm');
+    stop_server($s);
+    ok(-e generation_state_path($s), 'daemon-mode final exit commits state');
+    ok(!-e $marker, 'daemon-mode final exit removes the dirty marker');
+    unlike(read_file("$s->{root}/error.log"), qr/cannot join the shutdown watchdog/,
+           'daemon master does not join a non-existent watchdog');
+
+    my $live = start_server('daemon-state', workers => 1, strict => 1,
+                            throttle => '60s', daemon => 1);
+    is(namespace_view($live, 'objects')->{epoch}, $epoch,
+       'daemon-mode restart reuses the persisted epoch');
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'daemon-mode restart keeps a live cache entry');
+    stop_server($live);
+};
+
 subtest 'nginx -t and -T leave live namespace state untouched' => sub {
     my $s = start_server('state-check', workers => 1, strict => 1,
                          throttle => '60s');
@@ -2195,6 +2259,109 @@ subtest 'an unclean shutdown rotates the epoch' => sub {
     is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
        'the rotated epoch does not resurrect an invalidated entry');
     stop_server($again);
+};
+
+subtest 'SIGQUIT after daemon-mode reload persists state before a forced master kill' => sub {
+    my $s = start_server('restart-sigterm', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $state = generation_state_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    my $pid = $s->{pid};
+    my ($worker) = live_workers($s);
+    my $early;
+
+    warm($s);
+    $s->{daemon} = 1;
+    reload_server($s, 1);
+    ($worker) = live_workers($s);
+    ok($worker, 'the off-to-on reload has a worker to keep draining');
+    kill 'STOP', $worker or die "cannot pause worker $worker: $!";
+    $s->{stopped} = [$worker];
+    ok(kill('QUIT', $pid), 'SIGQUIT reaches the reloaded master');
+
+    # The paused worker keeps the master alive.  The watchdog, rather than
+    # exit_master, must therefore commit the snapshot and clear the marker.
+    $early = eval {
+        await(sub { -f $state && !-e $marker },
+              'SIGQUIT did not persist state before master exit', 0.5);
+        1;
+    };
+    ok($early, 'the reloaded watchdog commits state while workers drain')
+        or diag($@);
+    ok(kill(0, $pid), 'the master is still alive before the forced kill');
+    ok(-f $state, 'the snapshot exists before SIGKILL');
+    ok(!-e $marker, 'the dirty marker is removed before SIGKILL');
+
+    kill 'KILL', -$pid;
+    is(waitpid($pid, 0), $pid, 'the forced master exit is reaped');
+    $s->{stopped} = [];
+    delete $s->{pid};
+    stop_origin($s);
+    write_file("$s->{root}/error.log", '');
+
+    my $restarted = start_server('restart-sigterm', workers => 1, strict => 1,
+                                 throttle => '60s');
+    is(namespace_view($restarted, 'objects')->{epoch}, $epoch,
+       'off-to-on reload, SIGQUIT and SIGKILL preserve the epoch');
+    is(request($restarted, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'the pre-shutdown cache entry remains reachable');
+    stop_server($restarted);
+};
+
+subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' => sub {
+    my $s = start_server('restart-persist-failure', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $state = generation_state_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    my ($worker, $pid, $mark, $failed);
+
+    warm($s);
+    stop_server($s);
+    ok(-f $state, 'the initial graceful shutdown writes a snapshot');
+
+    $s = start_server('restart-persist-failure', workers => 1, strict => 1,
+                      throttle => '60s');
+    is(namespace_view($s, 'objects')->{epoch}, $epoch,
+       'the second boot starts from the committed epoch');
+
+    # A directory at the atomic rename destination fails even for root.
+    rename $state, "$state.saved" or die "cannot save snapshot: $!";
+    make_path($state);
+    ($worker) = live_workers($s);
+    ok($worker, 'the failing-persist master has a worker to pause');
+    kill 'STOP', $worker or die "cannot pause worker $worker: $!";
+    $s->{stopped} = [$worker];
+    $pid = $s->{pid};
+    $mark = length read_file("$s->{root}/error.log");
+    ok(kill('TERM', $pid), 'SIGTERM starts the failing early persist');
+    $failed = eval {
+        await(sub {
+            substr(read_file("$s->{root}/error.log"), $mark)
+                =~ /ngx_cache_purge: cannot replace/;
+        }, 'the early snapshot failure was not attempted', 0.5);
+        1;
+    };
+    ok($failed, 'the watchdog observes the snapshot rename failure') or diag($@);
+    ok(-e $marker, 'a failed snapshot leaves the dirty marker in place');
+
+    kill 'KILL', -$pid;
+    is(waitpid($pid, 0), $pid, 'the failed-persist master is reaped');
+    $s->{stopped} = [];
+    delete $s->{pid};
+    stop_origin($s);
+    rmdir $state or die "cannot remove the rename obstacle: $!";
+    rename "$state.saved", $state or die "cannot restore snapshot: $!";
+    write_file("$s->{root}/error.log", '');
+
+    my $restarted = start_server('restart-persist-failure', workers => 1,
+                                 strict => 1, throttle => '60s');
+    isnt(namespace_view($restarted, 'objects')->{epoch}, $epoch,
+         'the dirty marker rotates the epoch after a failed early snapshot');
+    is(request($restarted, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'the safe fallback does not trust the pre-shutdown cache entry');
+    stop_server($restarted);
 };
 
 done_testing();
