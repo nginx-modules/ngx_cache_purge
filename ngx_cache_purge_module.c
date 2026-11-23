@@ -239,11 +239,22 @@ static volatile ngx_flag_t     ngx_cache_purge_shutdown_done;
 static ngx_flag_t              ngx_cache_purge_shutdown_started;
 static ngx_flag_t              ngx_cache_purge_atfork_registered;
 static pthread_mutex_t         ngx_cache_purge_fork_mutex = PTHREAD_MUTEX_INITIALIZER;
+static ngx_flag_t              ngx_cache_purge_atfork_restart;
+
+
+static ngx_int_t ngx_http_cache_purge_shutdown_watchdog_start(ngx_cycle_t *cycle);
+static void ngx_http_cache_purge_shutdown_watchdog_stop(ngx_cycle_t *cycle);
 
 
 static void
 ngx_http_cache_purge_atfork_prepare(void)
 {
+    if (ngx_cache_purge_shutdown_started) {
+        ngx_cache_purge_atfork_restart = 1;
+        ngx_http_cache_purge_shutdown_watchdog_stop(
+            ngx_cache_purge_shutdown_cycle);
+    }
+
     (void) pthread_mutex_lock(&ngx_cache_purge_fork_mutex);
 }
 
@@ -252,12 +263,29 @@ static void
 ngx_http_cache_purge_atfork_parent(void)
 {
     (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
+
+    if (ngx_cache_purge_atfork_restart) {
+        ngx_cache_purge_atfork_restart = 0;
+
+        if (ngx_http_cache_purge_shutdown_watchdog_start(
+                ngx_cache_purge_shutdown_cycle) != NGX_OK)
+        {
+            ngx_log_error(NGX_LOG_ALERT, ngx_cache_purge_shutdown_cycle->log, 0,
+                          "ngx_cache_purge: cannot restart the shutdown "
+                          "watchdog after fork");
+        }
+    }
 }
 
 
 static void
 ngx_http_cache_purge_atfork_child(void)
 {
+    ngx_cache_purge_atfork_restart = 0;
+    ngx_cache_purge_shutdown_started = 0;
+    ngx_cache_purge_shutdown_stop = 0;
+    ngx_cache_purge_shutdown_done = 0;
+
     (void) pthread_mutex_unlock(&ngx_cache_purge_fork_mutex);
 }
 

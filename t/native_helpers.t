@@ -60,7 +60,7 @@ sub function {
     $text =~ /((?:static\s+)?(?:ngx_inline\s+)?
                  (?:ngx_uint_t|ngx_int_t|ngx_fd_t|ngx_msec_t|uint64_t|size_t|ssize_t|void|u_char|u_char\s*\*|
                     ngx_http_cache_purge_(?:path|stats)_t\s+\*)\n
-                 ngx_http_cache_purge_\Q$name\E\([^;]*?\n\{.*?\n})/sx
+                 \s*ngx_http_cache_purge_\Q$name\E\([^;]*?\n\{.*?\n})/sx
         or die "missing function: $name";
     return "$1\n\n";
 }
@@ -163,7 +163,10 @@ subtest 'shutdown leaves unfinished thread state intact' => sub {
 
 subtest 'daemonized master does not start the early shutdown watchdog' => sub {
     write_file("$tmp/daemon-watchdog.c", fixture('daemon_watchdog_shim')
-               . function('init_module') . fixture('daemon_watchdog_main'));
+               . function('init_module') . function('atfork_prepare')
+    . function('atfork_parent')
+    . function('atfork_child')
+    . fixture('daemon_watchdog_main'));
     run(@cc, "$tmp/daemon-watchdog.c", '-o', "$tmp/daemon-watchdog");
     run("$tmp/daemon-watchdog");
 };
