@@ -347,3 +347,27 @@ Content-Type: text/html
 --- no_error_log eval
 qr/\[(warn|error|crit|alert|emerg)\]/
 --- skip_nginx2: 4: < 0.8.3 or < 0.7.62
+
+=== TEST 16: inherited proxy purge does not intercept a uWSGI upstream
+# stable-2.5 already selects an inline purge handler only when that
+# protocol's *_pass is configured in the current location.
+--- http_config eval: $::http_config
+--- config
+    proxy_cache_purge PURGE from 127.0.0.1;
+
+    location /uwsgi {
+        uwsgi_pass 127.0.0.1:1;
+        uwsgi_param REQUEST_METHOD $request_method;
+        uwsgi_param REQUEST_URI $request_uri;
+        uwsgi_param CONTENT_LENGTH 0;
+    }
+--- request
+PURGE /uwsgi/test
+--- error_code: 502
+--- response_headers_like
+Content-Type: text/html
+--- response_body_like: 502 Bad Gateway
+--- timeout: 10
+--- no_error_log eval
+qr/\[(alert|emerg)\]/
+
