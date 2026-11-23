@@ -1167,9 +1167,14 @@ ngx_http_cache_purge_generation_boot(ngx_cycle_t *cycle)
     ngx_http_cache_purge_namespace_t  **namespaces;
     ngx_uint_t                          i, j;
 
-    if (ngx_test_config || ngx_dump_config) {
+    if (ngx_test_config) {
         return NGX_OK;
     }
+#if (nginx_version >= 1009002)
+    if (ngx_dump_config) {
+        return NGX_OK;
+    }
+#endif
     if (ngx_cache_purge_state_booted) {
         return NGX_OK;
     }

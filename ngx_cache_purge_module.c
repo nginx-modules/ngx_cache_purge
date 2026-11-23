@@ -295,9 +295,14 @@ ngx_http_cache_purge_shutdown_watchdog_start(ngx_cycle_t *cycle)
     int       rc, restore_rc;
     sigset_t  set, oldset;
 
-    if (ngx_cache_purge_shutdown_started || ngx_test_config || ngx_dump_config) {
+    if (ngx_cache_purge_shutdown_started || ngx_test_config) {
         return NGX_OK;
     }
+#if (nginx_version >= 1009002)
+    if (ngx_dump_config) {
+        return NGX_OK;
+    }
+#endif
 
     if (!ngx_cache_purge_atfork_registered) {
         rc = pthread_atfork(ngx_http_cache_purge_atfork_prepare,

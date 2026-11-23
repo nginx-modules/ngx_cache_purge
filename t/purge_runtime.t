@@ -591,7 +591,19 @@ sub stop_server {
         }, 'graceful exit stalled', 15);
         1;
     };
-    if (!$ok) { kill 'TERM', -$pid; waitpid($pid, 0); die $@; }
+    if (!$ok) {
+        my $error = $@;
+        diag("shutdown failure for $s->{root}, master pid $pid: $error");
+        for my $name (qw(error.log process.log)) {
+            next unless -f "$s->{root}/$name";
+            diag("$name:\n" . read_file("$s->{root}/$name"));
+        }
+        system("ps -L -o pid,tid,ppid,stat,wchan:32,comm -p $pid --ppid $pid");
+        stop_origin($s);
+        kill 'TERM', -$pid;
+        waitpid($pid, 0);
+        die $error;
+    }
     stop_origin($s);
     is($rc, 0, 'master exited cleanly');
     my $log = read_file("$s->{root}/error.log");
@@ -713,6 +725,19 @@ sub reload_server {
     kill 'HUP', $s->{pid};
     await(sub { (request($s, '/status-a')->{headers}{'x-generation'} || '-1')
                 eq $s->{generation} }, 'new generation did not serve a response');
+}
+
+sub nginx_version_number {
+    my $pid = open my $pipe, '-|';
+    die "fork: $!" unless defined $pid;
+    if (!$pid) {
+        open STDERR, '>&', \*STDOUT or die $!;
+        exec $nginx, '-v' or POSIX::_exit(127);
+    }
+    my $line = <$pipe>;
+    close $pipe;
+    die 'cannot determine nginx version' unless $line && $line =~ m{nginx/(\d+)\.(\d+)\.(\d+)};
+    return $1 * 1000000 + $2 * 1000 + $3;
 }
 
 sub check_config {
@@ -2063,7 +2088,9 @@ subtest 'nginx -t and -T leave live namespace state untouched' => sub {
     ok(-e $marker, 'the live master owns a dirty marker');
     ok(!-e $state, 'no snapshot exists before the first graceful shutdown');
 
-    for my $dump (0, 1) {
+    my @config_modes = (0);
+    push @config_modes, 1 if nginx_version_number() >= 1009002;
+    for my $dump (@config_modes) {
         my $name = $dump ? '-T' : '-t';
         is(check_config($s, config($s), $dump), 0, "$name accepts the live configuration")
             or diag(read_file("$s->{root}/config.log"));
