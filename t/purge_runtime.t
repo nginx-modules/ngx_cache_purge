@@ -146,7 +146,7 @@ sub config {
             proxy_pass http://127.0.0.1:$origin_port/origin\$cache_purge_refresh_uri;
         }
 REFRESH
-    my ($gateway_http, $gateway_location) = ('', '');
+    my ($gateway_http, $gateway_location, $health_purge) = ('', '', '');
     if (my $g = $s->{gateway}) {
         my $gateway_settings = $cache_settings;
         $gateway_settings =~ s/proxy_/${g}_/g;
@@ -156,8 +156,15 @@ REFRESH
             . "${g}_temp_path $s->{root}/gateway-temp;";
         # gateway_inherit keeps the server-level proxy_cache_purge (#83)
         my $proxy_purge = $s->{gateway_inherit} ? '' : 'proxy_cache_purge off;';
-        my $gateway_purge = $s->{gateway_no_purge} ? ''
+        # gateway_purge_off: purge enabled at http level, "off" in the location
+        my $gateway_purge = $s->{gateway_purge_off} ? "${g}_cache_purge off;"
+            : $s->{gateway_no_purge} ? ''
             : "${g}_cache_purge PURGE from 127.0.0.1;";
+        if ($s->{gateway_purge_off}) {
+            $gateway_http .= "\n${g}_cache_purge PURGE from 127.0.0.1;";
+            # static /health must not inherit it: purge there answers GET with 405
+            $health_purge = "${g}_cache_purge off;";
+        }
         my $gateway_if = $s->{gateway_if} ? 'if ($arg_t) { set $gateway_if 1; }' : '';
         $gateway_location = <<"GATEWAY";
         location /gateway/ {
@@ -221,7 +228,7 @@ http {
         $gateway_location
         $extra_locations
         proxy_cache_purge PURGE from 127.0.0.1;
-        location /health { proxy_cache_purge off; }
+        location /health { proxy_cache_purge off; $health_purge }
         location /origin/ {
             proxy_cache_purge off;
             $vary
@@ -1007,26 +1014,29 @@ subtest 'inherited proxy_cache_purge does not take over *_pass locations' => sub
 };
 
 subtest 'unrelated inherited purge does not intercept upstream PURGE' => sub {
+    # the location's own purge is omitted, or "off" over an http-level one
+    for my $mode (qw(no_purge purge_off)) {
     for my $protocol (qw(fastcgi scgi uwsgi)) {
-        my $s = start_server("gateway-inherit-no-purge-$protocol", workers => 1,
+        my $s = start_server("gateway-inherit-$mode-$protocol", workers => 1,
                              gateway => $protocol, gateway_inherit => 1,
-                             gateway_no_purge => 1, controlled_origin => 1,
+                             "gateway_$mode" => 1, controlled_origin => 1,
                              background => 0);
         my $uri = '/gateway/first';
         my $r = request($s, $uri);
-        is($r->{status}, 200, "$protocol: initial request reaches the upstream");
+        is($r->{status}, 200, "$protocol/$mode: initial request reaches the upstream");
         await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
-              "$protocol: native cache did not warm");
+              "$protocol/$mode: native cache did not warm");
 
         $r = request($s, $uri, 'PURGE');
-        is($r->{status}, 200, "$protocol: PURGE is forwarded to the upstream");
+        is($r->{status}, 200, "$protocol/$mode: PURGE is forwarded to the upstream");
         is($r->{content}, "$protocol origin content\n",
-           "$protocol: upstream response is preserved");
+           "$protocol/$mode: upstream response is preserved");
         ok(!exists $r->{headers}{'cache-purge-code'},
-           "$protocol: inherited proxy purge did not handle the request");
+           "$protocol/$mode: inherited proxy purge did not handle the request");
         is(request($s, $uri)->{headers}{'x-cache'}, 'HIT',
-           "$protocol: unrelated PURGE did not invalidate the native cache");
+           "$protocol/$mode: unrelated PURGE did not invalidate the native cache");
         stop_server($s);
+    }
     }
 };
 
