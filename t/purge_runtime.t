@@ -84,7 +84,7 @@ sub config {
     # header in the class_upstream regression case.
     my $class_conf = '';
     my $class_pre_read = $s->{class_upstream}
-        ? 'set $class_probe $upstream_http_x_traffic_class;' : '';
+        ? 'proxy_set_header X-Traffic-Class-Probe $upstream_http_x_traffic_class;' : '';
     my $origin_class_header = $s->{class_upstream}
         ? 'add_header X-Traffic-Class bot always;' : '';
     if ($s->{classes}) {
@@ -207,7 +207,6 @@ http {
     server {
         listen 127.0.0.1:$s->{port};
         root $s->{root};
-        $class_pre_read
         $responses
         $refresh
         $gateway_location
@@ -222,6 +221,7 @@ http {
         location /cache/ {
             proxy_pass http://127.0.0.1:$origin_port/origin/;
             proxy_set_header Host origin.test;
+            $class_pre_read
             proxy_cache a;
             proxy_cache_key $key;
             proxy_cache_valid 200 1h;
