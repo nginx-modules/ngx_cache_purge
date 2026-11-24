@@ -1329,7 +1329,7 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
     /* Per-class HIT/MISS (subsets of the totals above); omitted entirely when
      * cache_purge_traffic_class is not configured, so the reply is unchanged. */
     if (cmcf->traffic_class_n != 0) {
-        p = ngx_snprintf(p, last - p, ",\"classes\":{");
+        p = ngx_snprintf(p, last - p, ",\"by_class\":{");
         for (i = 0; i < cmcf->traffic_class_n; i++) {
             ch = snap.cache.class_hits[cmcf->traffic_class_slot[i]];
             cm = snap.cache.class_misses[cmcf->traffic_class_slot[i]];

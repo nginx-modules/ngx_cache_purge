@@ -313,7 +313,7 @@ sub class_status {
     my $r = request($s, $uri || '/status-a');
     die "status response: $r->{status} $r->{content}" if $r->{status} != 200;
     my $v = decode_json($r->{content});
-    return ($v, $v->{cache}{responses}{classes}, $r->{content});
+    return ($v, $v->{cache}{responses}{by_class}, $r->{content});
 }
 
 sub send_class {
@@ -1814,9 +1814,12 @@ subtest 'traffic class HIT/MISS counters are subsets of the totals' => sub {
     my $totals = sub { my ($v) = class_status($s); $v->{cache}{responses} };
     await(sub { my $t = $totals->(); $t->{hit} >= 1 && $t->{miss} >= 1 },
           'warm-up was not observed');
-    my (undef, undef, $raw) = class_status($s);
-    like($raw, qr/"hit_ratio":\d\.\d{6},"classes":\{"bot":\{"hit":0,"miss":0,"hit_ratio":0\.000000\},"human":\{"hit":0,"miss":0,"hit_ratio":0\.000000\}\}\}\},"namespaces":\[/,
-         'classes sit inside responses, in configuration order, all zero before any class traffic');
+    my ($v, $c, $raw) = class_status($s);
+    like($raw, qr/"hit_ratio":\d\.\d{6},"by_class":\{"bot":\{"hit":0,"miss":0,"hit_ratio":0\.000000\},"human":\{"hit":0,"miss":0,"hit_ratio":0\.000000\}\}\}\},"namespaces":\[/,
+         'by_class sits inside responses, in configuration order, all zero before any class traffic');
+    ok(exists $v->{cache}{responses}{by_class}, 'the status reply exposes by_class');
+    is_deeply([sort keys %$c], [qw(bot human)],
+              'by_class contains every configured class');
 
     write_file("$s->{root}/origin/fresh", 'fresh fixture');
     my $before = $totals->();
@@ -1903,10 +1906,10 @@ subtest 'traffic class refreshes a non-cacheable upstream variable' => sub {
 subtest 'without the directive the status reply is unchanged' => sub {
     my $s = start_server('classes-off', workers => 1);
     my $r = request($s, '/status-a');
-    unlike($r->{content}, qr/classes/, 'no classes member');
+    unlike($r->{content}, qr/by_class/, 'no by_class member');
     like($r->{content}, qr/"responses":\{"hit":\d+,"miss":\d+,"hit_ratio":\d\.\d{6}\}\},"namespaces":\[/,
          'responses closes right after hit_ratio');
-    ok(!exists decode_json($r->{content})->{cache}{responses}{classes}, 'no classes key');
+    ok(!exists decode_json($r->{content})->{cache}{responses}{by_class}, 'no by_class key');
     status($s);   # the documented field set is still complete
     stop_server($s);
 };
@@ -1929,7 +1932,7 @@ subtest 'class counters follow names across reload, reorder, drop and re-add' =>
     reload_server($s, 1);
     is_deeply($hits->(), { bot => 3, human => 2 }, 'reorder keeps every count under its name');
     my (undef, undef, $raw) = class_status($s);
-    like($raw, qr/"classes":\{"human":.*"bot":/, 'the reply follows the new order');
+    like($raw, qr/"by_class":\{"human":.*"bot":/, 'the reply follows the new order');
 
     $s->{classes} = [qw(human)];
     reload_server($s, 1);

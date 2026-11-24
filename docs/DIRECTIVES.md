@@ -205,14 +205,14 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Integer / bytes | Estimated logical sizes of successfully unlinked files |
 | `responses.hit`, `responses.miss` | Integer / main requests | Core HIT and MISS decisions observed in log phase |
 | `responses.hit_ratio` | Number / 0..1 | HIT / (HIT + MISS), or zero without either observation |
-| `responses.classes.<name>.hit`, `.miss` | Integer / main requests | HIT and MISS decisions of requests classified as `<name>` by `cache_purge_traffic_class`; a subset of `responses.hit` and `responses.miss` |
-| `responses.classes.<name>.hit_ratio` | Number / 0..1 | HIT / (HIT + MISS) of that class, or zero without either observation |
+| `responses.by_class.<name>.hit`, `.miss` | Integer / main requests | HIT and MISS decisions of requests classified as `<name>` by `cache_purge_traffic_class`; a subset of `responses.hit` and `responses.miss` |
+| `responses.by_class.<name>.hit_ratio` | Number / 0..1 | HIT / (HIT + MISS) of that class, or zero without either observation |
 | `logical.invalidations` | Integer / decisions | Published generation invalidations, including duplicates and REFRESH decisions |
 | `cleanup.scan_errors` | Integer / errors | Background metadata/open/read/close/allocation errors |
 | `cleanup.retries` | Integer / passes | Additional passes scheduled because cleanup failed |
 | `cleanup.exhausted` | Integer / tasks | Cleanup tasks retired after three failed retries |
 
-`responses.classes` appears only when `cache_purge_traffic_class` is configured, so existing replies are unchanged. It lists the names in directive order, for example `"classes": { "bot": { "hit": 12, "miss": 3, "hit_ratio": 0.800000 } }`.
+`responses.by_class` appears only when `cache_purge_traffic_class` is configured, so existing replies are unchanged. It lists the names in directive order, for example `"by_class": { "bot": { "hit": 12, "miss": 3, "hit_ratio": 0.800000 } }`.
 
 `namespaces` lists the configured `cache_purge_namespace` entries, whichever cache this location selects, because the generation state of a namespace is shared by every cache path that uses it. Each entry is one consistent snapshot taken under that namespace's lock. Entries are sampled separately; the list is not a global snapshot:
 
@@ -244,7 +244,7 @@ Default: not configured
 Context: http
 ```
 
-Splits the `responses.hit` and `responses.miss` counters of `cache_purge_queue_status` by traffic class. The variable is read once per counted request in the log phase. When its value equals one of the names, that class's counter is incremented in addition to the totals. Classification is left to NGINX (`map`, `geo`, a header, the client address), so any variable can drive it:
+Splits the `responses.hit` and `responses.miss` counters of `cache_purge_queue_status` by traffic class. The variable is refreshed and read once per counted request in the log phase. This also supports non-cacheable variables such as `$upstream_http_*`, whose values are available after the upstream response headers arrive. When its value equals one of the names, that class's counter is incremented in addition to the totals. Classification is left to NGINX (`map`, `geo`, a header, the client address), so any variable can drive it:
 
 ```nginx
 http {

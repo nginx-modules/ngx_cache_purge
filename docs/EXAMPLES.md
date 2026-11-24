@@ -274,7 +274,7 @@ http {
 }
 ```
 
-`cache.responses.classes` then reports HIT and MISS counts for `human`, `ai_bot` and `bot` next to the totals. NGINX tries the `map` expressions in the order written and the first match wins, so list the specific `ai_bot` expressions before the generic `bot` one. The zone keeps three class slots until a full restart, so choose the names before deploying; see [`cache_purge_traffic_class`](DIRECTIVES.md#cache_purge_traffic_class).
+`cache.responses.by_class` then reports HIT and MISS counts for `human`, `ai_bot` and `bot` next to the totals. NGINX tries the `map` expressions in the order written and the first match wins, so list the specific `ai_bot` expressions before the generic `bot` one. The zone keeps three class slots until a full restart, so choose the names before deploying; see [`cache_purge_traffic_class`](DIRECTIVES.md#cache_purge_traffic_class).
 
 ### Probes and warm-up scripts versus real users
 
@@ -321,7 +321,7 @@ http {
 }
 ```
 
-`cache.responses.classes.real.hit_ratio` is what visitors experience; the total also contains the probes. Put your own monitoring addresses in the `geo` block and your own tool names in the `map`.
+`cache.responses.by_class.real.hit_ratio` is what visitors experience; the total also contains the probes. Put your own monitoring addresses in the `geo` block and your own tool names in the `map`.
 
 ### Measuring a cache change on a canary cohort
 
