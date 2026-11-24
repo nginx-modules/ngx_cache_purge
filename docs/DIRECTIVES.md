@@ -205,10 +205,14 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Integer / bytes | Estimated logical sizes of successfully unlinked files |
 | `responses.hit`, `responses.miss` | Integer / main requests | Core HIT and MISS decisions observed in log phase |
 | `responses.hit_ratio` | Number / 0..1 | HIT / (HIT + MISS), or zero without either observation |
+| `responses.classes.<name>.hit`, `.miss` | Integer / main requests | HIT and MISS decisions of requests classified as `<name>` by `cache_purge_traffic_class`; a subset of `responses.hit` and `responses.miss` |
+| `responses.classes.<name>.hit_ratio` | Number / 0..1 | HIT / (HIT + MISS) of that class, or zero without either observation |
 | `logical.invalidations` | Integer / decisions | Published generation invalidations, including duplicates and REFRESH decisions |
 | `cleanup.scan_errors` | Integer / errors | Background metadata/open/read/close/allocation errors |
 | `cleanup.retries` | Integer / passes | Additional passes scheduled because cleanup failed |
 | `cleanup.exhausted` | Integer / tasks | Cleanup tasks retired after three failed retries |
+
+`responses.classes` appears only when `cache_purge_traffic_class` is configured, so existing replies are unchanged. It lists the names in directive order, for example `"classes": { "bot": { "hit": 12, "miss": 3, "hit_ratio": 0.800000 } }`.
 
 `namespaces` lists the configured `cache_purge_namespace` entries, whichever cache this location selects, because the generation state of a namespace is shared by every cache path that uses it. Each entry is one consistent snapshot taken under that namespace's lock. Entries are sampled separately; the list is not a global snapshot:
 
@@ -231,6 +235,34 @@ Counters have one event-loop writer per process slot, with cache-line-aligned st
 Cumulative counters saturate at the unsigned 64-bit maximum, survive ordinary reloads and reset on restart. The waiting gauge follows request cleanup. Synchronous operations and core cache-manager deletions are excluded from background deletion totals. Bytes are file-length estimates, not filesystem blocks or proof of disk space reclaimed: open readers and concurrent writes can change the result. Partial pass results are counted; crashed-worker results can be missing. These metrics are not an audit log.
 
 HIT/MISS observation counts only main requests with a native cache decision. A missing upstream, cache status zero, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED are excluded from this ratio. Ordinary uncached requests do not become MISS. Monitoring alone can create the SHM zone even with background purging off. On 32-bit systems, queue age covers intervals below about 24.9 days; a negative signed clock difference is reported as zero.
+
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Splits the `responses.hit` and `responses.miss` counters of `cache_purge_queue_status` by traffic class. The variable is read once per counted request in the log phase. When its value equals one of the names, that class's counter is incremented in addition to the totals. Classification is left to NGINX (`map`, `geo`, a header, the client address), so any variable can drive it:
+
+```nginx
+http {
+    map $http_user_agent $traffic {
+        default       other;
+        ~*bot|spider  bot;
+        ~*mobile      mobile;
+    }
+
+    cache_purge_traffic_class $traffic bot mobile other;
+}
+```
+
+Classes are subsets of the totals. A request whose value matches none of the names is counted only in the totals, so class counters need not add up to `responses.hit` and `responses.miss`. Only main requests with a native `HIT` or `MISS` cache decision are counted.
+
+The first parameter must be a plain `$variable` or `${variable}`; constants and composite values such as `"$a-$b"` are refused. Names are 1 to 32 characters (letters, digits, `_` and `-`), unique, and at most three are allowed. A value matches a name only when it is identical, including letter case. The directive may appear once. A warning is logged when no `cache_purge_queue_status` location exists, since the counters then cannot be read.
+
+The shared zone keeps three class slots that survive reloads. A name keeps the slot it was first given, so reordering or dropping names does not show old counts under another name. A dropped name stops counting, and its old counts return if it is added back. A configuration that needs more distinct names than free slots is refused at reload and the old configuration keeps serving. `nginx -t` does not check this limit, so a reload can be refused after `nginx -t` succeeded. Restart NGINX to start over.
 
 ## `cache_purge_legacy_status`
 

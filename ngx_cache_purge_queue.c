@@ -129,6 +129,90 @@ ngx_http_cache_purge_stat_wait(ngx_http_cache_purge_path_t *path, ngx_int_t delt
 # endif
 
 
+/*
+ * Class counters sit in NGX_CACHE_PURGE_CLASSES zone slots that survive
+ * reloads; a name keeps the slot it was first given. With commit == 0
+ * (init_shm_zone) slots are only assigned and checked, since the reload can
+ * still fail; with commit == 1 (init_module) the names are stored. A
+ * configuration that needs more new slots than are free is refused whole.
+ */
+static ngx_int_t
+ngx_http_cache_purge_traffic_class_bind(ngx_http_cache_purge_queue_t *queue,
+    ngx_http_cache_purge_main_conf_t *cmcf, ngx_log_t *log, ngx_uint_t commit)
+{
+    ngx_str_t   *name;
+    ngx_uint_t   i, j, base, need;
+    ngx_int_t    rc;
+
+    if (cmcf->traffic_class_n == 0) {
+        return NGX_OK;
+    }
+
+    rc = NGX_OK;
+    ngx_shmtx_lock(&queue->shpool->mutex);
+
+    base = queue->class_n;
+    need = 0;
+
+    for (i = 0; i < cmcf->traffic_class_n; i++) {
+        name = &cmcf->traffic_class_names[i];
+
+        for (j = 0; j < base; j++) {
+            if (ngx_strlen(queue->class_names[j]) == name->len
+                && ngx_memcmp(queue->class_names[j], name->data, name->len)
+                   == 0)
+            {
+                break;
+            }
+        }
+
+        if (j == base) {
+            j = base + need++;
+        }
+
+        cmcf->traffic_class_slot[i] = j;
+    }
+
+    if (base + need > NGX_CACHE_PURGE_CLASSES) {
+        rc = NGX_ERROR;
+
+    } else if (commit) {
+        for (i = 0; i < cmcf->traffic_class_n; i++) {
+            j = cmcf->traffic_class_slot[i];
+            if (j >= base) {
+                name = &cmcf->traffic_class_names[i];
+                ngx_memcpy(queue->class_names[j], name->data, name->len);
+            }
+        }
+        queue->class_n = base + need;
+    }
+
+    ngx_shmtx_unlock(&queue->shpool->mutex);
+
+    if (rc != NGX_OK) {
+        ngx_log_error(NGX_LOG_EMERG, log, 0,
+                      "ngx_cache_purge: cache_purge_traffic_class needs more "
+                      "distinct class names than this shared zone can count "
+                      "(%d since the last full restart); restart nginx to "
+                      "change them", NGX_CACHE_PURGE_CLASSES);
+    }
+
+    return rc;
+}
+
+
+ngx_int_t
+ngx_http_cache_purge_traffic_class_commit(ngx_http_cache_purge_main_conf_t *cmcf,
+    ngx_log_t *log)
+{
+    if (cmcf->queue == NULL) {
+        return NGX_OK;
+    }
+
+    return ngx_http_cache_purge_traffic_class_bind(cmcf->queue, cmcf, log, 1);
+}
+
+
 ngx_int_t
 ngx_http_cache_purge_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
 {
@@ -176,6 +260,13 @@ ngx_http_cache_purge_init_shm_zone(ngx_shm_zone_t *shm_zone, void *data)
         ngx_log_error(NGX_LOG_EMERG, shm_zone->shm.log, 0,
                       "ngx_cache_purge: incompatible shared zone; restart "
                       "nginx");
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_cache_purge_traffic_class_bind(queue, cmcf, shm_zone->shm.log,
+                                                0)
+        != NGX_OK)
+    {
         return NGX_ERROR;
     }
 
@@ -1019,6 +1110,35 @@ ngx_http_cache_purge_protection_get(ngx_http_cache_purge_queue_t *queue,
     return protection;
 }
 
+/* Zone slot of the traffic class of this request, or -1 (off / no match). */
+static ngx_int_t
+ngx_http_cache_purge_traffic_class(ngx_http_request_t *r,
+    ngx_http_cache_purge_main_conf_t *cmcf)
+{
+    ngx_http_variable_value_t  *vv;
+    ngx_uint_t                  i;
+
+    if (cmcf->traffic_class_n == 0) {
+        return -1;
+    }
+
+    vv = ngx_http_get_indexed_variable(r, cmcf->traffic_class_index);
+    if (vv == NULL || vv->not_found) {
+        return -1;
+    }
+
+    for (i = 0; i < cmcf->traffic_class_n; i++) {
+        if (vv->len == cmcf->traffic_class_names[i].len
+            && ngx_memcmp(vv->data, cmcf->traffic_class_names[i].data,
+                          vv->len) == 0)
+        {
+            return (ngx_int_t) cmcf->traffic_class_slot[i];
+        }
+    }
+
+    return -1;
+}
+
 ngx_int_t
 ngx_http_cache_purge_log(ngx_http_request_t *r)
 {
@@ -1026,6 +1146,7 @@ ngx_http_cache_purge_log(ngx_http_request_t *r)
     ngx_http_cache_purge_path_t       *path;
     ngx_str_t                        *name;
     ngx_uint_t                        status;
+    ngx_int_t                         cls;
 
     if (r != r->main || r->upstream == NULL || r->cache == NULL
         || r->cache->file_cache == NULL)
@@ -1048,6 +1169,12 @@ ngx_http_cache_purge_log(ngx_http_request_t *r)
         {
             ngx_http_cache_purge_stat_add(path, status == NGX_HTTP_CACHE_HIT
                                               ? NGX_PURGE_HIT : NGX_PURGE_MISS, 1);
+            cls = ngx_http_cache_purge_traffic_class(r, cmcf);
+            if (cls >= 0) {
+                ngx_http_cache_purge_stat_add(path,
+                    NGX_PURGE_CLASS_BASE + 2 * (ngx_uint_t) cls
+                    + (status == NGX_HTTP_CACHE_HIT ? 0 : 1), 1);
+            }
             break;
         }
     }
@@ -1126,6 +1253,10 @@ ngx_http_cache_purge_queue_status_snapshot(ngx_http_cache_purge_queue_t *queue,
     snap->cache.scan_errors = sum[NGX_PURGE_SCAN_ERRORS];
     snap->cache.retries = sum[NGX_PURGE_RETRIED];
     snap->cache.exhausted = sum[NGX_PURGE_EXHAUSTED];
+    for (field = 0; field < NGX_CACHE_PURGE_CLASSES; field++) {
+        snap->cache.class_hits[field] = sum[NGX_PURGE_CLASS_BASE + 2 * field];
+        snap->cache.class_misses[field] = sum[NGX_PURGE_CLASS_BASE + 2 * field + 1];
+    }
 }
 
 
@@ -1140,6 +1271,7 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
     u_char                             buf[NGX_CACHE_PURGE_STATUS_BODY_MAX];
     u_char                            *p, *last;
     ngx_uint_t                         i;
+    uint64_t                           ch, cm;
     ngx_flag_t                         complete;
     ngx_str_t                          allow = ngx_string("GET, HEAD");
     ngx_buf_t                         *b;
@@ -1174,7 +1306,7 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
                      "\"files\":{\"deleted\":%uL,\"errors\":%uL,\"bytes\":%uL},"
                      "\"cleanup\":{\"scan_errors\":%uL,\"retries\":%uL,\"exhausted\":%uL},"
                      "\"logical\":{\"invalidations\":%uL},"
-                     "\"responses\":{\"hit\":%uL,\"miss\":%uL,\"hit_ratio\":%.6f}}",
+                     "\"responses\":{\"hit\":%uL,\"miss\":%uL,\"hit_ratio\":%.6f",
                      snap.queue.size, snap.queue.running, snap.queue.max_size,
                      snap.queue.wait_time,
                      (u_char *) (snap.queue.full ? "true" : "false"),
@@ -1190,6 +1322,28 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
                        / ((double) snap.cache.hits + (double) snap.cache.misses)
                      : 0.0);
     last = buf + sizeof(buf);
+    if (p == last) {
+        return ngx_http_cache_purge_reply(r, NGX_PURGE_RESULT_INTERNAL_ERROR);
+    }
+
+    /* Per-class HIT/MISS (subsets of the totals above); omitted entirely when
+     * cache_purge_traffic_class is not configured, so the reply is unchanged. */
+    if (cmcf->traffic_class_n != 0) {
+        p = ngx_snprintf(p, last - p, ",\"classes\":{");
+        for (i = 0; i < cmcf->traffic_class_n; i++) {
+            ch = snap.cache.class_hits[cmcf->traffic_class_slot[i]];
+            cm = snap.cache.class_misses[cmcf->traffic_class_slot[i]];
+            p = ngx_snprintf(p, last - p,
+                             "%s\"%V\":{\"hit\":%uL,\"miss\":%uL,"
+                             "\"hit_ratio\":%.6f}",
+                             (u_char *) (i ? "," : ""),
+                             &cmcf->traffic_class_names[i], ch, cm,
+                             (ch || cm) ? (double) ch / ((double) ch + (double) cm)
+                                        : 0.0);
+        }
+        p = ngx_snprintf(p, last - p, "}");
+    }
+    p = ngx_snprintf(p, last - p, "}}");
     if (p == last) {
         return ngx_http_cache_purge_reply(r, NGX_PURGE_RESULT_INTERNAL_ERROR);
     }
