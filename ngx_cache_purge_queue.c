@@ -1122,7 +1122,7 @@ ngx_http_cache_purge_traffic_class(ngx_http_request_t *r,
         return -1;
     }
 
-    vv = ngx_http_get_indexed_variable(r, cmcf->traffic_class_index);
+    vv = ngx_http_get_flushed_variable(r, cmcf->traffic_class_index);
     if (vv == NULL || vv->not_found) {
         return -1;
     }

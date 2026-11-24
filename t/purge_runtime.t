@@ -80,13 +80,20 @@ sub config {
     my $pool = $s->{threads} ? 'thread_pool cleanup threads=2 max_queue=1;' : '';
     my $selection = $s->{threads} ? 'cache_purge_thread_pool cleanup;' : '';
     # cache_purge_traffic_class: classes => [names]; the class comes from the
-    # X-Class header, or with class_map from the User-Agent through a map.
+    # X-Class header, class_map from the User-Agent, or an upstream response
+    # header in the class_upstream regression case.
     my $class_conf = '';
+    my $class_pre_read = $s->{class_upstream}
+        ? 'set $class_probe $upstream_http_x_traffic_class;' : '';
+    my $origin_class_header = $s->{class_upstream}
+        ? 'add_header X-Traffic-Class bot always;' : '';
     if ($s->{classes}) {
         my $var = $s->{class_var} || '$http_x_class';
         if ($s->{class_map}) {
             $class_conf = "map \$http_user_agent \$npp_class { default human; \"Googlebot/2.1\" bot; }\n    ";
             $var = '$npp_class';
+        } elsif ($s->{class_upstream}) {
+            $var = '$upstream_http_x_traffic_class';
         }
         $class_conf .= "cache_purge_traffic_class $var @{ $s->{classes} };";
     }
@@ -200,6 +207,7 @@ http {
     server {
         listen 127.0.0.1:$s->{port};
         root $s->{root};
+        $class_pre_read
         $responses
         $refresh
         $gateway_location
@@ -209,6 +217,7 @@ http {
         location /origin/ {
             proxy_cache_purge off;
             $vary
+            $origin_class_header
         }
         location /cache/ {
             proxy_pass http://127.0.0.1:$origin_port/origin/;
@@ -1868,6 +1877,26 @@ subtest 'traffic class variable can be a map result' => sub {
     my $a = $count->();
     is($a->[0] - $b->[0], 4, 'bot user agents counted under bot');
     is($a->[1] - $b->[1], 3, 'other user agents counted under human');
+    stop_server($s);
+};
+
+subtest 'traffic class refreshes a non-cacheable upstream variable' => sub {
+    my $s = start_server('classes-upstream-variable', workers => 1,
+                         classes => [qw(bot human)], class_upstream => 1);
+    write_file("$s->{root}/origin/classed", 'classed fixture');
+
+    my $r = request($s, '/cache/classed');
+    is($r->{status}, 200, 'cache miss reaches the origin');
+    is($r->{headers}{'x-cache'}, 'MISS', 'the first request is a MISS');
+
+    my $classes;
+    await(sub {
+        (undef, $classes) = class_status($s);
+        $classes->{bot}{miss} == 1;
+    }, 'upstream header class was not observed');
+
+    is($classes->{bot}{miss}, 1,
+       'log phase refreshes an upstream header variable evaluated earlier');
     stop_server($s);
 };
 
