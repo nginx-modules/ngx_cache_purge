@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | 整数／バイト | unlink に成功したファイルの推定論理サイズ |
 | `responses.hit`, `responses.miss` | 整数／メインリクエスト | log phase で観測したコアの HIT と MISS |
 | `responses.hit_ratio` | 数値／0..1 | HIT / (HIT + MISS)。両方とも未観測なら 0 |
+| `responses.by_class.<name>.hit`, `.miss` | 整数／メインリクエスト | `<name>` に分類されたリクエストの HIT/MISS 判定。全体カウンターの内数 |
+| `responses.by_class.<name>.hit_ratio` | 数値／0..1 | そのクラスの HIT / (HIT + MISS)。観測がなければ 0 |
 | `logical.invalidations` | 整数／判断回数 | 重複要求や REFRESH を含む、公開済みの世代無効化 |
 | `cleanup.scan_errors` | 整数／エラー数 | 背景処理のメタデータ・open・read・close・割り当てエラー |
 | `cleanup.retries` | 整数／走査回数 | 失敗により追加された再走査 |
@@ -256,6 +258,21 @@ location = /cache_purge_queue_status {
 
 HIT/MISS はネイティブのキャッシュ判定を持つメインリクエストだけを集計します。upstream 不在、キャッシュ状態 0、BYPASS、EXPIRED、STALE、UPDATING、REVALIDATED は比率から除外します。キャッシュを使わない通常のリクエストを MISS にしません。監視だけでも、バックグラウンド PURGE が無効な状態で SHM ゾーンを作成できます。32 ビットシステムではキューの経過時間は約 24.9 日未満の間隔を対象とし、符号付き差分が負なら 0 として報告します。
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+`responses.hit` と `responses.miss` をトラフィッククラス別に集計します。カウント対象のメインリクエストごとに log phase で変数を更新して読み取るため、`$upstream_http_*` などの非キャッシュ変数も upstream の応答ヘッダー受信後の値が使われます。分類には `map`、`geo`、ヘッダー、クライアントアドレスなどの変数を利用できます。
+
+どの名前にも一致しない値は合計カウンターにのみ加算されます。クラス別カウンターは `responses.hit` と `responses.miss` の内数です。一致判定は完全一致かつ大文字小文字を区別し、ネイティブの HIT または MISS 判定を持つメインリクエストだけを数えます。
+
+最初の引数は単一の変数（`$variable` または `${variable}`）でなければなりません。名前は 1～32 文字で一意とし、英字、数字、`_`、`-` のみ使用できます。ディレクティブは 1 回だけ指定でき、名前は最大 3 個です。`cache_purge_queue_status` の location がない場合は警告が記録されます。
+
+共有メモリゾーンには reload をまたいで保持されるクラススロットが 3 個あります。名前の並べ替えや削除でカウンターが別名に移ることはありません。4 個目の異なる名前を必要とする reload は拒否されます。この上限は `nginx -t` では検出できません。スロットを解放するには NGINX を完全に再起動してください。
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

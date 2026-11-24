@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Inteiro / bytes | Tamanho lógico estimado dos arquivos removidos |
 | `responses.hit`, `responses.miss` | Inteiro / requisições principais | Decisões HIT/MISS do núcleo observadas na fase de log |
 | `responses.hit_ratio` | Número / 0..1 | HIT / (HIT + MISS), ou zero sem observações |
+| `responses.by_class.<name>.hit`, `.miss` | Inteiro / requisições principais | Decisões HIT/MISS das requisições classificadas como `<name>`; subconjunto dos totais |
+| `responses.by_class.<name>.hit_ratio` | Número / 0..1 | HIT / (HIT + MISS) dessa classe, ou zero sem observações |
 | `logical.invalidations` | Inteiro / decisões | Invalidações de geração publicadas, inclusive duplicatas e REFRESH |
 | `cleanup.scan_errors` | Inteiro / erros | Falhas de metadados/abertura/leitura/fechamento/alocação em segundo plano |
 | `cleanup.retries` | Inteiro / passagens | Passagens adicionais agendadas após falha de limpeza |
@@ -256,6 +258,21 @@ Contadores acumulados saturam no máximo unsigned de 64 bits, persistem em reloa
 
 HIT/MISS conta apenas requisições principais com decisão nativa de cache. Ausência de upstream, status zero, BYPASS, EXPIRED, STALE, UPDATING e REVALIDATED são excluídos da razão. Requisições normalmente não cacheadas não viram MISS. Só o monitoramento pode criar SHM com limpeza em segundo plano desligada. Em 32 bits, a idade da fila cobre menos de aproximadamente 24,9 dias; diferença de relógio com sinal negativa vira zero.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Divide os contadores `responses.hit` e `responses.miss` por classe de tráfego. A variável é atualizada e lida na fase log para cada requisição principal contabilizada; assim, variáveis upstream não cacheáveis como `$upstream_http_*` são avaliadas após o recebimento dos cabeçalhos da resposta. A classificação pode usar `map`, `geo`, um cabeçalho ou o endereço do cliente.
+
+Valores sem correspondência entram apenas nos totais. Portanto, os contadores por classe são subconjuntos de `responses.hit` e `responses.miss`. A correspondência é exata e diferencia maiúsculas de minúsculas; somente requisições principais com decisão nativa HIT ou MISS são contadas.
+
+O primeiro parâmetro deve ser uma única variável (`$variable` ou `${variable}`). Os nomes devem ter de 1 a 32 caracteres, ser únicos e usar somente letras, números, `_` e `-`. A diretiva pode aparecer uma vez e aceitar no máximo três nomes. A ausência de uma location `cache_purge_queue_status` gera um aviso.
+
+A zona de memória compartilhada mantém três slots de classe durante os reloads. Reordenar ou remover um nome não transfere seus contadores. Um reload que precise de um quarto nome distinto será recusado; `nginx -t` não detecta esse limite. Um reinício completo do NGINX libera os slots.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

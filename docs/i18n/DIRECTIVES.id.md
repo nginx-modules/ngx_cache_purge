@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Integer / byte | Perkiraan ukuran logis file terhapus |
 | `responses.hit`, `responses.miss` | Integer / permintaan utama | Keputusan HIT/MISS inti yang diamati pada fase log |
 | `responses.hit_ratio` | Angka / 0..1 | HIT / (HIT + MISS), atau nol tanpa pengamatan |
+| `responses.by_class.<name>.hit`, `.miss` | Integer / permintaan utama | Keputusan HIT/MISS untuk permintaan kelas `<name>`; bagian dari total |
+| `responses.by_class.<name>.hit_ratio` | Angka / 0..1 | HIT / (HIT + MISS) kelas tersebut, atau nol tanpa pengamatan |
 | `logical.invalidations` | Integer / keputusan | Invalidasi generasi terpublikasi, termasuk duplikat dan REFRESH |
 | `cleanup.scan_errors` | Integer / kesalahan | Kesalahan metadata/buka/baca/tutup/alokasi latar |
 | `cleanup.retries` | Integer / putaran | Putaran tambahan karena pembersihan gagal |
@@ -256,6 +258,21 @@ Counter kumulatif jenuh pada maksimum unsigned 64-bit, bertahan saat reload dan 
 
 HIT/MISS hanya menghitung permintaan utama dengan keputusan cache native. Upstream hilang, status nol, BYPASS, EXPIRED, STALE, UPDATING dan REVALIDATED tidak masuk rasio. Permintaan biasa tanpa cache tidak menjadi MISS. Pemantauan saja dapat membuat SHM meski purge latar mati. Pada 32-bit, usia antrean mencakup kurang dari sekitar 24,9 hari; selisih waktu bertanda negatif dilaporkan nol.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Membagi penghitung `responses.hit` dan `responses.miss` menurut kelas trafik. Variabel diperbarui dan dibaca pada fase log untuk setiap permintaan utama yang dihitung; variabel non-cacheable seperti `$upstream_http_*` dengan demikian dievaluasi setelah header upstream diterima. Klasifikasi dapat menggunakan `map`, `geo`, header, atau alamat klien.
+
+Nilai yang tidak cocok hanya masuk ke total. Karena itu, penghitung per kelas merupakan subset dari `responses.hit` dan `responses.miss`. Pencocokan harus persis dan peka huruf besar/kecil; hanya permintaan utama dengan keputusan cache native HIT atau MISS yang dihitung.
+
+Parameter pertama harus berupa satu variabel (`$variable` atau `${variable}`). Nama harus 1–32 karakter, unik, dan hanya memakai huruf, angka, `_`, dan `-`. Direktif hanya boleh muncul sekali dan menerima paling banyak tiga nama. Peringatan dicatat bila tidak ada location `cache_purge_queue_status`.
+
+Zona shared memory mempertahankan tiga slot kelas selama reload. Mengurutkan ulang atau menghapus nama tidak memindahkan penghitungnya. Reload yang memerlukan nama unik keempat ditolak; `nginx -t` tidak memeriksa batas ini. Restart penuh NGINX mengosongkan slot.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

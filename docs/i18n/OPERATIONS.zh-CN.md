@@ -126,6 +126,8 @@ rate_per_worker ~= 1000 * B / (D + T) tasks/s
 
 通过[状态端点](DIRECTIVES.zh-CN.md#cache_purge_queue_status)观察待处理工作、活动任务、接纳等待、重复请求、unlink 结果和 HIT/MISS。`202 Accepted` 确认接纳或合并，不证明删除完成或立即逻辑失效。应同时监控请求延迟、队列年龄及存储竞争。
 
+请在 `http` 上下文中配置 `cache_purge_traffic_class`。变量在 log phase 刷新，因此 `$upstream_http_*` 等不可缓存的 upstream 变量会在收到响应头后读取。类别明细位于 `responses.by_class`；未匹配的值只计入总数。SHM 区在 reload 后保留三个类别槽位。需要第四个新名称的 reload 会被拒绝，且 `nginx -t` 无法检测该限制。参见 [cache_purge_traffic_class](DIRECTIVES.zh-CN.md#cache_purge_traffic_class)。
+
 | 级别 | 条件 |
 |---|---|
 | `warn` | 键过长、任务所用池被移除，或配置值被限制 |

@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | 정수 / 바이트 | 삭제된 파일의 논리 크기 추정값 |
 | `responses.hit`, `responses.miss` | 정수 / 주 요청 | log 단계에서 관찰한 코어 HIT/MISS 결정 |
 | `responses.hit_ratio` | 수 / 0..1 | HIT / (HIT + MISS), 관찰이 없으면 0 |
+| `responses.by_class.<name>.hit`, `.miss` | 정수 / 주 요청 | `<name>` 클래스로 분류된 요청의 HIT/MISS 결정; 전체 카운터의 하위 집합 |
+| `responses.by_class.<name>.hit_ratio` | 수 / 0..1 | 해당 클래스의 HIT / (HIT + MISS), 관찰이 없으면 0 |
 | `logical.invalidations` | 정수 / 결정 | 중복과 REFRESH를 포함해 게시된 세대 무효화 |
 | `cleanup.scan_errors` | 정수 / 오류 | 백그라운드 메타데이터/열기/읽기/닫기/할당 오류 |
 | `cleanup.retries` | 정수 / 순회 | 정리 실패로 예약한 추가 순회 |
@@ -256,6 +258,21 @@ location = /cache_purge_queue_status {
 
 HIT/MISS는 네이티브 캐시 결정을 가진 주 요청만 셉니다. upstream 부재, 캐시 상태 0, BYPASS, EXPIRED, STALE, UPDATING, REVALIDATED는 비율에서 제외합니다. 원래 캐시하지 않는 요청을 MISS로 세지 않습니다. 모니터링만으로도 백그라운드 삭제 없이 SHM을 만들 수 있습니다. 32비트에서 큐 나이는 약 24.9일 미만을 다루며, 부호 있는 시간 차가 음수면 0으로 보고합니다.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+트래픽 클래스별로 `responses.hit` 및 `responses.miss` 카운터를 나눕니다. 집계되는 각 주 요청에 대해 log 단계에서 변수를 갱신하고 읽으므로 `$upstream_http_*`와 같은 비캐시 변수도 upstream 응답 헤더를 받은 뒤의 값으로 분류됩니다. `map`, `geo`, 헤더 또는 클라이언트 주소 기반 변수를 사용할 수 있습니다.
+
+어떤 이름과도 일치하지 않는 값은 전체 카운터에만 포함됩니다. 따라서 클래스 카운터는 `responses.hit` 및 `responses.miss`의 하위 집합입니다. 일치는 대소문자를 구분하는 완전 일치이며, 네이티브 HIT 또는 MISS 결정이 있는 주 요청만 집계합니다.
+
+첫 번째 인수는 단일 변수(`$variable` 또는 `${variable}`)여야 합니다. 이름은 1~32자이고 고유해야 하며 문자, 숫자, `_`, `-`만 사용할 수 있습니다. 지시어는 한 번만 지정할 수 있고 이름은 최대 세 개입니다. `cache_purge_queue_status` location이 없으면 경고가 기록됩니다.
+
+공유 메모리 영역은 reload 동안 세 개의 클래스 슬롯을 유지합니다. 이름 순서를 바꾸거나 제거해도 카운터가 다른 이름으로 이동하지 않습니다. 네 번째의 서로 다른 이름이 필요한 reload는 거부되며 `nginx -t`는 이 제한을 검사하지 않습니다. 슬롯을 비우려면 NGINX를 완전히 재시작해야 합니다.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`
