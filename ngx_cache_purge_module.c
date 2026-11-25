@@ -482,6 +482,13 @@ ngx_http_cache_purge_init_module(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+#if (NGX_WIN32)
+    /* Windows workers run this hook after the master has booted the state. */
+    if (ngx_process == NGX_PROCESS_WORKER) {
+        return NGX_OK;
+    }
+#endif
+
     if (ngx_http_cache_purge_generation_boot(cycle) != NGX_OK) {
         return NGX_ERROR;
     }
