@@ -40,7 +40,7 @@ main(void)
     assert(watchdog_calls == 1);
     assert(shutdown_calls == 0);
 
-    strcpy(lock_events, "");
+    lock_events[0] = '\0';
     ngx_cache_purge_shutdown_started = 1;
     ngx_cache_purge_atfork_restart = 0;
     ngx_http_cache_purge_atfork_prepare();
@@ -49,13 +49,13 @@ main(void)
     assert(ngx_cache_purge_shutdown_started == 0);
     assert(ngx_cache_purge_atfork_restart == 1);
 
-    strcpy(lock_events, "");
+    lock_events[0] = '\0';
     ngx_http_cache_purge_atfork_parent();
     assert(strcmp(lock_events, "UR") == 0);
     assert(ngx_cache_purge_shutdown_started == 1);
     assert(ngx_cache_purge_atfork_restart == 0);
 
-    strcpy(lock_events, "");
+    lock_events[0] = '\0';
     ngx_cache_purge_shutdown_started = 1;
     ngx_cache_purge_shutdown_stop = 1;
     ngx_cache_purge_shutdown_done = 1;
