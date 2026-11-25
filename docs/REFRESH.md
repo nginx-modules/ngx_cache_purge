@@ -36,7 +36,8 @@ The administrative response uses `200` for a processed page, including a page wi
 
 `complete: true` means all selected work and pages are finished, not that every entry was kept or successfully invalidated. Read each result. For `200` responses with `complete: false`, repeat the same selector and profile with `next_cursor` as `X-Cache-Purge-Cursor`. A scan that times out before finishing returns its input cursor unchanged and sends no probes. Detect a non-advancing cursor and resolve the time/storage limit instead of retrying forever.
 
-A cursor is not a durable job ID, a snapshot token, or proof of authorization. Each page rescans the directory, with at most 32 candidates; concurrent file changes can affect enumeration. There is one page/probe per worker and a shared 16-probe limit. Identical REFRESH calls are not deduplicated. Retrying after a lost response can repeat origin checks and invalidations; no exactly-once execution or stable result set is promised.
+A cursor is not a durable job ID, a snapshot token, or proof of authorization. Each page rescans the directory, with at most `cache_purge_refresh_batch`
+candidates (32 by default); concurrent file changes can affect enumeration. There is one page/probe per worker and a shared 16-probe limit. Identical REFRESH calls are not deduplicated. Retrying after a lost response can repeat origin checks and invalidations; no exactly-once execution or stable result set is promised.
 
 ## Configuration assumptions
 
