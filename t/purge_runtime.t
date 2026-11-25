@@ -588,7 +588,11 @@ sub start_server {
 sub pid_running {
     my ($pid) = @_;
     return 0 unless kill 0, $pid;
-    open my $fh, '<', "/proc/$pid/stat" or return 0;
+    open my $fh, '<', "/proc/$pid/stat";
+    if (!$fh) {
+        # Without procfs, kill(0) above remains the available liveness check.
+        return 1;
+    }
     my $stat = <$fh>;
     close $fh;
     return $stat !~ /^\d+ \(.*\) Z /;
@@ -2443,7 +2447,7 @@ subtest 'duplicate namespace state paths are rejected' => sub {
 
 subtest 'namespace rule-table exhaustion returns 507 and explicit refresh error' => sub {
     my $s = start_server('namespace-full', workers => 1, strict => 1,
-                         namespace_size => '64k', throttle => '60s',
+                         namespace_size => ($^O eq 'darwin' ? '128k' : '64k'), throttle => '60s',
                          controlled_origin => 1);
     my $long = '/cache/' . ('f' x 2048);
     warm($s);
@@ -2519,7 +2523,7 @@ subtest 'startup rejects a persisted snapshot that does not fit its zone' => sub
     ok(-e generation_state_path($s), 'the large rule was persisted');
 
     my $failed = start_server('state-too-large', workers => 1, strict => 1,
-                              namespace_size => '64k', throttle => '60s',
+                              namespace_size => ($^O eq 'darwin' ? '128k' : '64k'), throttle => '60s',
                               expect_failure => 1);
     like(read_file("$failed->{root}/error.log"),
          qr/\[emerg\].*namespace "objects" persisted rules do not fit its \d+ byte shared zone; increase cache_purge_namespace and restart nginx/,
