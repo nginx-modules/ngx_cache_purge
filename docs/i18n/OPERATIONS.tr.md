@@ -168,6 +168,8 @@ Dinlenmeler arasındaki işi azaltmak için grubu küçültün veya beklemeyi uz
 
 [Durum uç noktası](DIRECTIVES.tr.md#cache_purge_queue_status) bekleyen/etkin görev, kabul bekleyen, tekrar, silme ve HIT/MISS gösterir. `202 Accepted` kabul/birleşmedir; silme veya anında mantıksal geçersizleştirme kanıtı değildir. Gecikmeyi kuyruk yaşı ve depolama çekişmesiyle birlikte izleyin.
 
+`cache_purge_traffic_class` direktifini `http` bağlamında yapılandırın. Değişken log aşamasında yenilenir; bu nedenle `$upstream_http_*` gibi önbelleğe alınmayan upstream değişkenleri yanıt başlıkları alındıktan sonra okunur. Sınıf dökümü `responses.by_class` altında sunulur; eşleşmeyen değerler yalnızca toplam sayaçlara eklenir. SHM bölgesi reload boyunca üç sınıf yuvasını korur. Dördüncü yeni ad isteyen reload reddedilir ve `nginx -t` bu sınırı algılamaz. [cache_purge_traffic_class](DIRECTIVES.tr.md#cache_purge_traffic_class) bölümüne bakın.
+
 | Seviye | Koşul |
 |---|---|
 | `warn` | Uzun anahtar, kaldırılmış havuz veya sınırlandırılmış ayar |

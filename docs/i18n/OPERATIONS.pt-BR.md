@@ -168,6 +168,8 @@ Reduza o lote ou aumente a pausa para reduzir trabalho entre descansos. Para men
 
 Use o [endpoint de status](DIRECTIVES.pt-BR.md#cache_purge_queue_status) para observar pendências, tarefas ativas, espera, duplicatas, remoções e HIT/MISS. `202 Accepted` confirma admissão/agregação, não remoção nem invalidação lógica imediata. Monitore latência junto com idade da fila e contenção de armazenamento.
 
+Configure `cache_purge_traffic_class` no contexto `http`. A variável é atualizada na fase log; assim, variáveis upstream não cacheáveis como `$upstream_http_*` são lidas após o recebimento dos cabeçalhos da resposta. O detalhamento aparece em `responses.by_class`; valores sem correspondência entram apenas nos totais. A zona SHM mantém três slots entre reloads. Um reload que exija um quarto nome novo é recusado, e `nginx -t` não detecta esse limite. Consulte [cache_purge_traffic_class](DIRECTIVES.pt-BR.md#cache_purge_traffic_class).
+
 | Nível | Condição |
 |---|---|
 | `warn` | Chave excessiva, pool removido ou parâmetro limitado |

@@ -168,6 +168,8 @@ Giảm lô hoặc tăng nghỉ để giảm việc giữa các lần nghỉ. Dù
 
 [Endpoint trạng thái](DIRECTIVES.vi.md#cache_purge_queue_status) cho thấy chờ, hoạt động, tiếp nhận, trùng lặp, xóa, HIT/MISS. `202 Accepted` xác nhận nhận/hợp nhất, không phải xóa hoặc vô hiệu hóa logic tức thì. Theo dõi trễ yêu cầu cùng tuổi hàng đợi và tranh chấp lưu trữ.
 
+Cấu hình `cache_purge_traffic_class` trong ngữ cảnh `http`. Biến được làm mới ở pha log, vì vậy biến upstream không cache được như `$upstream_http_*` được đọc sau khi nhận header phản hồi. Phần phân tách nằm trong `responses.by_class`; giá trị không khớp chỉ được tính vào tổng. Vùng SHM giữ ba slot lớp qua các lần reload. Reload cần tên mới thứ tư sẽ bị từ chối và `nginx -t` không phát hiện giới hạn này. Xem [cache_purge_traffic_class](DIRECTIVES.vi.md#cache_purge_traffic_class).
+
 | Mức | Điều kiện |
 |---|---|
 | `warn` | Khóa quá dài, pool bị bỏ, giá trị bị giới hạn |

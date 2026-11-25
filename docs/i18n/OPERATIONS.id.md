@@ -168,6 +168,8 @@ Kecilkan batch atau perpanjang jeda untuk mengurangi kerja antaristirahat. Gunak
 
 [Endpoint status](DIRECTIVES.id.md#cache_purge_queue_status) menunjukkan tugas tertunda/aktif, penunggu, duplikat, penghapusan, HIT/MISS. `202 Accepted` mengonfirmasi penerimaan/penggabungan, bukan penghapusan atau invalidasi logis seketika. Pantau latensi bersama usia antrean dan perebutan penyimpanan.
 
+Konfigurasikan `cache_purge_traffic_class` dalam konteks `http`. Variabel diperbarui pada fase log, sehingga variabel upstream non-cacheable seperti `$upstream_http_*` dibaca setelah header respons diterima. Rincian tersedia di `responses.by_class`; nilai yang tidak cocok hanya dihitung dalam total. Zona SHM mempertahankan tiga slot kelas pada reload. Reload yang memerlukan nama unik keempat ditolak dan batas ini tidak terdeteksi oleh `nginx -t`. Lihat [cache_purge_traffic_class](DIRECTIVES.id.md#cache_purge_traffic_class).
+
 | Level | Kondisi |
 |---|---|
 | `warn` | Kunci terlalu panjang, pool dihapus, pengaturan dibatasi |

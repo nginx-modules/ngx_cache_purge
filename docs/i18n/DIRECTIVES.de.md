@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Ganzzahl / Bytes | Geschätzte logische Größen erfolgreich entfernter Dateien |
 | `responses.hit`, `responses.miss` | Ganzzahl / Hauptanfragen | In der Log-Phase beobachtete Core-HIT- und MISS-Entscheidungen |
 | `responses.hit_ratio` | Zahl / 0..1 | HIT / (HIT + MISS), ohne Beobachtungen null |
+| `responses.by_class.<name>.hit`, `.miss` | Ganzzahl / Hauptanfragen | HIT- und MISS-Entscheidungen für Anfragen der Klasse `<name>`; Teilmenge der Gesamtzähler |
+| `responses.by_class.<name>.hit_ratio` | Zahl / 0..1 | HIT / (HIT + MISS) dieser Klasse oder null ohne Beobachtungen |
 | `logical.invalidations` | Ganzzahl / Entscheidungen | Veröffentlichte Generationsinvalidierungen einschließlich Duplikaten und REFRESH |
 | `cleanup.scan_errors` | Ganzzahl / Fehler | Hintergrundfehler bei Metadaten, Open, Read, Close oder Speicherzuteilung |
 | `cleanup.retries` | Ganzzahl / Durchläufe | Wegen Fehlern zusätzlich geplante Bereinigungsdurchläufe |
@@ -256,6 +258,21 @@ Kumulative Zähler sättigen beim Maximum einer vorzeichenlosen 64-Bit-Zahl, üb
 
 HIT/MISS berücksichtigt nur Hauptanfragen mit nativer Cache-Entscheidung. Fehlender Upstream, Cache-Status null sowie BYPASS, EXPIRED, STALE, UPDATING und REVALIDATED zählen nicht zu diesem Verhältnis. Normale ungecachte Anfragen werden nicht zu MISS. Ein Status-Endpunkt kann auch ohne Hintergrund-Purge eine SHM-Zone anlegen. Auf 32-Bit-Systemen gilt das Warteschlangenalter für Intervalle unter etwa 24,9 Tagen; negative vorzeichenbehaftete Zeitdifferenzen werden als null ausgegeben.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: nicht konfiguriert
+Context: http
+```
+
+Teilt die `responses.hit`- und `responses.miss`-Zähler nach Verkehrsklasse auf. Der Variablenwert wird für jede gezählte Hauptanfrage in der Log-Phase aktualisiert und gelesen; dadurch werden auch nicht cachebare Variablen wie `$upstream_http_*` nach Empfang der Upstream-Header berücksichtigt. Die Klassifizierung kann über `map`, `geo`, Header oder Client-Adresse erfolgen.
+
+Nicht passende Werte fließen nur in die Gesamtzähler ein. Die Klassenwerte sind daher Teilmengen von `responses.hit` und `responses.miss`. Der Vergleich ist exakt und groß-/kleinschreibungssensitiv; gezählt werden nur Hauptanfragen mit einer nativen HIT- oder MISS-Entscheidung.
+
+Der erste Parameter muss eine einzelne Variable (`$variable` oder `${variable}`) sein. Namen müssen 1 bis 32 Zeichen lang und eindeutig sein; erlaubt sind Buchstaben, Ziffern, `_` und `-`. Die Direktive darf einmal vorkommen und höchstens drei Namen enthalten. Ohne `cache_purge_queue_status`-Location wird eine Warnung protokolliert.
+
+Die Shared-Memory-Zone reserviert drei Klassenslots, die Reloads überdauern. Umordnung und Entfernen eines Namens verschieben keine Zähler. Benötigt eine Konfiguration einen vierten unterschiedlichen Namen, wird der Reload abgelehnt; `nginx -t` erkennt diese Grenze nicht. Ein vollständiger NGINX-Neustart setzt die Slots zurück.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

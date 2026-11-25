@@ -19,7 +19,20 @@ typedef int pthread_mutex_t;
 #define ngx_log_error(...) ((void) 0)
 
 typedef struct {
+    ngx_uint_t nelts;
+} ngx_array_t;
+
+typedef struct {
+    ngx_flag_t daemon;
+} ngx_core_conf_t;
+
+typedef struct {
+    u_char *data;
+} ngx_http_cache_purge_traffic_class_conf_t;
+
+typedef struct {
     ngx_array_t namespaces;
+    ngx_http_cache_purge_traffic_class_conf_t *classes;
 } ngx_http_cache_purge_main_conf_t;
 
 typedef struct {
@@ -78,6 +91,15 @@ pthread_mutex_unlock(pthread_mutex_t *mutex)
     (void) mutex;
     record_lock_event('U');
     return 0;
+}
+
+static ngx_int_t
+ngx_http_cache_purge_traffic_class_commit(
+    ngx_http_cache_purge_main_conf_t *cmcf, void *log)
+{
+    (void) cmcf;
+    (void) log;
+    return NGX_OK;
 }
 
 static ngx_int_t

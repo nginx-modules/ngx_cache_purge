@@ -168,6 +168,8 @@ rate_per_worker ~= 1000 * B / (D + T) tasks/s
 
 [상태 엔드포인트](DIRECTIVES.ko.md#cache_purge_queue_status)로 대기/활성 작업, 수락 대기, 중복, 삭제 결과와 HIT/MISS를 관찰하십시오. `202 Accepted`는 수락/병합 확인이지 삭제나 즉각적인 논리 무효화의 증거는 아닙니다. 요청 지연을 큐 나이 및 저장소 경합과 함께 보십시오.
 
+`http` 컨텍스트에서 `cache_purge_traffic_class`를 설정하십시오. 변수는 log 단계에서 갱신되므로 `$upstream_http_*`와 같은 비캐시 upstream 변수는 응답 헤더를 받은 후 평가됩니다. 클래스별 결과는 `responses.by_class`에 표시되며 일치하지 않는 값은 전체 카운터에만 반영됩니다. SHM 영역은 reload 간 세 개의 클래스 슬롯을 유지합니다. 네 번째 새 이름이 필요한 reload는 거부되며 `nginx -t`는 이 제한을 감지하지 못합니다. [cache_purge_traffic_class](DIRECTIVES.ko.md#cache_purge_traffic_class)를 참조하십시오.
+
 | 수준 | 조건 |
 |---|---|
 | `warn` | 과도한 키 길이, 제거된 풀, 제한한 설정값 |

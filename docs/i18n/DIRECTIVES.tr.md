@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Tamsayı / bayt | Silinen dosyaların tahmini mantıksal boyutları |
 | `responses.hit`, `responses.miss` | Tamsayı / ana istek | Log aşamasında gözlenen çekirdek HIT/MISS |
 | `responses.hit_ratio` | Sayı / 0..1 | HIT / (HIT + MISS); gözlem yoksa sıfır |
+| `responses.by_class.<name>.hit`, `.miss` | Tamsayı / ana istek | `<name>` sınıfına ayrılan isteklerin HIT/MISS kararları; toplamların alt kümesi |
+| `responses.by_class.<name>.hit_ratio` | Sayı / 0..1 | Bu sınıfın HIT / (HIT + MISS) oranı; gözlem yoksa sıfır |
 | `logical.invalidations` | Tamsayı / karar | Tekrarlar ve REFRESH dahil yayımlanmış nesil geçersizleştirmeleri |
 | `cleanup.scan_errors` | Tamsayı / hata | Arka plan metaveri/açma/okuma/kapama/ayırma hataları |
 | `cleanup.retries` | Tamsayı / geçiş | Temizleme hatası nedeniyle ek geçişler |
@@ -256,6 +258,21 @@ Birikimli sayaçlar unsigned 64 bit üst sınırında doyar, reload’da korunur
 
 HIT/MISS yalnızca yerel önbellek kararlı ana istekleri sayar. Eksik upstream, sıfır durum, BYPASS, EXPIRED, STALE, UPDATING, REVALIDATED orana girmez. Normalde önbelleksiz istek MISS olmaz. İzleme tek başına, arka plan kapalıyken SHM oluşturabilir. 32 bitte kuyruk yaşı yaklaşık 24,9 günden kısa aralıkları kapsar; negatif işaretli saat farkı sıfır bildirilir.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+`responses.hit` ve `responses.miss` sayaçlarını trafik sınıfına göre ayırır. Değişken, sayılan her ana istek için log aşamasında yenilenip okunur; böylece `$upstream_http_*` gibi önbelleğe alınmayan değişkenler upstream yanıt başlıkları geldikten sonraki değerleriyle sınıflandırılır. Sınıflandırma `map`, `geo`, bir başlık veya istemci adresine dayalı değişkenlerle yapılabilir.
+
+Hiçbir adla eşleşmeyen değerler yalnızca toplam sayaçlara eklenir. Bu nedenle sınıf sayaçları `responses.hit` ve `responses.miss` değerlerinin alt kümesidir. Eşleşme tamdır ve büyük/küçük harfe duyarlıdır; yalnızca yerel HIT veya MISS kararı bulunan ana istekler sayılır.
+
+İlk parametre tek bir değişken (`$variable` veya `${variable}`) olmalıdır. Adlar 1–32 karakter uzunluğunda, benzersiz olmalı ve yalnızca harf, rakam, `_` ve `-` içermelidir. Direktif bir kez tanımlanabilir ve en fazla üç ad alır. `cache_purge_queue_status` location yoksa uyarı kaydedilir.
+
+Paylaşılan bellek bölgesi reload boyunca üç sınıf yuvasını korur. Adları yeniden sıralamak veya kaldırmak sayaçları başka bir ada taşımaz. Dördüncü farklı ad gerektiren reload reddedilir; `nginx -t` bu sınırı denetlemez. Yuvaları boşaltmak için NGINX tamamen yeniden başlatılmalıdır.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

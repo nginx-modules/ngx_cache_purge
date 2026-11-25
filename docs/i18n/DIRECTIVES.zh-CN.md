@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | 整数／字节 | 成功 unlink 文件的估算逻辑大小 |
 | `responses.hit`, `responses.miss` | 整数／主请求 | 在 log phase 观察到的核心 HIT 与 MISS 判定 |
 | `responses.hit_ratio` | 数值／0..1 | HIT / (HIT + MISS)，两者均未观察到时为 0 |
+| `responses.by_class.<name>.hit`, `.miss` | 整数／主请求 | 被分类为 `<name>` 的请求的 HIT/MISS 判定；属于总计数的子集 |
+| `responses.by_class.<name>.hit_ratio` | 数值／0..1 | 该类别的 HIT / (HIT + MISS)，无观测时为 0 |
 | `logical.invalidations` | 整数／决定数 | 已发布的 generation 失效，包括重复请求和 REFRESH 决定 |
 | `cleanup.scan_errors` | 整数／错误数 | 后台元数据、打开、读取、关闭或分配错误 |
 | `cleanup.retries` | 整数／扫描次数 | 因清理失败而安排的额外扫描 |
@@ -256,6 +258,21 @@ location = /cache_purge_queue_status {
 
 HIT/MISS 只统计有原生缓存判定的主请求。没有 upstream、缓存状态 0，以及 BYPASS、EXPIRED、STALE、UPDATING、REVALIDATED 都不进入该比率。普通非缓存请求不算 MISS。即使后台清理关闭，仅监控也能创建 SHM 区。32 位系统上的队列年龄适用于约 24.9 天以内的间隔；带符号时间差为负时报告 0。
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+按流量类别拆分 `responses.hit` 和 `responses.miss` 计数。每个参与统计的主请求都会在 log phase 刷新并读取变量，因此 `$upstream_http_*` 等不可缓存变量会使用收到 upstream 响应头之后的值。分类可由 `map`、`geo`、请求头或客户端地址等变量完成。
+
+不匹配任何名称的值只计入总数。因此，各类别计数始终是 `responses.hit` 和 `responses.miss` 的子集。匹配要求完全相同且区分大小写；只有具有原生 HIT 或 MISS 缓存判定的主请求才会计数。
+
+第一个参数必须是单个变量（`$variable` 或 `${variable}`）。名称长度为 1–32 个字符，必须唯一，且只能包含字母、数字、`_` 和 `-`。该指令只能配置一次，最多接受三个名称。若没有 `cache_purge_queue_status` location，则记录警告。
+
+共享内存区在 reload 之间保留三个类别槽位。调整名称顺序或删除名称不会将计数转移给其他名称。需要第四个不同名称的 reload 会被拒绝；`nginx -t` 不会检查此限制。完整重启 NGINX 才会释放槽位。
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`
