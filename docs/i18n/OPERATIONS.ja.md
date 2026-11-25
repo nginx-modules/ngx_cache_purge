@@ -166,6 +166,8 @@ rate_per_worker ~= 1000 * B / (D + T) tasks/s
 
 [ステータスエンドポイント](DIRECTIVES.ja.md#cache_purge_queue_status)で、待機／実行中の作業、受け付け待機、重複、unlink 結果、HIT/MISS を確認できます。`202 Accepted` は受け付けまたは統合の確認であり、削除完了や即時の論理無効化の証明ではありません。リクエスト遅延をキューの経過時間とストレージ競合と合わせて監視してください。
 
+`http` コンテキストで `cache_purge_traffic_class` を設定します。変数は log phase で更新されるため、`$upstream_http_*` などの非キャッシュ upstream 変数は応答ヘッダー受信後に評価されます。クラス別の値は `responses.by_class` に出力され、一致しない値は合計にのみ加算されます。共有メモリのクラススロットは reload 後も保持され、異なる 4 個目の名前が必要な reload は拒否されます。`nginx -t` では上限を検出できません。[cache_purge_traffic_class](DIRECTIVES.ja.md#cache_purge_traffic_class) を参照してください。
+
 | レベル | 条件 |
 |---|---|
 | `warn` | 過長キー、削除されたタスクのプール、上限に調整された設定値 |

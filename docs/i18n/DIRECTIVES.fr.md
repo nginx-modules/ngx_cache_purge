@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Entier / octets | Tailles logiques estimées des fichiers supprimés |
 | `responses.hit`, `responses.miss` | Entier / requêtes principales | Décisions natives HIT/MISS observées en phase de log |
 | `responses.hit_ratio` | Nombre / 0..1 | HIT / (HIT + MISS), ou zéro sans observation |
+| `responses.by_class.<name>.hit`, `.miss` | Entier / requêtes principales | Décisions HIT/MISS des requêtes classées `<name>` ; sous-ensemble des totaux |
+| `responses.by_class.<name>.hit_ratio` | Nombre / 0..1 | HIT / (HIT + MISS) de cette classe, ou zéro sans observation |
 | `logical.invalidations` | Entier / décisions | Invalidations publiées, doublons et REFRESH compris |
 | `cleanup.scan_errors` | Entier / erreurs | Échecs de métadonnées/ouverture/lecture/fermeture/allocation de fond |
 | `cleanup.retries` | Entier / passages | Passages supplémentaires après échec du nettoyage |
@@ -256,6 +258,21 @@ Les cumuls saturent au maximum unsigned 64 bits, persistent au reload et reparte
 
 HIT/MISS compte uniquement les requêtes principales avec décision native. Upstream absent, statut nul, BYPASS, EXPIRED, STALE, UPDATING et REVALIDATED sont exclus du ratio. Une requête normalement non cachée ne devient pas MISS. La supervision seule peut créer SHM sans purge de fond. En 32 bits, l’âge couvre moins d’environ 24,9 jours ; une différence d’horloge signée négative est ramenée à zéro.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Répartit les compteurs `responses.hit` et `responses.miss` par classe de trafic. La variable est actualisée et lue en phase log pour chaque requête principale comptabilisée ; les variables non cacheables telles que `$upstream_http_*` sont ainsi évaluées après réception des en-têtes upstream. La classification peut utiliser `map`, `geo`, un en-tête ou l’adresse du client.
+
+Les valeurs sans correspondance ne sont ajoutées qu’aux totaux. Les compteurs par classe sont donc des sous-ensembles de `responses.hit` et `responses.miss`. La correspondance est exacte et sensible à la casse ; seules les requêtes principales avec une décision native HIT ou MISS sont comptées.
+
+Le premier paramètre doit être une variable simple (`$variable` ou `${variable}`). Les noms doivent contenir de 1 à 32 caractères, être uniques et n’utiliser que lettres, chiffres, `_` et `-`. La directive apparaît une fois et accepte au plus trois noms. Un avertissement est journalisé en l’absence de location `cache_purge_queue_status`.
+
+La zone de mémoire partagée conserve trois emplacements de classe au fil des reloads. Réordonner ou retirer un nom ne déplace pas ses compteurs. Un reload nécessitant un quatrième nom distinct est refusé ; `nginx -t` ne détecte pas cette limite. Un redémarrage complet de NGINX libère les emplacements.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

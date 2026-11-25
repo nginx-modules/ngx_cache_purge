@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Całkowita / bajty | Szacowane logiczne rozmiary usuniętych plików |
 | `responses.hit`, `responses.miss` | Całkowita / główne żądania | Natywne HIT/MISS zaobserwowane w fazie log |
 | `responses.hit_ratio` | Liczba / 0..1 | HIT / (HIT + MISS), zero bez obserwacji |
+| `responses.by_class.<name>.hit`, `.miss` | Całkowita / główne żądania | Decyzje HIT/MISS żądań sklasyfikowanych jako `<name>`; podzbiór wartości ogólnych |
+| `responses.by_class.<name>.hit_ratio` | Liczba / 0..1 | HIT / (HIT + MISS) tej klasy lub zero bez obserwacji |
 | `logical.invalidations` | Całkowita / decyzje | Opublikowane invalidacje, w tym duplikaty i REFRESH |
 | `cleanup.scan_errors` | Całkowita / błędy | Błędy metadanych/otwarcia/odczytu/zamknięcia/alokacji tła |
 | `cleanup.retries` | Całkowita / przejścia | Dodatkowe przejścia po błędzie czyszczenia |
@@ -256,6 +258,21 @@ Liczniki nasycają się na maksimum unsigned 64 bit, przeżywają reload i zeruj
 
 HIT/MISS obejmuje główne żądania z natywną decyzją cache. Brak upstream, status zero, BYPASS, EXPIRED, STALE, UPDATING i REVALIDATED nie wchodzą do ilorazu. Zwykłe żądanie bez cache nie staje się MISS. Sam monitoring może utworzyć SHM bez tła. Na 32 bitach wiek obejmuje mniej niż około 24,9 dnia; ujemna różnica zegara ze znakiem daje zero.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Dzieli liczniki `responses.hit` i `responses.miss` według klasy ruchu. Zmienna jest odświeżana i odczytywana w fazie log dla każdego zliczanego żądania głównego; dzięki temu niecache’owane zmienne, takie jak `$upstream_http_*`, są odczytywane po otrzymaniu nagłówków upstream. Klasyfikację można oprzeć na `map`, `geo`, nagłówku lub adresie klienta.
+
+Wartości niedopasowane trafiają tylko do liczników ogólnych. Liczniki klas są więc podzbiorami `responses.hit` i `responses.miss`. Dopasowanie jest dokładne i uwzględnia wielkość liter; liczone są tylko żądania główne z natywną decyzją HIT lub MISS.
+
+Pierwszy parametr musi być pojedynczą zmienną (`$variable` lub `${variable}`). Nazwy muszą mieć 1–32 znaków, być unikalne i zawierać wyłącznie litery, cyfry, `_` lub `-`. Dyrektywa może wystąpić raz i przyjmować maksymalnie trzy nazwy. Brak location `cache_purge_queue_status` powoduje ostrzeżenie.
+
+Strefa pamięci współdzielonej zachowuje trzy sloty klas podczas reloadów. Zmiana kolejności lub usunięcie nazwy nie przenosi jej liczników. Reload wymagający czwartej nowej nazwy zostanie odrzucony; `nginx -t` nie wykrywa tego limitu. Pełny restart NGINX zwalnia sloty.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`

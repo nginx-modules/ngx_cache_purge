@@ -166,6 +166,8 @@ Kleinere Gruppen oder längere Pausen reduzieren Arbeit zwischen Ruhephasen. Fü
 
 Der [Status-Endpunkt](DIRECTIVES.de.md#cache_purge_queue_status) zeigt wartende und aktive Aufträge, Aufnahme-Wartezeit, Duplikate, Unlink-Ergebnisse und HIT/MISS. `202 Accepted` bestätigt Aufnahme oder Zusammenfassung, nicht die Löschung oder sofortige logische Invalidierung. Anfragelatenz gemeinsam mit Queue-Alter und Datenträgerkonkurrenz beobachten.
 
+`cache_purge_traffic_class` wird im `http`-Kontext konfiguriert. Die Variable wird in der Log-Phase aktualisiert; nicht cachebare Upstream-Variablen wie `$upstream_http_*` werden daher nach Empfang der Antwort-Header ausgewertet. Die Aufschlüsselung steht unter `responses.by_class`; nicht zugeordnete Werte bleiben in den Gesamtzählern. Die SHM-Zone hält drei Klassenslots über Reloads hinweg. Ein Reload mit einem vierten neuen Namen wird abgelehnt; `nginx -t` prüft diese Grenze nicht. Siehe [cache_purge_traffic_class](DIRECTIVES.de.md#cache_purge_traffic_class).
+
 | Stufe | Bedingung |
 |---|---|
 | `warn` | Zu langer Schlüssel, entfernter Auftrags-Pool oder begrenzter Konfigurationswert |

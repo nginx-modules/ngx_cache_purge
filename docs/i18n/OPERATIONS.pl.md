@@ -166,6 +166,8 @@ Zmniejsz partię lub wydłuż pauzę, aby ograniczyć pracę między przerwami. 
 
 [Endpoint statusu](DIRECTIVES.pl.md#cache_purge_queue_status) pokazuje oczekiwania, aktywne zadania, przyjęcia, duplikaty, usunięcia i HIT/MISS. `202 Accepted` potwierdza przyjęcie/scalenie, nie usunięcie ani natychmiastową logiczną invalidację. Mierz opóźnienia razem z wiekiem kolejki i rywalizacją o dysk.
 
+Skonfiguruj `cache_purge_traffic_class` w kontekście `http`. Zmienna jest odświeżana w fazie log, więc niecache’owane zmienne upstream, takie jak `$upstream_http_*`, są odczytywane po otrzymaniu nagłówków odpowiedzi. Podział jest dostępny w `responses.by_class`; niedopasowane wartości zwiększają tylko liczniki ogólne. Strefa SHM zachowuje trzy sloty klas podczas reloadów. Reload wymagający czwartej nowej nazwy jest odrzucany, a `nginx -t` nie wykrywa tego limitu. Zob. [cache_purge_traffic_class](DIRECTIVES.pl.md#cache_purge_traffic_class).
+
 | Poziom | Warunek |
 |---|---|
 | `warn` | Zbyt długi klucz, usunięta pula lub ograniczony parametr |

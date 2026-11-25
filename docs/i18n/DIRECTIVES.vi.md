@@ -229,6 +229,8 @@ location = /cache_purge_queue_status {
 | `files.bytes` | Số nguyên / byte | Kích thước logic ước tính của tệp đã xóa |
 | `responses.hit`, `responses.miss` | Số nguyên / yêu cầu chính | Quyết định HIT/MISS lõi quan sát ở pha log |
 | `responses.hit_ratio` | Số / 0..1 | HIT / (HIT + MISS), 0 nếu không có quan sát |
+| `responses.by_class.<name>.hit`, `.miss` | Số nguyên / yêu cầu chính | Quyết định HIT/MISS của yêu cầu thuộc lớp `<name>`; là tập con của tổng |
+| `responses.by_class.<name>.hit_ratio` | Số / 0..1 | HIT / (HIT + MISS) của lớp đó, hoặc 0 khi chưa có quan sát |
 | `logical.invalidations` | Số nguyên / quyết định | Vô hiệu hóa đã công bố, gồm trùng lặp và REFRESH |
 | `cleanup.scan_errors` | Số nguyên / lỗi | Lỗi siêu dữ liệu/mở/đọc/đóng/cấp phát nền |
 | `cleanup.retries` | Số nguyên / lượt | Lượt thêm do dọn dẹp lỗi |
@@ -256,6 +258,21 @@ Bộ đếm tích lũy bão hòa tại tối đa unsigned 64-bit, giữ qua relo
 
 HIT/MISS chỉ đếm yêu cầu chính có quyết định cache bản địa. Thiếu upstream, trạng thái 0, BYPASS, EXPIRED, STALE, UPDATING, REVALIDATED bị loại khỏi tỷ lệ. Yêu cầu vốn không cache không thành MISS. Chỉ giám sát cũng có thể tạo SHM khi nền tắt. Trên 32-bit, tuổi hàng đợi dưới khoảng 24,9 ngày; chênh lệch đồng hồ có dấu âm báo 0.
 
+## `cache_purge_traffic_class`
+
+```
+Syntax:  cache_purge_traffic_class $variable name [name [name]];
+Default: not configured
+Context: http
+```
+
+Phân tách bộ đếm `responses.hit` và `responses.miss` theo lớp lưu lượng. Biến được làm mới và đọc ở pha log cho mỗi yêu cầu chính được tính; vì vậy các biến upstream không cache được như `$upstream_http_*` sẽ có giá trị sau khi nhận tiêu đề phản hồi upstream. Có thể phân loại bằng biến từ `map`, `geo`, header hoặc địa chỉ máy khách.
+
+Giá trị không khớp tên nào chỉ được cộng vào tổng. Do đó, bộ đếm theo lớp là tập con của `responses.hit` và `responses.miss`. Việc khớp là chính xác và phân biệt chữ hoa/thường; chỉ yêu cầu chính có quyết định HIT hoặc MISS gốc mới được tính.
+
+Tham số đầu tiên phải là một biến đơn (`$variable` hoặc `${variable}`). Tên dài 1–32 ký tự, không trùng nhau và chỉ gồm chữ cái, chữ số, `_`, `-`. Chỉ khai báo chỉ thị một lần và tối đa ba tên. Nếu không có location `cache_purge_queue_status`, hệ thống ghi cảnh báo.
+
+Vùng bộ nhớ chia sẻ giữ ba slot lớp qua các lần reload. Đổi thứ tự hoặc xóa tên không chuyển bộ đếm sang tên khác. Reload cần tên khác biệt thứ tư sẽ bị từ chối; `nginx -t` không phát hiện giới hạn này. Khởi động lại NGINX hoàn toàn để giải phóng slot.
 <a id="cache_purge_legacy_status"></a>
 
 ## `cache_purge_legacy_status`
