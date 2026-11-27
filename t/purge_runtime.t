@@ -2904,4 +2904,202 @@ subtest 'a reload cannot change verify_owner' => sub {
     stop_server($e);
 };
 
+subtest 'state directory mode checks group and other writes independently' => sub {
+    for my $case ([0770, 'group'], [0702, 'other']) {
+        my ($mode, $label) = @$case;
+        my $name = "state-mode-$label";
+        my $dir = "$base/$name/purge-state";
+        make_path($dir);
+        chmod $mode, $dir or die "cannot set state directory mode: $!";
+
+        my $failed = start_server($name, workers => 1, strict => 1,
+                                  throttle => '60s', expect_failure => 1);
+        like(read_file("$failed->{root}/error.log"),
+             qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+             "a directory writable by $label is rejected");
+        ok(!-e running_marker_path($failed),
+           "a directory writable by $label receives no running marker");
+    }
+
+    my $name = 'state-mode-readable';
+    my $dir = "$base/$name/purge-state";
+    make_path($dir);
+    chmod 0755, $dir or die "cannot set readable state directory mode: $!";
+
+    my $s = start_server($name, workers => 1, strict => 1,
+                         throttle => '60s');
+    unlike(read_file("$s->{root}/error.log"),
+           qr/state directory .*must be owned|state directory .*is not verified/,
+           'read and search permission for group and others are allowed');
+    stop_server($s);
+    ok(-f generation_state_path($s),
+       'the master persists state in a non-group-writable 0755 directory');
+};
+
+subtest 'state directory ownership is enforced unless explicitly waived' => sub {
+    plan skip_all => 'requires root and a distinct nobody account' unless $> == 0;
+
+    my @nobody = getpwnam('nobody');
+    plan skip_all => 'the nobody account is unavailable'
+        unless @nobody && defined $nobody[2] && defined $nobody[3]
+               && $nobody[2] != 0;
+
+    my ($uid, $gid) = @nobody[2, 3];
+    my $probe = "$base/state-owner-probe";
+    make_path($probe);
+    plan skip_all => 'the test environment does not permit chown'
+        unless chown($uid, $gid, $probe) == 1;
+
+    for my $mode (qw(on off)) {
+        my $name = "state-owner-$mode";
+        my $dir = "$base/$name/purge-state";
+        make_path($dir);
+        chmod 0700, $dir or die "cannot restrict state directory: $!";
+        chown $uid, $gid, $dir
+            or die "cannot transfer state directory ownership: $!";
+
+        is((stat($dir))[4], $uid,
+           "the fixture directory is owned by the alternate uid for verify_owner=$mode");
+
+        if ($mode eq 'on') {
+            my $failed = start_server($name, workers => 1, strict => 1,
+                                      throttle => '60s', verify_owner => 'on',
+                                      expect_failure => 1);
+            like(read_file("$failed->{root}/error.log"),
+                 qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+                 'verify_owner=on rejects a foreign-owned directory');
+            ok(!-e running_marker_path($failed),
+               'the rejected foreign-owned directory is not modified');
+        } else {
+            my $s = start_server($name, workers => 1, strict => 1,
+                                 throttle => '60s', verify_owner => 'off');
+            like(read_file("$s->{root}/error.log"),
+                 qr/\[warn\].*state directory ".*purge-state" of namespace "objects" is not verified \(verify_owner=off\)/,
+                 'verify_owner=off reports the foreign owner');
+            is(request($s, '/health')->{status}, 200,
+               'verify_owner=off allows the explicitly trusted directory');
+            stop_server($s);
+            ok(-f generation_state_path($s),
+               'the master can persist state in the explicitly trusted directory');
+        }
+    }
+};
+
+subtest 'a FIFO at the namespace lock name is rejected without blocking' => sub {
+    for my $mode (qw(on off)) {
+        my $name = "state-lock-fifo-$mode";
+        my $dir = "$base/$name/purge-state";
+        make_path($dir);
+        chmod($mode eq 'off' ? 0777 : 0700, $dir)
+            or die "cannot set lock directory mode: $!";
+        POSIX::mkfifo("$dir/.lock", 0600)
+            or die "cannot create lock fifo: $!";
+
+        my $started = time;
+        my %options = (workers => 1, strict => 1, throttle => '60s',
+                       expect_failure => 1);
+        $options{verify_owner} = 'off' if $mode eq 'off';
+        my $failed = start_server($name, %options);
+
+        cmp_ok(time - $started, '<', 5,
+               "verify_owner=$mode rejects a FIFO lock without waiting for a peer");
+        like(read_file("$failed->{root}/error.log"),
+             qr/\[emerg\].*(?:cannot open namespace lock|namespace lock .* is not a regular file)/,
+             "verify_owner=$mode rejects the non-regular lock");
+        ok(-p "$dir/.lock",
+           'the lock FIFO remains a FIFO after the failed startup');
+    }
+};
+
+subtest 'invalid persisted snapshots rotate the namespace epoch' => sub {
+    for my $kind (qw(checksum truncated version)) {
+        my $name = "snapshot-invalid-$kind";
+        my $s = start_server($name, workers => 1, strict => 1,
+                             throttle => '60s');
+        warm($s);
+        is(request($s, '/cache/warm', 'PURGE')->{status}, 200,
+           "$kind fixture records an invalidation");
+        my $epoch = namespace_view($s, 'objects')->{epoch};
+        stop_server($s);
+
+        my $state = generation_state_path($s);
+        ok(-f $state, "$kind fixture has a persisted snapshot");
+        my $snapshot = read_file($state);
+        cmp_ok(length($snapshot), '>', 64,
+               "$kind fixture contains a complete header and payload");
+
+        if ($kind eq 'checksum') {
+            substr($snapshot, -1, 1) =
+                chr(ord(substr($snapshot, -1, 1)) ^ 0x01);
+        } elsif ($kind eq 'truncated') {
+            $snapshot = substr($snapshot, 0, 20);
+        } else {
+            # The low byte of the big-endian version field is at offset 7.
+            substr($snapshot, 7, 1) =
+                chr(ord(substr($snapshot, 7, 1)) ^ 0x01);
+        }
+        write_file($state, $snapshot);
+
+        my $again = start_server($name, workers => 1, strict => 1,
+                                 throttle => '60s');
+        isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+             "$kind snapshot is rejected and the epoch rotates");
+        is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+           "$kind snapshot cannot restore an invalidated cache entry");
+        stop_server($again);
+    }
+};
+
+subtest 'verify_owner=off does not disable snapshot link and FIFO defenses' => sub {
+    my $name = 'state-off-snapshot-link';
+    my $dir = "$base/$name/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot prepare unverified state directory: $!";
+
+    my $s = start_server($name, workers => 1, strict => 1,
+                         throttle => '60s', verify_owner => 'off');
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    my $state = generation_state_path($s);
+    rename $state, "$state.real" or die "cannot move snapshot: $!";
+    symlink "$state.real", $state or die "cannot link snapshot: $!";
+
+    my $again = start_server($name, workers => 1, strict => 1,
+                             throttle => '60s', verify_owner => 'off');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'verify_owner=off still rejects a linked snapshot');
+    like(read_file("$again->{root}/error.log"),
+         qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
+         'the linked snapshot rejection is reported');
+    $again->{expected_severe} = [
+        qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch/,
+    ];
+    stop_server($again);
+    ok(-f $state && !-l $state,
+       'shutdown replaces the snapshot link with a regular file');
+
+    $name = 'state-off-snapshot-fifo';
+    $dir = "$base/$name/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot prepare unverified state directory: $!";
+
+    $s = start_server($name, workers => 1, strict => 1,
+                      throttle => '60s', verify_owner => 'off');
+    $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    $state = generation_state_path($s);
+    unlink $state or die "cannot remove snapshot: $!";
+    POSIX::mkfifo($state, 0600) or die "cannot create snapshot fifo: $!";
+
+    $again = start_server($name, workers => 1, strict => 1,
+                          throttle => '60s', verify_owner => 'off');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'verify_owner=off still rejects a FIFO snapshot');
+    stop_server($again);
+    ok(-f $state,
+       'shutdown replaces the snapshot FIFO with a regular file');
+};
+
 done_testing();
