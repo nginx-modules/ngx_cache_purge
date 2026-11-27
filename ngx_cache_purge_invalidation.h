@@ -32,6 +32,17 @@ typedef struct {
 #define NGX_CACHE_PURGE_OPEN_NOFOLLOW  0
 #endif
 
+/*
+ * Opening a FIFO blocks until a peer appears, which would hang the master at
+ * startup if one is planted at a state file name.  Regular files ignore the
+ * flag; the descriptor is checked with fstat() right after the open.
+ */
+#ifdef O_NONBLOCK
+#define NGX_CACHE_PURGE_OPEN_NONBLOCK  O_NONBLOCK
+#else
+#define NGX_CACHE_PURGE_OPEN_NONBLOCK  0
+#endif
+
 /* A rule allocation failed after the namespace was reset. */
 #define NGX_CACHE_PURGE_NAMESPACE_FULL   -100
 

@@ -2681,4 +2681,70 @@ subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' =>
     stop_server($restarted);
 };
 
+# The state directory is chowned to the worker user, so a link at the snapshot
+# name must be treated as an unreadable snapshot instead of being followed.
+subtest 'a symbolic link at the snapshot name is not restored' => sub {
+    my $s = start_server('state-link', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    my $state = generation_state_path($s);
+    ok(-f $state, 'graceful shutdown committed a regular snapshot');
+    rename $state, "$state.real" or die "cannot move snapshot: $!";
+    symlink "$state.real", $state or die "cannot link snapshot: $!";
+    write_file("$s->{root}/error.log", '');
+
+    my $again = start_server('state-link', workers => 1, strict => 1,
+                             throttle => '60s');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'a linked snapshot is ignored and the epoch rotates');
+    like(read_file("$again->{root}/error.log"),
+         qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
+         'the ignored link is reported');
+    stop_server($again);
+    ok(-f $state && !-l $state,
+       'the next snapshot replaces the link with a regular file');
+};
+
+# open() of a FIFO blocks until a peer appears; a FIFO planted at the snapshot
+# name must be rejected without hanging the master.
+subtest 'a FIFO at the snapshot name does not block startup' => sub {
+    my $s = start_server('state-fifo', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    my $state = generation_state_path($s);
+    ok(-f $state, 'graceful shutdown committed a regular snapshot');
+    unlink $state or die "cannot remove snapshot: $!";
+    POSIX::mkfifo($state, 0600) or die "cannot create fifo: $!";
+
+    my $again = start_server('state-fifo', workers => 1, strict => 1,
+                             throttle => '60s');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'a FIFO is not a snapshot and the epoch rotates');
+    stop_server($again);
+    ok(-f $state, 'the next snapshot replaces the FIFO with a regular file');
+};
+
+# The lock is created in a directory that other users may be able to reach, so
+# a link at its name must not redirect the open or the lock.
+subtest 'a symbolic link at the lock name refuses startup' => sub {
+    my $dir = "$base/state-lock/purge-state";
+    make_path($dir);
+    chmod 0700, $dir or die "cannot restrict the state directory: $!";
+    write_file("$base/state-lock/victim", 'keep');
+    symlink "$base/state-lock/victim", "$dir/.lock"
+        or die "cannot link the lock: $!";
+
+    my $failed = start_server('state-lock', workers => 1, strict => 1,
+                              throttle => '60s', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*cannot open namespace lock/,
+         'startup refuses to lock through a link');
+    is(read_file("$base/state-lock/victim"), 'keep',
+       'the link target is untouched');
+};
+
 done_testing();

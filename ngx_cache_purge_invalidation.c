@@ -337,6 +337,37 @@ ngx_http_cache_purge_sync_state_dir(ngx_http_cache_purge_namespace_t *ns)
 
 
 /*
+ * open(O_NOFOLLOW) on a symbolic link fails with ELOOP on Linux, macOS and
+ * the other POSIX systems, with EMLINK on FreeBSD and with EFTYPE on NetBSD.
+ * On Windows the C library errno values collide with system error codes, so
+ * no link is ever reported there.
+ */
+static ngx_flag_t
+ngx_http_cache_purge_open_refused_link(ngx_err_t err)
+{
+#if (NGX_WIN32)
+    (void) err;
+    return 0;
+#else
+    if (err == NGX_ELOOP) {
+        return 1;
+    }
+#ifdef EMLINK
+    if (err == EMLINK) {
+        return 1;
+    }
+#endif
+#ifdef EFTYPE
+    if (err == EFTYPE) {
+        return 1;
+    }
+#endif
+    return 0;
+#endif
+}
+
+
+/*
  * One process-wide lock per state directory.  fcntl record locks are owned
  * by the process, not the descriptor, so forked workers inheriting the
  * descriptor cannot keep the lock after the master exits.  flock on the
@@ -352,6 +383,7 @@ ngx_http_cache_purge_state_lock(ngx_http_cache_purge_namespace_t *ns)
     u_char      path[NGX_MAX_PATH + 1];
     u_char     *p;
     ngx_fd_t    fd;
+    ngx_file_info_t  fi;
     struct flock fl;
 
     if (ns->state_path->name.len + sizeof("/" NGX_CACHE_PURGE_LOCK_NAME)
@@ -363,12 +395,23 @@ ngx_http_cache_purge_state_lock(ngx_http_cache_purge_namespace_t *ns)
                      &ns->state_path->name, NGX_CACHE_PURGE_LOCK_NAME);
     *p = '\0';
 
-    fd = ngx_open_file(path, NGX_FILE_RDWR, NGX_FILE_CREATE_OR_OPEN,
-                       NGX_FILE_DEFAULT_ACCESS);
+    /* A link at the lock name must not redirect the open or the lock. */
+    fd = ngx_open_file(path,
+                       NGX_FILE_RDWR|NGX_CACHE_PURGE_OPEN_NOFOLLOW
+                       |NGX_CACHE_PURGE_OPEN_NONBLOCK,
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
     if (fd == NGX_INVALID_FILE) {
         ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
                       "ngx_cache_purge: cannot open namespace lock \"%s\"",
                       path);
+        return NGX_ERROR;
+    }
+
+    if (ngx_fd_info(fd, &fi) == NGX_FILE_ERROR || !ngx_is_file(&fi)) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: namespace lock \"%s\" is not a "
+                      "regular file", path);
+        (void) ngx_close_file(fd);
         return NGX_ERROR;
     }
 
@@ -677,26 +720,45 @@ ngx_http_cache_purge_generation_restore(ngx_http_cache_purge_namespace_t *ns,
         return NGX_ERROR;
     }
 
-    if (ngx_file_info(path, &fi) == NGX_FILE_ERROR) {
+    /*
+     * Open first and size the descriptor, never the path: a path checked
+     * with stat() can be replaced before it is opened, and a link must not
+     * make the master read an arbitrary file.
+     */
+    fd = ngx_open_file(path,
+                       NGX_FILE_RDONLY|NGX_CACHE_PURGE_OPEN_NOFOLLOW
+                       |NGX_CACHE_PURGE_OPEN_NONBLOCK,
+                       NGX_FILE_OPEN, 0);
+    if (fd == NGX_INVALID_FILE) {
+        if (ngx_http_cache_purge_open_refused_link(ngx_errno)) {
+            ngx_log_error(NGX_LOG_ALERT, ns->pool->log, ngx_errno,
+                          "ngx_cache_purge: \"%s\" is a symbolic link; "
+                          "ignoring it and rotating the epoch of namespace "
+                          "\"%V\"", path, &ns->name);
+            return NGX_DECLINED;
+        }
+
         return ngx_errno == NGX_ENOENT ? NGX_DECLINED : NGX_ERROR;
+    }
+
+    if (ngx_fd_info(fd, &fi) == NGX_FILE_ERROR) {
+        (void) ngx_close_file(fd);
+        return NGX_ERROR;
     }
 
     file_size = ngx_file_size(&fi);
 
-    if (file_size < NGX_CACHE_PURGE_STATE_HEADER
+    if (!ngx_is_file(&fi)
+        || file_size < NGX_CACHE_PURGE_STATE_HEADER
         || file_size > NGX_CACHE_PURGE_STATE_MAX)
     {
+        (void) ngx_close_file(fd);
         return NGX_DECLINED;
     }
 
     buf = ngx_alloc((size_t) file_size, ns->pool->log);
     if (buf == NULL) {
-        return NGX_ERROR;
-    }
-
-    fd = ngx_open_file(path, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
-    if (fd == NGX_INVALID_FILE) {
-        ngx_free(buf);
+        (void) ngx_close_file(fd);
         return NGX_ERROR;
     }
 
