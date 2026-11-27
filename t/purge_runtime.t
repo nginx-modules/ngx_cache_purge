@@ -2683,8 +2683,8 @@ subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' =>
     stop_server($restarted);
 };
 
-# The state directory is chowned to the worker user, so a link at the snapshot
-# name must be treated as an unreadable snapshot instead of being followed.
+# A symbolic link at the snapshot path must be rejected even when its target
+# is a regular snapshot file; recovery never follows links.
 subtest 'a symbolic link at the snapshot name is not restored' => sub {
     my $s = start_server('state-link', workers => 1, strict => 1,
                          throttle => '60s');
@@ -2704,6 +2704,9 @@ subtest 'a symbolic link at the snapshot name is not restored' => sub {
     like(read_file("$again->{root}/error.log"),
          qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
          'the ignored link is reported');
+    $again->{expected_severe} = [
+        qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
+    ];
     stop_server($again);
     ok(-f $state && !-l $state,
        'the next snapshot replaces the link with a regular file');
@@ -2880,6 +2883,9 @@ subtest 'verify_owner syntax' => sub {
 subtest 'a reload cannot change verify_owner' => sub {
     my $s = start_server('state-verify-reload', workers => 1, strict => 1,
                          throttle => '60s');
+    $s->{expected_severe} = [
+        qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/,
+    ];
     $s->{verify_owner} = 'off';
     ok(reload_refused($s, qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/),
        'verify_owner=on cannot become off on reload');
@@ -2888,6 +2894,9 @@ subtest 'a reload cannot change verify_owner' => sub {
 
     my $e = start_server('state-verify-reload-off', workers => 1, strict => 1,
                          throttle => '60s', verify_owner => 'off');
+    $e->{expected_severe} = [
+        qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/,
+    ];
     $e->{verify_owner} = 'on';
     ok(reload_refused($e, qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/),
        'verify_owner=off cannot become on on reload');
