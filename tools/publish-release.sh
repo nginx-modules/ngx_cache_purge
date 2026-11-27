@@ -10,7 +10,7 @@ python3 - "$RELEASE_TAG" <<'PY'
 import pathlib, sys
 root = pathlib.Path('dist')
 expected = {f'ngx_cache_purge-{sys.argv[1]}-nginx-{version}-linux-{arch}.{ext}'
-            for version in ('1.30.6', '1.31.7')
+            for version in ('1.30.6', '1.31.10')
             for arch in ('x86_64', 'aarch64') for ext in ('tar.gz', 'zip')}
 actual = {p.name for p in root.iterdir() if p.name != 'SHA256SUMS'}
 if actual != expected:
