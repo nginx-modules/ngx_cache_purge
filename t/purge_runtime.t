@@ -2747,4 +2747,20 @@ subtest 'a symbolic link at the lock name refuses startup' => sub {
        'the link target is untouched');
 };
 
+# The master persists and trusts this directory, so it must not be writable by
+# anyone else and nginx must not hand it to the worker user.
+subtest 'a state directory writable by others is refused' => sub {
+    my $dir = "$base/state-open/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot open the state directory: $!";
+
+    my $failed = start_server('state-open', workers => 1, strict => 1,
+                              throttle => '60s', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+         'startup names the unsafe state directory');
+    ok(!-e running_marker_path($failed),
+       'nothing is written into the refused directory');
+};
+
 done_testing();

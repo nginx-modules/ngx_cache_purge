@@ -1156,6 +1156,57 @@ ngx_http_cache_purge_generation_new_epoch(
 }
 
 
+#if !(NGX_WIN32)
+/*
+ * The snapshot and the dirty marker decide which cache entries stay
+ * reachable, and the master writes them with its own privileges.  Only the
+ * master user may therefore own or write the directory.  The path itself may
+ * be a symbolic link or a mount point, so it is checked, not resolved.
+ */
+static ngx_int_t
+ngx_http_cache_purge_state_dir_prepare(ngx_http_cache_purge_namespace_t *ns)
+{
+    u_char           path[NGX_MAX_PATH + 1];
+    ngx_file_info_t  fi;
+
+    if (ns->state_path->name.len + 1 > sizeof(path)) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(path, ns->state_path->name.data, ns->state_path->name.len);
+    path[ns->state_path->name.len] = '\0';
+
+    if (ngx_create_dir(path, 0700) == NGX_FILE_ERROR
+        && ngx_errno != NGX_EEXIST)
+    {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot create state directory \"%s\" "
+                      "of namespace \"%V\"", path, &ns->name);
+        return NGX_ERROR;
+    }
+
+    if (ngx_file_info(path, &fi) == NGX_FILE_ERROR || !ngx_is_dir(&fi)) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: state path \"%s\" of namespace \"%V\" "
+                      "is not a directory", path, &ns->name);
+        return NGX_ERROR;
+    }
+
+    if (fi.st_uid != geteuid() || (fi.st_mode & (S_IWGRP|S_IWOTH)) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
+                      "ngx_cache_purge: state directory \"%s\" of namespace "
+                      "\"%V\" must be owned by the user running the nginx "
+                      "master (uid %ui) and not be writable by its group or "
+                      "others; change its owner and mode and restart nginx",
+                      path, &ns->name, (ngx_uint_t) geteuid());
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+#endif
+
+
 static ngx_int_t
 ngx_http_cache_purge_generation_boot_namespace(
     ngx_http_cache_purge_namespace_t *ns)
@@ -1173,6 +1224,12 @@ ngx_http_cache_purge_generation_boot_namespace(
     }
 
     slab = (ngx_slab_pool_t *) ns->zone->shm.addr;
+
+#if !(NGX_WIN32)
+    if (ngx_http_cache_purge_state_dir_prepare(ns) != NGX_OK) {
+        return NGX_ERROR;
+    }
+#endif
 
     if (ngx_http_cache_purge_state_lock(ns) != NGX_OK) {
         return NGX_ERROR;
@@ -1497,11 +1554,22 @@ ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
         return NULL;
     }
     ns->state_path->name = *state_path;
-    if (ngx_conf_full_name(cf->cycle, &ns->state_path->name, 0) != NGX_OK
-        || ngx_add_path(cf, &ns->state_path) != NGX_OK)
-    {
+    if (ngx_conf_full_name(cf->cycle, &ns->state_path->name, 0) != NGX_OK) {
         return NULL;
     }
+
+#if (NGX_WIN32)
+    if (ngx_add_path(cf, &ns->state_path) != NGX_OK) {
+        return NULL;
+    }
+#endif
+    /*
+     * On POSIX the directory is deliberately not registered with
+     * ngx_add_path(): nginx would chown it to the worker user, who could
+     * then plant links or rewrite the snapshot that the master persists
+     * and trusts.  The master creates and verifies it itself, see
+     * ngx_http_cache_purge_state_dir_prepare().
+     */
 
     cmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_cache_purge_module);
     existing = cmcf->namespaces.elts;
