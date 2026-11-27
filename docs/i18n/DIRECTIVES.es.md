@@ -306,12 +306,14 @@ La invalidación por generaciones cubre todas las representaciones de la clave l
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 Declara un espacio de nombres antes de vincular locations. El nombre admite 1–32 letras ASCII, dígitos, `_` o `-`; SHM requiere ocho páginas nativas como mínimo. Use un directorio de estado persistente dedicado fuera de raíces de caché y temporales. El núcleo crea un marcador persistente exclusivo para reservar una época de reinicio. Conserve esos archivos mientras pueda existir la caché: borrar estado conservando caché permite reutilizar épocas obsoletas. No se garantiza durabilidad frente a pérdida de energía/fsync. Reload conserva época y reglas; cambiar tamaño/ruta o retirar un espacio requiere reinicio completo. SHM del espacio y de la cola se dimensionan por separado.
+
+Confianza en el directorio de estado: por defecto (`verify_owner=on`) el directorio se crea con modo `0700` si falta y debe pertenecer al usuario que ejecuta el master de nginx y no ser escribible por el grupo ni por otros; de lo contrario el arranque falla con `[emerg]`. nginx no lo entrega al usuario de los workers y los workers nunca lo usan. Un directorio que una versión anterior dejó a nombre del usuario de los workers debe devolverse una vez al usuario del master. El CRC32 de la instantánea detecta corrupción, no falsificación, y los enlaces simbólicos y FIFO en los nombres de la instantánea y del bloqueo no se siguen. `verify_owner=off` es una activación explícita para un directorio que el master no puede poseer, por ejemplo un volumen montado. Solo omite la comprobación de propietario y modo y registra `[warn]` cuando habría rechazado el directorio; quien pueda escribir en él controla qué entradas de la caché son alcanzables, así que úselo solo si controla a todos los que escriben. Una recarga no puede cambiar `verify_owner`; reinicie nginx.
 
 <a id="cache_purge_key"></a>
 

@@ -306,12 +306,14 @@ Vô hiệu hóa thế hệ bao quát mọi biểu diễn của khóa mà không 
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 Khai báo không gian tên trước khi location liên kết. Tên có 1–32 chữ ASCII, số, `_` hoặc `-`; SHM tối thiểu tám trang bản địa. Dùng thư mục trạng thái bền vững riêng ngoài gốc cache/tạm. Lõi tạo marker bền vững độc quyền để cấp epoch restart. Giữ các tệp nhỏ này chừng nào cache tương ứng có thể tồn tại; xóa trạng thái mà giữ cache có thể tái dùng epoch cũ. Không bảo đảm độ bền mất điện/fsync. Reload thường giữ epoch/quy tắc; đổi kích thước/đường dẫn hoặc bỏ không gian tên cần restart đầy đủ. SHM không gian tên và hàng đợi có kích thước riêng.
+
+Độ tin cậy của thư mục trạng thái: theo mặc định (`verify_owner=on`), thư mục được tạo với chế độ `0700` nếu chưa có và phải thuộc về người dùng chạy master nginx, không cho nhóm hay người khác ghi; nếu không, khởi động thất bại với `[emerg]`. nginx không giao nó cho người dùng của worker và các worker không bao giờ dùng nó. Thư mục mà bản phát hành trước để thuộc người dùng worker phải được trả lại một lần cho người dùng master. CRC32 của ảnh chụp phát hiện hỏng dữ liệu chứ không phát hiện giả mạo, và liên kết tượng trưng cùng FIFO ở tên ảnh chụp và tên khóa không được đi theo. `verify_owner=off` là lựa chọn bật rõ ràng cho thư mục mà master không thể sở hữu, ví dụ một volume được gắn. Nó chỉ bỏ qua kiểm tra chủ sở hữu và chế độ, và ghi `[warn]` khi thư mục lẽ ra bị từ chối; ai có thể ghi vào thư mục sẽ kiểm soát những mục cache nào truy cập được, vì vậy chỉ dùng khi bạn kiểm soát mọi bên ghi. Tải lại cấu hình không thể đổi `verify_owner`; hãy khởi động lại nginx.
 
 <a id="cache_purge_key"></a>
 

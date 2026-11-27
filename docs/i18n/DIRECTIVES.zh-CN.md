@@ -306,12 +306,14 @@ generation 失效无需此选项即可覆盖逻辑键的全部表示。
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 在 location 绑定前声明 generation 命名空间。名称为 1–32 个 ASCII 字母、数字、`_` 或 `-`；SHM 至少为八个原生页。使用缓存和临时根目录之外的独立持久状态目录。核心通过独占创建的持久标记分配重启 epoch。只要对应缓存可能仍存在，就必须保留这些小文件；保留缓存却删除状态可能导致旧 epoch 被重用。不保证断电／fsync 持久性。普通 reload 保留 epoch 和规则；修改大小、路径或移除命名空间需要完全重启。命名空间 SHM 与任务队列分别指定大小。
+
+状态目录的信任：默认（`verify_owner=on`）下，目录不存在时以 `0700` 模式创建，必须归运行 nginx master 的用户所有，且组和其他用户不可写；否则启动会以 `[emerg]` 失败。nginx 不会把它交给 worker 用户，worker 也从不使用它。早期版本留给 worker 用户所有的目录，需要一次性归还给 master 用户。快照的 CRC32 只能发现损坏，不能发现伪造；快照和锁文件名处的符号链接与 FIFO 不会被跟随。`verify_owner=off` 是针对 master 无法拥有的目录（例如挂载的卷）的显式选择加入。它只免除属主和模式检查，并在目录本应被拒绝时记录 `[warn]`；能够写入该目录的人可以控制哪些缓存条目可达，因此只应在您能控制所有写入方时使用。重载无法更改 `verify_owner`，请重启 nginx。
 
 <a id="cache_purge_key"></a>
 

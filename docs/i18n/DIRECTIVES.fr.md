@@ -306,12 +306,14 @@ L’invalidation par générations couvre toutes les représentations de la clé
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 Déclare un espace de générations avant ses liaisons aux locations. Nom de 1–32 lettres ASCII, chiffres, `_` ou `-` ; SHM d’au moins huit pages natives. Choisissez un répertoire d’état persistant dédié hors racines de cache et temporaires. Le noyau crée un marqueur persistant exclusif pour allouer une époque de redémarrage. Gardez ces petits fichiers tant que le cache associé peut exister : supprimer l’état seul permet de réutiliser une époque obsolète. Aucune garantie de durabilité coupure électrique/fsync. Reload préserve époque et règles ; changer taille/chemin ou retirer l’espace impose un redémarrage. Espace et file ont des tailles SHM séparées.
+
+Confiance dans le répertoire d'état : par défaut (`verify_owner=on`), le répertoire est créé avec le mode `0700` s'il manque et doit appartenir à l'utilisateur qui exécute le master nginx, sans accès en écriture pour le groupe ni les autres ; sinon le démarrage échoue avec `[emerg]`. nginx ne le confie pas à l'utilisateur des workers, et les workers ne l'utilisent jamais. Un répertoire qu'une version antérieure a laissé au nom de l'utilisateur des workers doit être rendu une fois à l'utilisateur du master. Le CRC32 de l'instantané détecte la corruption, pas la falsification, et les liens symboliques et FIFO aux noms de l'instantané et du verrou ne sont pas suivis. `verify_owner=off` est une activation explicite pour un répertoire que le master ne peut pas posséder, par exemple un volume monté. Elle ne lève que la vérification du propriétaire et du mode, et journalise `[warn]` lorsque le répertoire aurait été refusé ; quiconque peut y écrire contrôle alors quelles entrées du cache restent accessibles, à n'utiliser donc que si vous contrôlez tous les écrivains. Un rechargement ne peut pas modifier `verify_owner` ; redémarrez nginx.
 
 <a id="cache_purge_key"></a>
 

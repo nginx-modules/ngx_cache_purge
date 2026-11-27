@@ -107,8 +107,10 @@ sub config {
     my $namespace_size = $s->{namespace_size} || '1m';
     my $refresh_batch = $s->{refresh_batch}
         ? "cache_purge_refresh_batch $s->{refresh_batch};" : '';
+    my $verify_owner = defined $s->{verify_owner}
+        ? " verify_owner=$s->{verify_owner}" : '';
     my $namespace = $s->{strict}
-        ? "cache_purge_namespace $namespace_name $namespace_size $s->{root}/purge-state;\n"
+        ? "cache_purge_namespace $namespace_name $namespace_size $s->{root}/purge-state$verify_owner;\n"
           . "cache_purge_key $namespace_name $logical;" : '';
     # Unused extra namespaces with the longest allowed name (32 bytes). They only
     # exist to make the status "namespaces" list outgrow its reply buffer.
@@ -2761,6 +2763,136 @@ subtest 'a state directory writable by others is refused' => sub {
          'startup names the unsafe state directory');
     ok(!-e running_marker_path($failed),
        'nothing is written into the refused directory');
+};
+
+# verify_owner=off is an explicit opt-in for a state directory that the master
+# cannot own, such as a mounted volume.  It only waives the owner and mode
+# check; verify_owner=on stays the default and the link and FIFO defences stay.
+subtest 'verify_owner=on is the explicit spelling of the default' => sub {
+    my $dir = "$base/state-verify-on/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot open the state directory: $!";
+
+    my $failed = start_server('state-verify-on', workers => 1, strict => 1,
+                              throttle => '60s', verify_owner => 'on',
+                              expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+         'an explicit verify_owner=on namespace refuses an open directory');
+};
+
+subtest 'verify_owner=off accepts a directory that the default refuses' => sub {
+    my $dir = "$base/state-verify-off/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot open the state directory: $!";
+
+    my $s = start_server('state-verify-off', workers => 1, strict => 1,
+                         throttle => '60s', verify_owner => 'off');
+    like(read_file("$s->{root}/error.log"),
+         qr/\[warn\].*state directory ".*purge-state" of namespace "objects" is not verified \(verify_owner=off\)/,
+         'the skipped check is reported');
+    like(namespace_view($s, 'objects')->{epoch}, qr/^\d{10}$/,
+         'the namespace works');
+    stop_server($s);
+    ok(-f generation_state_path($s), 'the snapshot is persisted');
+};
+
+subtest 'verify_owner=off is quiet when the directory is safe' => sub {
+    my $s = start_server('state-verify-off-safe', workers => 1, strict => 1,
+                         throttle => '60s', verify_owner => 'off');
+    unlike(read_file("$s->{root}/error.log"), qr/is not verified/,
+           'a directory that the default would accept produces no warning');
+    stop_server($s);
+};
+
+subtest 'verify_owner=off still requires a directory' => sub {
+    make_path("$base/state-verify-off-file");
+    write_file("$base/state-verify-off-file/purge-state", 'not a directory');
+
+    my $failed = start_server('state-verify-off-file', workers => 1,
+                              strict => 1, throttle => '60s',
+                              verify_owner => 'off', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*state path ".*purge-state" of namespace "objects" is not a directory/,
+         'a file at the state path is refused');
+};
+
+subtest 'verify_owner=off still refuses a linked lock' => sub {
+    my $dir = "$base/state-verify-off-lock/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot open the state directory: $!";
+    write_file("$base/state-verify-off-lock/victim", 'keep');
+    symlink "$base/state-verify-off-lock/victim", "$dir/.lock"
+        or die "cannot link the lock: $!";
+
+    my $failed = start_server('state-verify-off-lock', workers => 1,
+                              strict => 1, throttle => '60s',
+                              verify_owner => 'off', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*cannot open namespace lock/,
+         'skipping the owner check does not cover links');
+    is(read_file("$base/state-verify-off-lock/victim"), 'keep',
+       'the link target is untouched');
+};
+
+subtest 'verify_owner syntax' => sub {
+    my $s = start_server('state-verify-syntax', workers => 1, strict => 1,
+                         throttle => '60s');
+    for my $value ('bogus', 'On', 'OFF', 'of', 'off1', 'on1', '') {
+        $s->{verify_owner} = $value;
+        isnt(check_config($s, config($s)), 0,
+             "verify_owner=$value is rejected");
+        like(read_file("$s->{root}/config.log"),
+             qr/\[emerg\].*invalid parameter "verify_owner=\Q$value\E" for namespace "objects"; expected verify_owner=on or verify_owner=off/,
+             "verify_owner=$value is reported");
+    }
+    delete $s->{verify_owner};
+
+    my $text = config($s);
+    $text =~ s/(cache_purge_namespace [^\n]+purge-state);/$1 strict=off;/;
+    isnt(check_config($s, $text), 0, 'an unknown parameter is rejected');
+    like(read_file("$s->{root}/config.log"),
+         qr/\[emerg\].*invalid parameter "strict=off" for namespace "objects"/,
+         'the unknown parameter is reported');
+
+    $text = config($s);
+    $text =~ s/(cache_purge_namespace [^\n]+purge-state);/$1 verify_owner=off verify_owner=on;/;
+    isnt(check_config($s, $text), 0, 'a repeated parameter is rejected');
+    like(read_file("$s->{root}/config.log"),
+         qr/\[emerg\].*duplicate parameter "verify_owner=on" for namespace "objects"/,
+         'the repeated parameter is reported');
+
+    $text = config($s);
+    $text =~ s/(cache_purge_namespace \w+ \w+) \S+purge-state;/$1;/;
+    isnt(check_config($s, $text), 0, 'the state directory is required');
+    like(read_file("$s->{root}/config.log"),
+         qr/\[emerg\].*invalid number of arguments in "cache_purge_namespace" directive/,
+         'the missing argument is reported');
+
+    $s->{verify_owner} = 'off';
+    is(check_config($s, config($s)), 0, 'verify_owner=off is valid');
+    $s->{verify_owner} = 'on';
+    is(check_config($s, config($s)), 0, 'verify_owner=on is valid');
+    delete $s->{verify_owner};
+    stop_server($s);
+};
+
+subtest 'a reload cannot change verify_owner' => sub {
+    my $s = start_server('state-verify-reload', workers => 1, strict => 1,
+                         throttle => '60s');
+    $s->{verify_owner} = 'off';
+    ok(reload_refused($s, qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/),
+       'verify_owner=on cannot become off on reload');
+    delete $s->{verify_owner};
+    stop_server($s);
+
+    my $e = start_server('state-verify-reload-off', workers => 1, strict => 1,
+                         throttle => '60s', verify_owner => 'off');
+    $e->{verify_owner} = 'on';
+    ok(reload_refused($e, qr/\[emerg\].*namespace "objects" changes verify_owner; restart nginx/),
+       'verify_owner=off cannot become on on reload');
+    $e->{verify_owner} = 'off';
+    stop_server($e);
 };
 
 done_testing();

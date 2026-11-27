@@ -306,12 +306,14 @@ Die Generationsinvalidierung erfasst ohne diese Option alle Repräsentationen de
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 Deklariert einen Generations-Namespace vor seiner Bindung in Locations. Namen bestehen aus 1–32 ASCII-Buchstaben, Ziffern, `_` oder `-`; SHM muss mindestens acht native Seiten umfassen. Ein eigenes dauerhaftes Zustandsverzeichnis außerhalb von Cache- und Temporärpfaden verwenden. Der Core erzeugt einen persistenten exklusiven Marker für eine Neustartepoche. Diese kleinen Dateien solange aufbewahren, wie der zugehörige Cache existieren kann; das Löschen nur des Zustands kann alte Epochen wiederverwendbar machen. Stromausfall-/fsync-Dauerhaftigkeit wird nicht zugesichert. Reload bewahrt Epoche und Regeln; Größen-/Pfadänderung oder Entfernen des Namespace erfordert Neustart. Namespace-SHM und Aufgabenqueue sind getrennt dimensioniert.
+
+Vertrauen in das Zustandsverzeichnis: Standardmäßig (`verify_owner=on`) wird das Verzeichnis mit dem Modus `0700` angelegt, falls es fehlt, und muss dem Benutzer gehören, der den nginx-Master ausführt, und darf für Gruppe und andere nicht beschreibbar sein; andernfalls schlägt der Start mit `[emerg]` fehl. nginx übergibt es nicht an den Worker-Benutzer, und die Worker verwenden es nie. Ein Verzeichnis, das eine frühere Version dem Worker-Benutzer überlassen hat, muss einmalig an den Master-Benutzer zurückgegeben werden. Die CRC32 des Snapshots erkennt Beschädigung, aber keine Fälschung; Links und FIFOs an den Namen von Snapshot und Sperrdatei werden nicht verfolgt. `verify_owner=off` ist ein ausdrückliches Opt-in für ein Verzeichnis, das der Master nicht besitzen kann, etwa ein eingehängtes Volume. Es hebt nur die Prüfung von Eigentümer und Modus auf und protokolliert `[warn]`, wenn das Verzeichnis sonst abgelehnt worden wäre; wer in das Verzeichnis schreiben kann, bestimmt dann, welche Cache-Einträge erreichbar sind. Nutzen Sie es daher nur, wenn Sie alle Schreibenden kontrollieren. Ein Reload kann `verify_owner` nicht ändern; starten Sie nginx neu.
 
 <a id="cache_purge_key"></a>
 

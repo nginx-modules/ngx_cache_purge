@@ -306,12 +306,14 @@ Invalidasi generasi mencakup seluruh representasi kunci tanpa opsi ini.
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory>;
+Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
 Default: none
 Context: http
 ```
 
 Mendeklarasikan namespace sebelum location diikat. Nama berisi 1–32 huruf ASCII, digit, `_` atau `-`; SHM minimal delapan halaman native. Gunakan direktori status persisten khusus di luar akar cache dan temporer. Inti membuat penanda persisten secara eksklusif untuk mengalokasikan epoch restart. Simpan file kecil ini selama cache terkait mungkin masih ada; menghapus status sambil mempertahankan cache dapat memakai ulang epoch usang. Tidak menjamin durabilitas mati listrik/fsync. Reload biasa menjaga epoch/aturan; perubahan ukuran/jalur atau penghapusan namespace memerlukan restart penuh. Ukuran SHM namespace dan antrean terpisah.
+
+Kepercayaan pada direktori status: secara bawaan (`verify_owner=on`), direktori dibuat dengan mode `0700` jika belum ada dan harus dimiliki pengguna yang menjalankan master nginx serta tidak dapat ditulis oleh grup maupun pihak lain; jika tidak, startup gagal dengan `[emerg]`. nginx tidak menyerahkannya kepada pengguna worker, dan worker tidak pernah memakainya. Direktori yang ditinggalkan rilis sebelumnya dengan pemilik pengguna worker harus dikembalikan sekali ke pengguna master. CRC32 snapshot mendeteksi kerusakan, bukan pemalsuan, dan tautan simbolik serta FIFO pada nama snapshot dan kunci tidak diikuti. `verify_owner=off` adalah opt-in eksplisit untuk direktori yang tidak dapat dimiliki master, misalnya volume yang di-mount. Opsi ini hanya melewati pemeriksaan pemilik dan mode serta mencatat `[warn]` ketika direktori seharusnya ditolak; siapa pun yang dapat menulis ke dalamnya menentukan entri cache mana yang dapat dijangkau, jadi gunakan hanya jika Anda mengendalikan semua penulis. Reload tidak dapat mengubah `verify_owner`; mulai ulang nginx.
 
 <a id="cache_purge_key"></a>
 
