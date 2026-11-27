@@ -965,8 +965,24 @@ ngx_http_cache_purge_generation_persist_locked(
         return NGX_ERROR;
     }
 
+#if (NGX_WIN32)
     fd = ngx_open_file(tmp, NGX_FILE_WRONLY|NGX_FILE_TRUNCATE,
                        NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+#else
+    /*
+     * The master may run as root while the state directory is writable by
+     * the worker user.  The temporary name is predictable, so it must never
+     * be opened with O_TRUNC: a planted symbolic link would truncate and
+     * overwrite its target.  Unlink removes a stale file or a link itself
+     * without following it, and O_EXCL then refuses to follow or reuse
+     * anything that appears in between; that race can only fail the
+     * snapshot, which leaves the dirty marker for the next start.
+     */
+    (void) ngx_delete_file(tmp);
+    fd = ngx_open_file(tmp,
+                       NGX_FILE_WRONLY|O_EXCL|NGX_CACHE_PURGE_OPEN_NOFOLLOW,
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+#endif
     if (fd == NGX_INVALID_FILE) {
         ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
                       "ngx_cache_purge: cannot create \"%s\"", tmp);

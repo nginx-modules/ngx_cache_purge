@@ -139,6 +139,40 @@ int main(int argc, char **argv)
                                                           0, NULL) == NGX_ABORT);
         assert(state.serial == serial);
 
+        /*
+         * A link planted at the predictable temporary name must neither be
+         * followed nor truncated: its target keeps its bytes, the link is
+         * replaced and the snapshot still succeeds.
+         */
+        {
+            char         link_path[512], victim[512], bytes[8];
+            struct stat  sb;
+            FILE        *f;
+            size_t       n;
+
+            snprintf(victim, sizeof(victim), "%s/victim", argv[1]);
+            snprintf(link_path, sizeof(link_path), "%s/images.%ld.tmp",
+                     argv[1], (long) ngx_pid);
+
+            f = fopen(victim, "w");
+            assert(f != NULL);
+            assert(fputs("keep", f) >= 0);
+            assert(fclose(f) == 0);
+
+            (void) unlink(link_path);
+            assert(symlink(victim, link_path) == 0);
+
+            assert(ngx_http_cache_purge_generation_persist_locked(&ns, 0)
+                   == NGX_OK);
+
+            f = fopen(victim, "r");
+            assert(f != NULL);
+            n = fread(bytes, 1, sizeof(bytes), f);
+            assert(fclose(f) == 0);
+            assert(n == 4 && memcmp(bytes, "keep", 4) == 0);
+            assert(lstat(link_path, &sb) == -1); /* renamed to .state */
+        }
+
         while (state.allocated != NULL) {
             node = state.allocated;
             state.allocated = node->allocated;

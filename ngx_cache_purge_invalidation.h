@@ -21,6 +21,17 @@ typedef struct {
 
 #define NGX_CACHE_PURGE_LOGICAL_KEY_MAX  8096
 
+/*
+ * Flag that makes open() fail with ELOOP on a symbolic link.  Older nginx
+ * releases do not define NGX_FILE_NOFOLLOW and some platforms lack
+ * O_NOFOLLOW; there the flag is zero and callers rely on O_EXCL or fstat().
+ */
+#ifdef O_NOFOLLOW
+#define NGX_CACHE_PURGE_OPEN_NOFOLLOW  O_NOFOLLOW
+#else
+#define NGX_CACHE_PURGE_OPEN_NOFOLLOW  0
+#endif
+
 /* A rule allocation failed after the namespace was reset. */
 #define NGX_CACHE_PURGE_NAMESPACE_FULL   -100
 
