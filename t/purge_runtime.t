@@ -10,9 +10,10 @@ use File::Path qw(make_path);
 use File::Temp qw(tempdir);
 use HTTP::Tiny;
 use IO::Socket::INET;
+use IO::Select;
 use JSON::PP qw(decode_json);
 use POSIX qw(setsid WNOHANG);
-use Time::HiRes qw(time sleep);
+use Time::HiRes qw(time sleep clock_gettime CLOCK_MONOTONIC);
 use Text::ParseWords qw(shellwords);
 
 my $nginx = $ENV{TEST_NGINX_BINARY} || 'nginx';
@@ -524,6 +525,35 @@ sub finish_request {
     my $response = <$socket>;
     close $socket;
     die 'missing asynchronous response' unless defined $response;
+    return $response;
+}
+
+# Read an HTTP response under one absolute, monotonic deadline. A peer that
+# sends a partial response and stalls must not keep the test process alive.
+sub finish_request_timeout {
+    my ($socket, $seconds) = @_;
+    my $select = IO::Select->new($socket);
+    my $deadline = clock_gettime(CLOCK_MONOTONIC) + $seconds;
+    my $response = '';
+
+    while (1) {
+        my $remaining = $deadline - clock_gettime(CLOCK_MONOTONIC);
+        my @ready = $remaining > 0 ? $select->can_read($remaining) : ();
+        if (!@ready) {
+            close $socket;
+            return;
+        }
+
+        my $n = sysread($socket, my $chunk, 8192);
+        if (!defined $n) {
+            close $socket;
+            return;
+        }
+        last if $n == 0;
+        $response .= $chunk;
+    }
+
+    close $socket;
     return $response;
 }
 
@@ -1614,14 +1644,55 @@ subtest 'REFRESH failure policy, URI identity and deadlines' => sub {
     # publication barrier: wait for an actual HIT before testing another probe.
     await(sub { (request($s, $key)->{headers}{'x-cache'} || '') eq 'HIT' },
           'entry did not refill after 410');
-    $s->{refresh_timeout} = '20ms';
-    reload_server($s);
+    $s->{refresh_timeout} = '500ms';
+    # The new generation can serve requests while retiring workers still
+    # accept them. Settle the old generation before testing its new timeout.
+    reload_server($s, 1);
     unlink "$s->{root}/head-release" or die $!;
+    write_file("$s->{root}/head-block-version", '1');
     write_file("$s->{root}/head-status", '200');
-    $r = refresh($s, $key);
-    ok($r->{timed_out} && !$r->{complete}, 'deadline reports incomplete work');
-    is($r->{next_cursor}, '0' x 32, 'unfinished probe does not advance the continuation');
+    unlink "$s->{root}/head-started" if -e "$s->{root}/head-started";
+    unlink "$s->{root}/head-unblocked-1" if -e "$s->{root}/head-unblocked-1";
+
+    # Keep the origin HEAD blocked until after REFRESH responds. This is an
+    # event barrier, not a delay: it proves the probe is outstanding when the
+    # configured deadline expires.
+    my $probe = pending_request($s, '/refresh', 'REFRESH', $key);
+    my $head_started = eval {
+        await(sub { -f "$s->{root}/head-started" },
+              'conditional HEAD did not reach the blocked origin', 5);
+        1;
+    } || 0;
+    my $response = $head_started
+        ? finish_request_timeout($probe, 3) : undef;
+    close $probe unless $head_started;
+
+    my $origin_still_blocked = $head_started
+        && !-e "$s->{root}/head-unblocked-1"
+        && !-e "$s->{root}/head-release";
     write_file("$s->{root}/head-release", '');
+    my $origin_unblocked = eval {
+        await(sub { -f "$s->{root}/head-unblocked-1" },
+              'controlled origin did not observe release', 5);
+        1;
+    } || 0;
+
+    ok($head_started, 'REFRESH HEAD reached the controlled origin');
+    ok($origin_still_blocked,
+       'origin remained blocked when the REFRESH response was read');
+    ok($origin_unblocked, 'controlled origin was released after the response');
+    ok(defined $response,
+       'REFRESH returned within the bounded test deadline');
+    if (defined $response) {
+        my ($headers, $body) = split /\r\n\r\n/, $response, 2;
+        like($headers, qr{^HTTP/1\.[01] 200 },
+             'REFRESH returns its incomplete-page response');
+        $r = decode_json($body);
+        ok($r->{timed_out} && !$r->{complete},
+           'REFRESH deadline reports incomplete work');
+        is($r->{next_cursor}, '0' x 32,
+           'unfinished probe does not advance the continuation');
+    }
     is(request($s, $key)->{headers}{'x-cache'}, 'HIT', 'timed-out decision retains the current generation');
     stop_server($s);
 
