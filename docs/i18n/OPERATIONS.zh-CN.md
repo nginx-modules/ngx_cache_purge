@@ -222,5 +222,3 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 - 用 `allow` / `deny` 或上游认证层限制 PURGE 端点，切勿公开暴露。
 - 按流量规模设置 `cache_purge_queue_size`，限制请求洪峰下的共享内存占用。
 - 可为清理 location 配置 `limit_req`，把清理请求的速率与普通流量分开限制。
-- 世代模式：状态目录必须归运行 nginx master 的用户所有，且组和其他用户不可写；否则启动会以 `[emerg]` 失败。仅当 master 无法拥有该目录（例如挂载的卷）时才使用 `verify_owner=off`：它会放弃该检查并记录 `[warn]`，能写入目录的人可以伪造快照（CRC32 只能发现损坏）并控制哪些缓存条目可达。
-- 世代模式：每个不同的清理选择器都可能新增规则，单个选择器最长 8096 字节。`cache_purge_namespace` 被耗尽会重置命名空间、使其全部条目失效并返回 `507`。请限制谁能发送 PURGE 和 REFRESH，并对状态响应中持续增长的 `full` 计数告警。

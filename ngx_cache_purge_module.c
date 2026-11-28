@@ -113,7 +113,7 @@ ngx_http_cache_purge_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_command_t  ngx_http_cache_purge_module_commands[] = {
 
     { ngx_string("cache_purge_namespace"),
-      NGX_HTTP_MAIN_CONF|NGX_CONF_2MORE,
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE3,
       ngx_http_cache_purge_namespace_conf,
       NGX_HTTP_MAIN_CONF_OFFSET, 0, NULL },
 
@@ -589,56 +589,9 @@ ngx_http_cache_purge_namespace_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *co
     ngx_http_cache_purge_namespace_t **ns, *created;
     ngx_str_t                       *value;
     ssize_t                          size;
-    ngx_flag_t                       verify_owner = 1, seen = 0;
-    ngx_uint_t                       i;
 
     (void) cmd;
     value = cf->args->elts;
-
-    if (cf->args->nelts < 4) {
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "invalid number of arguments in "
-                           "\"cache_purge_namespace\" directive");
-        return NGX_CONF_ERROR;
-    }
-
-    for (i = 4; i < cf->args->nelts; i++) {
-
-        if (ngx_strncmp(value[i].data, "verify_owner=", 13) == 0) {
-
-            if (seen) {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "ngx_cache_purge: duplicate parameter "
-                                   "\"%V\" for namespace \"%V\"",
-                                   &value[i], &value[1]);
-                return NGX_CONF_ERROR;
-            }
-
-            if (ngx_strcmp(&value[i].data[13], "on") == 0) {
-                verify_owner = 1;
-
-            } else if (ngx_strcmp(&value[i].data[13], "off") == 0) {
-                verify_owner = 0;
-
-            } else {
-                ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                                   "ngx_cache_purge: invalid parameter "
-                                   "\"%V\" for namespace \"%V\"; expected "
-                                   "verify_owner=on or verify_owner=off",
-                                   &value[i], &value[1]);
-                return NGX_CONF_ERROR;
-            }
-
-            seen = 1;
-            continue;
-        }
-
-        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "ngx_cache_purge: invalid parameter \"%V\" for "
-                           "namespace \"%V\"", &value[i], &value[1]);
-        return NGX_CONF_ERROR;
-    }
-
     size = ngx_parse_size(&value[2]);
     if (size == NGX_ERROR) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
@@ -647,8 +600,7 @@ ngx_http_cache_purge_namespace_conf(ngx_conf_t *cf, ngx_command_t *cmd, void *co
         return NGX_CONF_ERROR;
     }
     created = ngx_http_cache_purge_namespace_create(cf, &value[1],
-                                                    (size_t) size, &value[3],
-                                                    verify_owner);
+                                                    (size_t) size, &value[3]);
     if (created == NULL) {
         return NGX_CONF_ERROR;
     }

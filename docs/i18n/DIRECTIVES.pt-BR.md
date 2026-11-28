@@ -306,14 +306,12 @@ A invalidação por gerações cobre todas as representações da chave lógica 
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
+Syntax:  cache_purge_namespace <name> <size> <state-directory>;
 Default: none
 Context: http
 ```
 
 Declara um namespace de gerações antes das vinculações em locations. Nomes contêm 1–32 letras ASCII, dígitos, `_` ou `-`; SHM exige pelo menos oito páginas nativas. Use um diretório de estado persistente exclusivo, fora das raízes de cache e temporários. O núcleo cria um marcador persistente exclusivo para reservar uma época de reinício. Preserve esses pequenos arquivos enquanto o cache correspondente puder existir: apagar o estado e manter o cache permite reutilizar épocas obsoletas. Não há garantia de durabilidade contra perda de energia/fsync. Reload normal preserva época e regras; mudar tamanho/caminho ou remover namespace exige reinício completo. Namespace e fila têm tamanhos SHM independentes.
-
-Confiança no diretório de estado: por padrão (`verify_owner=on`), o diretório é criado com modo `0700` se não existir e deve pertencer ao usuário que executa o master do nginx e não ser gravável pelo grupo nem por outros; caso contrário, a inicialização falha com `[emerg]`. O nginx não o entrega ao usuário dos workers, e os workers nunca o usam. Um diretório que uma versão anterior deixou com o usuário dos workers deve ser devolvido uma vez ao usuário do master. O CRC32 do snapshot detecta corrupção, não falsificação, e links simbólicos e FIFOs nos nomes do snapshot e do bloqueio não são seguidos. `verify_owner=off` é uma adesão explícita para um diretório que o master não pode possuir, por exemplo um volume montado. Ele dispensa apenas a verificação de proprietário e modo e registra `[warn]` quando o diretório teria sido recusado; quem puder gravar nele controla quais entradas do cache são alcançáveis, então use-o apenas se controlar todos os que gravam. Um reload não pode alterar `verify_owner`; reinicie o nginx.
 
 <a id="cache_purge_key"></a>
 

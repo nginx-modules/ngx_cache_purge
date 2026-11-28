@@ -306,14 +306,12 @@ Nesil geçersizleştirmesi bu seçenek olmadan mantıksal anahtarın bütün gö
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
+Syntax:  cache_purge_namespace <name> <size> <state-directory>;
 Default: none
 Context: http
 ```
 
 Location bağlanmadan nesil ad alanını tanımlar. Ad 1–32 ASCII harf, rakam, `_` veya `-` içerir; SHM en az sekiz yerel sayfa olmalıdır. Önbellek/geçici kökler dışında ayrılmış kalıcı durum dizini kullanın. Çekirdek yeniden başlatma dönemi ayırmak için kalıcı, özel oluşturulan işaret dosyası yaratır. İlgili önbellek var olabildiği sürece bu küçük dosyaları tutun; önbelleği koruyup durumu silmek eski dönem kullanımına yol açabilir. Elektrik kesintisi/fsync dayanıklılığı garantisi yoktur. Normal reload dönemi/kuralları korur; boyut/yol değişimi veya ad alanının kaldırılması tam yeniden başlatma gerektirir. Ad alanı ve görev kuyruğunun SHM boyutları ayrıdır.
-
-Durum dizinine güven: varsayılan olarak (`verify_owner=on`) dizin yoksa `0700` kipiyle oluşturulur ve nginx master sürecini çalıştıran kullanıcıya ait olmalı, grup ve diğerleri tarafından yazılabilir olmamalıdır; aksi halde başlatma `[emerg]` ile başarısız olur. nginx onu worker kullanıcısına devretmez ve worker'lar onu hiç kullanmaz. Önceki bir sürümün worker kullanıcısına ait bıraktığı dizin bir kez master kullanıcısına geri verilmelidir. Anlık görüntünün CRC32 değeri bozulmayı algılar, sahteciliği algılamaz; anlık görüntü ve kilit adlarındaki sembolik bağlantılar ile FIFO'lar izlenmez. `verify_owner=off`, master'ın sahip olamayacağı bir dizin için, örneğin bağlanmış bir birim için, açık bir isteğe bağlı onaydır. Yalnızca sahip ve kip denetimini atlar ve dizin aksi halde reddedilecekse `[warn]` kaydeder; dizine yazabilen herkes hangi önbellek girdilerine erişilebileceğini denetler, bu yüzden yalnızca tüm yazanları siz denetliyorsanız kullanın. Yeniden yükleme `verify_owner` değerini değiştiremez; nginx'i yeniden başlatın.
 
 <a id="cache_purge_key"></a>
 

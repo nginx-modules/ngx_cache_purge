@@ -17,7 +17,6 @@ typedef struct {
     ngx_http_cache_purge_generation_t  *shared;
     ngx_fd_t                            lock_fd;
     ngx_flag_t                          boot_dirty;
-    ngx_flag_t                          verify_owner;
 } ngx_http_cache_purge_namespace_t;
 
 #define NGX_CACHE_PURGE_LOGICAL_KEY_MAX  8096
@@ -48,8 +47,7 @@ typedef struct {
 #define NGX_CACHE_PURGE_NAMESPACE_FULL   -100
 
 ngx_http_cache_purge_namespace_t *ngx_http_cache_purge_namespace_create(
-    ngx_conf_t *cf, ngx_str_t *name, size_t size, const ngx_str_t *state_path,
-    ngx_flag_t verify_owner);
+    ngx_conf_t *cf, ngx_str_t *name, size_t size, const ngx_str_t *state_path);
 ngx_int_t ngx_http_cache_purge_generation_key(ngx_http_request_t *r,
     ngx_http_cache_purge_namespace_t *ns, ngx_http_complex_value_t *expression,
     ngx_str_t *logical, ngx_str_t *encoded);

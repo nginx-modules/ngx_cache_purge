@@ -306,14 +306,12 @@ Invalidacja generacji obejmuje wszystkie reprezentacje klucza bez tej opcji.
 ## `cache_purge_namespace`
 
 ```text
-Syntax:  cache_purge_namespace <name> <size> <state-directory> [verify_owner=on|off];
+Syntax:  cache_purge_namespace <name> <size> <state-directory>;
 Default: none
 Context: http
 ```
 
 Deklaruje przestrzeń generacji przed wiązaniem lokalizacji. Nazwa: 1–32 litery ASCII, cyfry, `_` lub `-`; SHM minimum osiem stron natywnych. Użyj osobnego trwałego katalogu stanu poza cache i katalogami tymczasowymi. Rdzeń tworzy trwały znacznik z wyłącznością, rezerwując epokę restartu. Zachowuj te małe pliki tak długo, jak może istnieć odpowiadający cache; skasowanie stanu bez cache pozwala ponownie użyć starej epoki. Brak gwarancji trwałości wobec zaniku zasilania/fsync. Zwykły reload zachowuje epokę i reguły; zmiana rozmiaru/ścieżki lub usunięcie przestrzeni wymaga restartu. SHM przestrzeni i kolejki mają osobne rozmiary.
-
-Zaufanie do katalogu stanu: domyślnie (`verify_owner=on`) katalog jest tworzony z trybem `0700`, jeśli go brakuje, i musi należeć do użytkownika uruchamiającego proces master nginx oraz nie może być zapisywalny dla grupy ani pozostałych; w przeciwnym razie start kończy się błędem `[emerg]`. nginx nie przekazuje go użytkownikowi workerów, a workery nigdy go nie używają. Katalog pozostawiony przez wcześniejszą wersję jako własność użytkownika workerów trzeba jednorazowo zwrócić użytkownikowi mastera. CRC32 migawki wykrywa uszkodzenie, ale nie fałszerstwo, a dowiązania symboliczne i FIFO pod nazwami migawki i blokady nie są śledzone. `verify_owner=off` to jawne włączenie dla katalogu, którego master nie może posiadać, na przykład zamontowanego wolumenu. Pomija tylko sprawdzenie właściciela i trybu oraz zapisuje `[warn]`, gdy katalog zostałby odrzucony; kto może w nim zapisywać, kontroluje, które wpisy pamięci podręcznej są osiągalne, więc używaj tego tylko wtedy, gdy kontrolujesz wszystkich piszących. Przeładowanie nie może zmienić `verify_owner`; uruchom nginx ponownie.
 
 <a id="cache_purge_key"></a>
 

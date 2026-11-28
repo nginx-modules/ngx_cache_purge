@@ -1193,28 +1193,13 @@ ngx_http_cache_purge_state_dir_prepare(ngx_http_cache_purge_namespace_t *ns)
     }
 
     if (fi.st_uid != geteuid() || (fi.st_mode & (S_IWGRP|S_IWOTH)) != 0) {
-        if (ns->verify_owner) {
-            ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
-                          "ngx_cache_purge: state directory \"%s\" of "
-                          "namespace \"%V\" must be owned by the user running "
-                          "the nginx master (uid %ui) and not be writable by "
-                          "its group or others; change its owner and mode and "
-                          "restart nginx",
-                          path, &ns->name, (ngx_uint_t) geteuid());
-            return NGX_ERROR;
-        }
-
-        /*
-         * Explicit opt-in: ownership and mode are the operator's problem.
-         * Links and FIFOs are still refused when the files are opened, but
-         * whoever can write here controls which cache entries are reachable.
-         */
-        ngx_log_error(NGX_LOG_WARN, ns->pool->log, 0,
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, 0,
                       "ngx_cache_purge: state directory \"%s\" of namespace "
-                      "\"%V\" is not verified (verify_owner=off) although "
-                      "its owner or mode would be refused; anyone who can "
-                      "write to it controls which cache entries are "
-                      "reachable", path, &ns->name);
+                      "\"%V\" must be owned by the user running the nginx "
+                      "master (uid %ui) and not be writable by its group or "
+                      "others; change its owner and mode and restart nginx",
+                      path, &ns->name, (ngx_uint_t) geteuid());
+        return NGX_ERROR;
     }
 
     return NGX_OK;
@@ -1490,12 +1475,6 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
                           &ns->name, &state->state_path, &ns->state_path->name);
             return NGX_ERROR;
         }
-        if (old != NULL && old->verify_owner != ns->verify_owner) {
-            ngx_log_error(NGX_LOG_EMERG, zone->shm.log, 0,
-                          "ngx_cache_purge: namespace \"%V\" changes "
-                          "verify_owner; restart nginx", &ns->name);
-            return NGX_ERROR;
-        }
         ns->shared = state;
         if (old != NULL) {
             /* The lock outlives the old cycle that owns its descriptor. */
@@ -1531,7 +1510,7 @@ ngx_http_cache_purge_generation_init(ngx_shm_zone_t *zone, void *data)
 
 ngx_http_cache_purge_namespace_t *
 ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
-    size_t size, const ngx_str_t *state_path, ngx_flag_t verify_owner)
+    size_t size, const ngx_str_t *state_path)
 {
     ngx_http_cache_purge_namespace_t  *ns;
     ngx_http_cache_purge_main_conf_t  *cmcf;
@@ -1570,7 +1549,6 @@ ngx_http_cache_purge_namespace_create(ngx_conf_t *cf, ngx_str_t *name,
     ns->pool = cf->pool;
     ns->lock_fd = NGX_INVALID_FILE;
     ns->boot_dirty = 0;
-    ns->verify_owner = verify_owner;
     ns->state_path = ngx_pcalloc(cf->pool, sizeof(ngx_path_t));
     if (ns->state_path == NULL) {
         return NULL;
