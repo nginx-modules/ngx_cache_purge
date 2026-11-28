@@ -1150,8 +1150,28 @@ ngx_http_cache_purge_generation_new_epoch(
         return NGX_ERROR;
     }
 
-    ngx_memcpy(state->epoch, file.name.data + file.name.len - 10, 10);
+#if !(NGX_WIN32)
+    /*
+     * A cold rotation is only safe once the new epoch survives a crash:
+     * if the marker vanished, a later start could hand out the same epoch
+     * again and make invalidated cache entries reachable.  Fail instead.
+     */
+    if (fsync(file.fd) == -1) {
+        ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
+                      "ngx_cache_purge: cannot sync the new epoch \"%V\" of "
+                      "namespace \"%V\"", &file.name, &ns->name);
+        ngx_pool_run_cleanup_file(ns->pool, file.fd);
+        return NGX_ERROR;
+    }
+#endif
+
     ngx_pool_run_cleanup_file(ns->pool, file.fd);
+
+    if (ngx_http_cache_purge_sync_state_dir(ns) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(state->epoch, file.name.data + file.name.len - 10, 10);
     return NGX_OK;
 }
 
