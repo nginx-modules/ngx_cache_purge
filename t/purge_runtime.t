@@ -2766,6 +2766,24 @@ subtest 'a state directory writable by others is refused' => sub {
        'nothing is written into the refused directory');
 };
 
+subtest 'state files and epoch markers are owner-only' => sub {
+    my $s = start_server('state-file-modes', workers => 1, strict => 1,
+                         throttle => '60s');
+    warm($s);
+    is(request($s, '/cache/warm', 'PURGE')->{status}, 200,
+       'fixture records an invalidation');
+    my $dir = dirname(generation_state_path($s));
+    stop_server($s);
+
+    my @files = grep { -f } glob("$dir/*"), glob("$dir/.lock");
+    ok(@files >= 2, 'the state directory holds the snapshot and an epoch marker');
+    for my $file (@files) {
+        is(sprintf('%04o', (stat($file))[2] & 07777), '0600',
+           "$file is not readable by group or others");
+    }
+    ok(-f generation_state_path($s), 'the snapshot is among the checked files');
+};
+
 subtest 'state directory mode checks group and other writes independently' => sub {
     for my $case ([0770, 'group'], [0702, 'other']) {
         my ($mode, $label) = @$case;
