@@ -399,7 +399,7 @@ ngx_http_cache_purge_state_lock(ngx_http_cache_purge_namespace_t *ns)
     fd = ngx_open_file(path,
                        NGX_FILE_RDWR|NGX_CACHE_PURGE_OPEN_NOFOLLOW
                        |NGX_CACHE_PURGE_OPEN_NONBLOCK,
-                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_OWNER_ACCESS);
     if (fd == NGX_INVALID_FILE) {
         ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
                       "ngx_cache_purge: cannot open namespace lock \"%s\"",
@@ -486,7 +486,7 @@ ngx_http_cache_purge_running_create(ngx_http_cache_purge_namespace_t *ns)
     file.log = ns->pool->log;
 
     if (ngx_create_temp_file(&file, ns->state_path, ns->pool, 1, 0,
-                             NGX_FILE_DEFAULT_ACCESS)
+                             NGX_FILE_OWNER_ACCESS)
         != NGX_OK)
     {
         ngx_log_error(NGX_LOG_EMERG, ns->pool->log, ngx_errno,
@@ -1029,7 +1029,7 @@ ngx_http_cache_purge_generation_persist_locked(
 
 #if (NGX_WIN32)
     fd = ngx_open_file(tmp, NGX_FILE_WRONLY|NGX_FILE_TRUNCATE,
-                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_OWNER_ACCESS);
 #else
     /*
      * The master may run as root while the state directory is writable by
@@ -1043,7 +1043,7 @@ ngx_http_cache_purge_generation_persist_locked(
     (void) ngx_delete_file(tmp);
     fd = ngx_open_file(tmp,
                        NGX_FILE_WRONLY|O_EXCL|NGX_CACHE_PURGE_OPEN_NOFOLLOW,
-                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_DEFAULT_ACCESS);
+                       NGX_FILE_CREATE_OR_OPEN, NGX_FILE_OWNER_ACCESS);
 #endif
     if (fd == NGX_INVALID_FILE) {
         ngx_log_error(NGX_LOG_ERR, ns->pool->log, ngx_errno,
