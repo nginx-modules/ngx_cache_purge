@@ -254,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Compose eklentisinde `docker-compose` yerine `docker compose` kullanın; Makefile’lar ikisini algılar. `nginx-test` ve `make test-all`, yedi `t/*.t` takımını CI ile aynı `prove` girişinden çalıştırır. Entegrasyon görüntüsünde yerel yardımcı/yapı ve havuzlu çalışma testleri bulunur. Sıkı iş parçacıksız derlemeler artımlı yürütmeyi sınar. Her başarısız test komutu başarısız yapar.
 
 Sıkı derleme, sanitizer, Valgrind, platform işleri ve raporlar için [`t/TESTING.md`](../../t/TESTING.md). Tüm GitHub işleri `build-test-release.yml` içindedir.
+
+<a id="security"></a>
+
+## Güvenlik
+
+- PURGE uç noktalarını `allow` / `deny` yönergeleriyle veya upstream kimlik doğrulama katmanıyla kısıtlayın. Bunları asla herkese açık hâle getirmeyin.
+- İstek patlamalarında paylaşılan bellek tüketimini sınırlamak için `cache_purge_queue_size` değerini trafiğinize göre ayarlayın.
+- PURGE isteklerini normal trafikten bağımsız olarak sınırlamak için purge konumlarında `limit_req` kullanmayı değerlendirin.
+- Nesil modu: durum dizini nginx master'ını çalıştıran kullanıcıya ait olmalı ve grubu ya da diğer kullanıcılar tarafından yazılabilir olmamalıdır. Master dizini `0700` kipiyle oluşturur, nginx bunu worker kullanıcısına devretmez ve sahip ya da kip yanlışsa başlatma `[emerg]` ile başarısız olur. Önceki bir sürümün worker kullanıcısına ait bıraktığı dizini bir kez master kullanıcısına geri verin. Anlık görüntü bozulmayı algılayan ancak sahteciliği algılamayan bir CRC32 taşır; bu nedenle dizine yazma izni, hangi önbellek girdilerinin erişilebilir kalacağını denetleme iznidir. İçindeki dosyalar `0600` kipiyle oluşturulur. Sahip ve kip denetimleri master ile worker'ları yalnızca farklı kullanıcılar olarak çalıştıklarında ayırabilir. Master ve worker'lar aynı UID'yi (rootless nginx veya `user root`) paylaşıyorsa durum dosyasını kimin yazdığı belirlenemez: bir worker epoch'u, kuralları ve CRC32'yi taklit ederek geçersiz kılınmış girdileri yeniden erişilebilir hâle getirebilir. Bu dağıtımda kalıcı duruma güvenmeyin; bu yapılandırma desteklenmez. Yeni epoch kullanılmadan önce dizinle birlikte `fsync` edilir; bu başarısız olursa epoch'un yeniden kullanılmasını riske atmak yerine başlatma başarısız olur.
+- Nesil modu: her farklı PURGE seçicisi kural ekleyebilir ve bir seçicinin uzunluğu 8096 bayta kadar olabilir. `cache_purge_namespace` tükenirse ad alanı sıfırlanır, tüm girdileri geçersiz kılınır ve `507` döndürülür. PURGE ve REFRESH gönderebilenleri kısıtlayın ve durum yanıtındaki `full` sayacı artarsa uyarı üretin.
+

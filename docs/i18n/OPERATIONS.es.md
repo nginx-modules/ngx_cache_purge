@@ -254,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Con el plugin Compose use `docker compose` en lugar de `docker-compose`; los Makefiles detectan ambos. `nginx-test` y `make test-all` ejecutan las siete suites `t/*.t` mediante el mismo `prove` que CI. La imagen de integración incluye auxiliares/diseños nativos y ejecución con pool. Las compilaciones estrictas sin hilos prueban ejecución incremental. Cualquier prueba fallida hace fallar el comando.
 
 Consulte [`t/TESTING.md`](../../t/TESTING.md) para compilaciones estrictas, sanitizadores, Valgrind, plataformas e informes. Todos los trabajos GitHub están definidos en `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Seguridad
+
+- Restrinja los endpoints PURGE con directivas `allow` / `deny` o una capa de autenticación en el upstream. Nunca los exponga públicamente.
+- Configure `cache_purge_queue_size` según el tráfico para limitar el consumo de memoria compartida durante ráfagas de solicitudes.
+- Considere combinar las locations de purge con `limit_req` para limitar las solicitudes PURGE independientemente del tráfico normal.
+- Modo de generación: el directorio de estado debe pertenecer al usuario que ejecuta el master de nginx y no debe ser escribible por su grupo ni por otros usuarios. El master lo crea con modo `0700`, nginx no lo entrega al usuario de los workers y el arranque falla con `[emerg]` si el propietario o los permisos son incorrectos. Devuelva una sola vez al usuario del master cualquier directorio que una versión anterior dejara a nombre del usuario de los workers. El snapshot contiene un CRC32 que detecta corrupción, pero no falsificaciones; por tanto, quien pueda escribir en el directorio controla qué entradas de la caché siguen siendo accesibles. Los archivos que contiene se crean con modo `0600`. Las comprobaciones de propietario y modo solo distinguen el master de los workers cuando se ejecutan con usuarios diferentes. Si el master y sus workers comparten el mismo UID (nginx rootless o `user root`), no se puede saber quién escribió un archivo de estado: un worker puede falsificar la época, las reglas y el CRC32 y volver a hacer accesibles entradas invalidadas. No confíe en el estado persistente en ese despliegue; no es una configuración admitida. La nueva época se sincroniza con `fsync`, junto con el directorio, antes de usarla; si falla, el arranque falla en lugar de arriesgarse a reutilizar una época.
+- Modo de generación: cada selector PURGE distinto puede añadir reglas y un selector puede medir hasta 8096 bytes. Agotar `cache_purge_namespace` reinicia el espacio de nombres, invalida todas sus entradas y devuelve `507`. Restrinja quién puede enviar PURGE y REFRESH, y genere una alerta si aumenta el contador `full` de la respuesta de estado.
+

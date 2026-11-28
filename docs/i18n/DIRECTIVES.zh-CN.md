@@ -313,6 +313,8 @@ Context: http
 
 在 location 绑定前声明 generation 命名空间。名称为 1–32 个 ASCII 字母、数字、`_` 或 `-`；SHM 至少为八个原生页。使用缓存和临时根目录之外的独立持久状态目录。核心通过独占创建的持久标记分配重启 epoch。只要对应缓存可能仍存在，就必须保留这些小文件；保留缓存却删除状态可能导致旧 epoch 被重用。不保证断电／fsync 持久性。普通 reload 保留 epoch 和规则；修改大小、路径或移除命名空间需要完全重启。命名空间 SHM 与任务队列分别指定大小。
 
+状态目录必须归运行 nginx master 的用户所有，且组和其他用户不可写；否则启动会以 `[emerg]` 失败。master 以 `0700` 模式创建该目录，nginx 不会将其交给 worker 用户。旧版本遗留为 worker 用户所有的目录必须一次性归还给 master 用户。快照中的 CRC32 可以检测损坏，但不能检测伪造，因此目录写权限意味着能够控制哪些缓存条目仍可访问。目录中的文件以 `0600` 模式创建。属主和权限检查只有在 master 与 worker 使用不同用户运行时才能区分二者。如果 master 与 worker 共享同一 UID（rootless nginx 或 `user root`），就无法判断状态文件由谁写入：worker 可以伪造 epoch、规则和 CRC32，使已失效的缓存条目重新可访问。在这种部署中不要依赖持久化状态；该配置不受支持。新 epoch 会在使用前与目录一起执行 `fsync`；如果失败，启动也会失败，而不会冒险重用 epoch。 可使用 `chown <master-user> <state-directory> && chmod 0700 <state-directory>` 将目录一次性归还给 master 用户；会重新映射属主的挂载卷和网络文件系统必须向 master 显示与 master 用户一致的属主。快照或锁文件名处的符号链接不会被跟随。状态目录应放在缓存和临时目录之外，并在缓存可能存在期间保留。保留缓存文件却删除状态或 epoch 文件，可能使过期版本重新可访问。`nginx -t` 和 `nginx -T` 只验证配置，不会锁定、恢复、轮换、创建或删除运行中的状态。两个运行中的 master（第二个容器或二进制升级）不能共享同一个状态目录；第二次启动会以锁相关的 `[emerg]` 诊断失败。
+
 <a id="cache_purge_key"></a>
 
 ## `cache_purge_key`

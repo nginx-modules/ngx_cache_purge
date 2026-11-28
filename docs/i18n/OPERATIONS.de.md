@@ -254,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Mit dem Compose-Plugin `docker compose` statt `docker-compose` verwenden. Die Makefiles erkennen beide Befehle. `nginx-test` und `make test-all` führen alle sieben `t/*.t`-Suiten über denselben `prove`-Einstieg wie CI aus. Das Integrationsimage enthält native Hilfs-/Layoutprüfungen und Laufzeittests für die Pool-Ausführung. Strikte Builds ohne Threads prüfen die inkrementelle Ausführung. Jeder fehlgeschlagene Test lässt den Befehl fehlschlagen.
 
 Strenge Builds, Sanitizer, Valgrind, Plattformjobs und Berichte beschreibt [`t/TESTING.md`](../../t/TESTING.md). Alle GitHub-Jobs stehen in `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Sicherheit
+
+- PURGE-Endpunkte mit `allow`- / `deny`-Direktiven oder einer Authentifizierung auf dem Upstream beschränken. Niemals öffentlich zugänglich machen.
+- `cache_purge_queue_size` passend zum Datenverkehr festlegen, um den Shared-Memory-Verbrauch bei Anfragestürmen zu begrenzen.
+- Purge-Locations gegebenenfalls mit `limit_req` kombinieren, um PURGE-Anfragen unabhängig vom normalen Datenverkehr zu begrenzen.
+- Generationsmodus: Das Zustandsverzeichnis muss dem Benutzer gehören, unter dem der nginx-Master läuft, und darf weder für dessen Gruppe noch für andere beschreibbar sein. Der Master legt es mit Modus `0700` an, nginx übergibt es nicht an den Worker-Benutzer, und bei falschem Eigentümer oder Modus schlägt der Start mit `[emerg]` fehl. Ein Verzeichnis, das eine ältere Version dem Worker-Benutzer zugeordnet hat, muss einmalig wieder dem Master-Benutzer zugewiesen werden. Der Snapshot enthält eine CRC32-Prüfsumme, die Beschädigungen, nicht aber Fälschungen erkennt; Schreibzugriff auf das Verzeichnis bedeutet daher Kontrolle darüber, welche Cache-Einträge erreichbar bleiben. Die Dateien darin werden mit Modus `0600` erstellt. Die Prüfungen von Eigentümer und Modus trennen den Master nur von Workern, die unter einem anderen Benutzer laufen. Haben Master und Worker dieselbe UID (rootless nginx oder `user root`), lässt sich nicht feststellen, wer eine Zustandsdatei geschrieben hat: Ein Worker kann Epoche, Regeln und CRC32 fälschen und dadurch bereits invalidierte Einträge wieder erreichbar machen. Verlassen Sie sich in dieser Bereitstellung nicht auf den persistenten Zustand; sie wird nicht unterstützt. Eine neue Epoche wird vor ihrer Verwendung zusammen mit dem Verzeichnis per `fsync` synchronisiert; schlägt dies fehl, wird der Start abgebrochen, statt eine wiederverwendete Epoche zu riskieren.
+- Generationsmodus: Jeder unterschiedliche PURGE-Selektor kann Regeln hinzufügen, und ein Selektor darf bis zu 8096 Bytes lang sein. Wird `cache_purge_namespace` ausgeschöpft, wird der Namespace zurückgesetzt, alle seine Einträge werden invalidiert und `507` zurückgegeben. Beschränken Sie, wer PURGE und REFRESH senden darf, und alarmieren Sie bei einem steigenden `full`-Zähler in der Statusantwort.
+

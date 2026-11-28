@@ -254,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Compose 플러그인은 `docker-compose` 대신 `docker compose`를 사용합니다. Makefile은 둘 다 감지합니다. `nginx-test`와 `make test-all`은 CI와 동일한 `prove` 진입점으로 7개 `t/*.t` 모음을 실행합니다. 통합 이미지는 네이티브 헬퍼/구조 검사와 풀 런타임 검사를 포함합니다. 스레드 없는 엄격 빌드는 점진적 런타임을 검사합니다. 테스트 하나라도 실패하면 명령이 실패합니다.
 
 엄격 빌드, sanitizer, Valgrind, 플랫폼 작업과 보고서는 [`t/TESTING.md`](../../t/TESTING.md)를 참고하십시오. 모든 GitHub 작업은 `build-test-release.yml`에 있습니다.
+
+<a id="security"></a>
+
+## 보안
+
+- `allow` / `deny` 지시어나 upstream 인증 계층으로 PURGE 엔드포인트를 제한하십시오. 공개적으로 노출하지 마십시오.
+- 요청 폭주 시 공유 메모리 소비를 제한하도록 트래픽에 맞게 `cache_purge_queue_size`를 설정하십시오.
+- 일반 트래픽과 별도로 PURGE 요청을 제한하려면 purge location에 `limit_req`를 함께 사용하는 방안을 고려하십시오.
+- 세대 모드: 상태 디렉터리는 nginx master를 실행하는 사용자가 소유해야 하며 해당 그룹이나 기타 사용자가 쓸 수 없어야 합니다. master는 `0700` 모드로 디렉터리를 만들고 nginx는 이를 worker 사용자에게 넘기지 않습니다. 소유자나 모드가 잘못되면 시작이 `[emerg]`로 실패합니다. 이전 릴리스가 worker 사용자 소유로 남긴 디렉터리는 한 번 master 사용자에게 돌려야 합니다. 스냅샷의 CRC32는 손상은 감지하지만 위조는 감지하지 못하므로, 디렉터리 쓰기 권한은 접근 가능한 캐시 항목을 통제하는 권한과 같습니다. 디렉터리 안의 파일은 `0600` 모드로 생성됩니다. 소유자 및 모드 검사는 master와 worker가 서로 다른 사용자로 실행될 때만 둘을 구분합니다. master와 worker가 같은 UID(rootless nginx 또는 `user root`)를 공유하면 상태 파일을 누가 작성했는지 판별할 수 없습니다. worker가 epoch, 규칙, CRC32를 위조해 무효화된 항목을 다시 접근 가능하게 만들 수 있으므로, 해당 배포에서는 영속 상태에 의존하지 마십시오. 이는 지원되지 않는 구성입니다. 새 epoch는 사용 전에 디렉터리와 함께 `fsync`됩니다. 이 작업이 실패하면 epoch 재사용 위험을 감수하지 않고 시작이 실패합니다.
+- 세대 모드: 서로 다른 PURGE 선택자는 각각 규칙을 추가할 수 있으며 선택자 길이는 최대 8096바이트입니다. `cache_purge_namespace`가 소진되면 네임스페이스를 재설정하고 모든 항목을 무효화한 뒤 `507`을 반환합니다. PURGE 및 REFRESH 전송 권한을 제한하고 상태 응답의 `full` 카운터 증가를 경고하도록 설정하십시오.
+
