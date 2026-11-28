@@ -588,14 +588,20 @@ sub start_server {
 sub pid_running {
     my ($pid) = @_;
     return 0 unless kill 0, $pid;
-    open my $fh, '<', "/proc/$pid/stat";
-    if (!$fh) {
-        # Without procfs, kill(0) above remains the available liveness check.
-        return 1;
-    }
+
+    # /proc/<pid>/stat is Linux-specific; elsewhere kill(0) is the fallback.
+    return 1 unless $^O eq 'linux';
+
+    my $fh;
+    return 1 unless open($fh, '<', "/proc/$pid/stat");
+
     my $stat = <$fh>;
     close $fh;
-    return $stat !~ /^\d+ \(.*\) Z /;
+
+    # Some platforms expose an empty or incomplete procfs entry.
+    return 1 unless defined $stat && $stat =~ /^\d+ \(.*\) (\S) /;
+
+    return $1 ne 'Z';
 }
 
 sub stop_server {
@@ -1983,7 +1989,7 @@ subtest 'traffic class HIT/MISS counters are subsets of the totals' => sub {
         my $t = $totals->();
         ($t->{hit} + $t->{miss}) - ($before->{hit} + $before->{miss}) == $counted;
     }, 'counted requests were not observed');
-    my ($v, $c) = class_status($s);
+    ($v, $c) = class_status($s);
     for my $name (qw(bot human)) {
         is($c->{$name}{hit},  $seen{$name}{HIT}  || 0, "$name HIT count");
         is($c->{$name}{miss}, $seen{$name}{MISS} || 0, "$name MISS count");
@@ -2632,20 +2638,30 @@ subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' =>
     my $marker = running_marker_path($s);
     my $state = generation_state_path($s);
     my $epoch = namespace_view($s, 'objects')->{epoch};
-    my ($worker, $pid, $mark, $failed);
+    my ($worker, $pid, $mark, $failed, $pending);
 
     warm($s);
     stop_server($s);
     ok(-f $state, 'the initial graceful shutdown writes a snapshot');
 
     $s = start_server('restart-persist-failure', workers => 1, strict => 1,
-                      throttle => '60s');
+                      throttle => '60s', controlled_origin => 1);
     is(namespace_view($s, 'objects')->{epoch}, $epoch,
        'the second boot starts from the committed epoch');
 
     # A directory at the atomic rename destination fails even for root.
     rename $state, "$state.saved" or die "cannot save snapshot: $!";
     make_path($state);
+
+    # Stop the worker only after its cache miss reaches the blocked origin.
+    # It is then in upstream I/O, not at an arbitrary point that might hold
+    # the namespace shared-memory mutex needed by the shutdown watchdog.
+    write_file("$s->{root}/get-block", '');
+    write_file("$s->{root}/get-block-version", '1');
+    $pending = pending_request($s, '/cache/snapshot-failure-probe', 'GET');
+    await(sub { -f "$s->{root}/get-started" },
+          'the cache miss did not reach the blocked origin', 5);
+
     ($worker) = live_workers($s);
     ok($worker, 'the failing-persist master has a worker to pause');
     kill 'STOP', $worker or die "cannot pause worker $worker: $!";
@@ -2657,7 +2673,7 @@ subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' =>
         await(sub {
             substr(read_file("$s->{root}/error.log"), $mark)
                 =~ /ngx_cache_purge: cannot replace/;
-        }, 'the early snapshot failure was not attempted', 0.5);
+        }, 'the early snapshot failure was not attempted', 5);
         1;
     };
     ok($failed, 'the watchdog observes the snapshot rename failure') or diag($@);
@@ -2666,6 +2682,7 @@ subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' =>
     kill 'KILL', -$pid;
     is(waitpid($pid, 0), $pid, 'the failed-persist master is reaped');
     $s->{stopped} = [];
+    close $pending;
     delete $s->{pid};
     stop_origin($s);
     rmdir $state or die "cannot remove the rename obstacle: $!";
