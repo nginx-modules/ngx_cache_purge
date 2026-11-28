@@ -1367,9 +1367,10 @@ ngx_http_cache_purge_queue_status_handler(ngx_http_request_t *r)
         p = ngx_snprintf(p, last - p,
                          "%s{\"name\":\"%V\",\"epoch\":\"%*s\","
                          "\"baseline\":\"%016xL\",\"serial\":\"%016xL\","
-                         "\"rules\":%s}",
+                         "\"full\":%uL,\"rules\":%s}",
                          (u_char *) (i ? "," : ""), &namespaces[i]->name,
                          (size_t) 10, view.epoch, view.baseline, view.serial,
+                         view.full,
                          (u_char *) (view.rules ? "true" : "false"));
     }
     p = ngx_snprintf(p, last - p, "],\"namespaces_complete\":%s}",

@@ -97,6 +97,8 @@ L’astérisque doit terminer la clé évaluée, pas seulement le chemin URI. Te
 
 Les générations de clés empêchent les nouvelles requêtes de retrouver un ancien contenu après PURGE, même si une réponse est écrite plus tard. Les fichiers sont supprimés séparément. Un espace de noms partage les règles d’invalidation ; conservez son répertoire d’état entre les redémarrages.
 
+L'état de l'espace de noms est enregistré lors d'un arrêt propre : un redémarrage planifié réutilise donc l'époque et les règles d'invalidation au lieu de repartir à froid. Si une exécution n'atteint pas le hook d'arrêt, un marqueur subsiste et le démarrage suivant change d'époque afin que les entrées invalidées restent inaccessibles.
+
 <a id="conditional-refresh"></a>
 
 ### Vérifier le cache auprès de l’origine (REFRESH)

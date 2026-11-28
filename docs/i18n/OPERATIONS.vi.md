@@ -10,6 +10,8 @@
 
 Với thế hệ, một lượt quét vật lý trên mỗi đường dẫn/không gian tên hợp nhất các vô hiệu hóa đã nhận. Trang REFRESH là thao tác HTTP riêng, không phải tác vụ hàng đợi xóa.
 
+Trạng thái namespace được ghi khi tắt máy đúng cách, nên lần khởi động lại có kế hoạch dùng lại epoch và các quy tắc; lần chạy không tới hook tắt máy để lại dấu đánh dấu và lần khởi động sau đổi epoch.
+
 | Yêu cầu và cấu hình | Duyệt tệp | Hoàn tất HTTP |
 |---|---|---|
 | Khóa chính xác kiểu cũ, có/không Vary | Worker yêu cầu; Vary thêm duyệt thư mục | Sau thao tác |
@@ -252,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Với plugin Compose dùng `docker compose` thay `docker-compose`; Makefile nhận cả hai. `nginx-test`, `make test-all` chạy bảy bộ `t/*.t` qua cùng `prove` như CI. Image tích hợp gồm helper/bố trí bản địa và kiểm tra runtime pool. Build nghiêm ngặt không luồng thử runtime từng bước. Mọi test lỗi đều làm lệnh thất bại.
 
 Xem [`t/TESTING.md`](../../t/TESTING.md) về build nghiêm ngặt, sanitizer, Valgrind, nền tảng và báo cáo. Mọi job GitHub ở `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Bảo mật
+
+- Giới hạn endpoint PURGE bằng chỉ thị `allow` / `deny` hoặc lớp xác thực upstream. Không bao giờ công khai chúng.
+- Đặt `cache_purge_queue_size` phù hợp với lưu lượng để hạn chế mức dùng bộ nhớ chia sẻ khi có đợt tăng đột biến yêu cầu.
+- Cân nhắc kết hợp location purge với `limit_req` để giới hạn yêu cầu PURGE độc lập với lưu lượng thông thường.
+- Chế độ generation: thư mục trạng thái phải thuộc về người dùng chạy nginx master và không được cho phép nhóm hoặc người khác ghi. Master tạo thư mục với chế độ `0700`, nginx không chuyển thư mục này cho người dùng worker, và quá trình khởi động thất bại với `[emerg]` nếu chủ sở hữu hoặc chế độ không đúng. Hãy chuyển trả một lần cho người dùng master mọi thư mục mà bản phát hành cũ để thuộc người dùng worker. Snapshot có CRC32 để phát hiện hỏng dữ liệu chứ không phát hiện giả mạo; do đó quyền ghi thư mục đồng nghĩa với quyền kiểm soát những mục cache nào còn có thể truy cập. Các tệp trong đó được tạo với chế độ `0600`. Việc kiểm tra chủ sở hữu và chế độ chỉ phân biệt master với worker khi chúng chạy dưới các người dùng khác nhau. Nếu master và các worker dùng chung UID (nginx rootless hoặc `user root`), không thể biết ai đã ghi tệp trạng thái: worker có thể giả mạo epoch, quy tắc và CRC32 để khiến các mục đã vô hiệu hóa có thể truy cập trở lại. Không dựa vào trạng thái bền vững trong triển khai đó; cấu hình này không được hỗ trợ. Epoch mới được `fsync` cùng với thư mục trước khi sử dụng; nếu thao tác này thất bại, quá trình khởi động cũng thất bại thay vì mạo hiểm tái sử dụng epoch.
+- Chế độ generation: mỗi selector PURGE riêng biệt có thể thêm quy tắc và selector có thể dài tối đa 8096 byte. Khi `cache_purge_namespace` cạn, namespace được đặt lại, tất cả mục của nó bị vô hiệu hóa và trả về `507`. Hạn chế người được phép gửi PURGE và REFRESH, đồng thời cảnh báo khi bộ đếm `full` trong phản hồi trạng thái tăng.
+

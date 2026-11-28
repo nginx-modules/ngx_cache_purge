@@ -10,6 +10,8 @@
 
 Dengan generasi, satu penyapuan fisik per jalur/namespace menggabungkan seluruh invalidasi yang diterima. Halaman REFRESH adalah operasi HTTP terpisah, bukan tugas antrean purge.
 
+Status namespace disimpan saat shutdown rapi, sehingga restart terencana memakai ulang epoch dan aturan; proses tanpa hook shutdown meninggalkan penanda dan start berikutnya mengganti epoch.
+
 | Permintaan dan konfigurasi | Penelusuran file | Penyelesaian HTTP |
 |---|---|---|
 | Kunci tepat lama, dengan/tanpa Vary | Worker permintaan; Vary menambah penelusuran | Setelah operasi |
@@ -252,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Dengan plugin Compose, ganti `docker-compose` menjadi `docker compose`; Makefile mendeteksi keduanya. `nginx-test` dan `make test-all` menjalankan ketujuh `t/*.t` melalui `prove` yang sama dengan CI. Image integrasi mencakup pemeriksaan helper/layout native dan runtime pool. Build ketat tanpa thread menguji runtime inkremental. Setiap tes gagal menggagalkan perintah.
 
 Lihat [`t/TESTING.md`](../../t/TESTING.md) untuk build ketat, sanitizer, Valgrind, platform dan laporan. Seluruh job GitHub didefinisikan di `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Keamanan
+
+- Batasi endpoint PURGE dengan direktif `allow` / `deny` atau lapisan autentikasi upstream. Jangan pernah mengeksposnya secara publik.
+- Atur `cache_purge_queue_size` sesuai lalu lintas untuk membatasi penggunaan memori bersama saat terjadi lonjakan permintaan.
+- Pertimbangkan memasangkan location purge dengan `limit_req` agar permintaan PURGE dibatasi terpisah dari lalu lintas normal.
+- Mode generasi: direktori status harus dimiliki pengguna yang menjalankan master nginx dan tidak boleh dapat ditulis oleh grup maupun pengguna lain. Master membuatnya dengan mode `0700`, nginx tidak menyerahkannya kepada pengguna worker, dan startup gagal dengan `[emerg]` jika pemilik atau modenya salah. Kembalikan sekali kepada pengguna master direktori yang ditinggalkan rilis lama sebagai milik pengguna worker. Snapshot membawa CRC32 yang mendeteksi kerusakan, bukan pemalsuan; karena itu, akses tulis ke direktori memberi kendali atas entri cache yang tetap dapat dijangkau. Berkas di dalamnya dibuat dengan mode `0600`. Pemeriksaan pemilik dan mode hanya membedakan master dari worker yang berjalan sebagai pengguna berbeda. Jika master dan worker berbagi UID yang sama (nginx rootless atau `user root`), tidak dapat diketahui siapa yang menulis berkas status: worker dapat memalsukan epoch, aturan, dan CRC32 sehingga entri yang telah diinvalidasi dapat dijangkau kembali. Jangan mengandalkan status persisten pada deployment tersebut; konfigurasi ini tidak didukung. Epoch baru di-`fsync` bersama direktori sebelum digunakan; jika gagal, startup gagal alih-alih mengambil risiko menggunakan kembali epoch.
+- Mode generasi: setiap selector PURGE yang berbeda dapat menambahkan aturan, dan panjang selector dapat mencapai 8096 byte. Kehabisan `cache_purge_namespace` akan mereset namespace, menginvalidasi seluruh entrinya, dan mengembalikan `507`. Batasi pihak yang dapat mengirim PURGE dan REFRESH, serta buat alarm bila penghitung `full` pada respons status meningkat.
+

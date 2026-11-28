@@ -75,6 +75,21 @@ ngx_int_t
 ngx_http_cache_purge_is_partial(ngx_http_request_t *r);
 
 # if (NGX_HTTP_FASTCGI || NGX_HTTP_PROXY || NGX_HTTP_SCGI || NGX_HTTP_UWSGI)
+static ngx_int_t
+ngx_http_cache_purge_namespace_full(ngx_http_request_t *r,
+    ngx_http_cache_purge_loc_conf_t *conf, size_t key_len)
+{
+    ngx_http_cache_purge_namespace_t *ns = conf->namespace;
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_cache_purge: namespace \"%V\" rule table is full "
+                  "(key length %uz, zone %uz bytes); all cache entries were "
+                  "invalidated; increase cache_purge_namespace and restart "
+                  "nginx", &ns->name, key_len, ns->zone->shm.size);
+    return ngx_http_cache_purge_reply(r, NGX_PURGE_RESULT_NOMEM);
+}
+
+
 /* Wait for admission while retaining core disconnect and stream handling. */
 static ngx_int_t
 ngx_http_cache_purge_defer(ngx_http_request_t *r)
@@ -149,6 +164,8 @@ ngx_http_cache_purge_request_handler(ngx_event_t *ev)
     if (rc == NGX_OK) {
         rc = ngx_http_cache_purge_reply(r, cplcf->namespace != NULL
                  ? NGX_PURGE_RESULT_INVALIDATED : NGX_PURGE_RESULT_ACCEPTED);
+    } else if (rc == NGX_CACHE_PURGE_NAMESPACE_FULL) {
+        rc = ngx_http_cache_purge_namespace_full(r, cplcf, key[0].len);
     } else {
         rc = rc == NGX_ABORT ? NGX_HTTP_CLOSE
              : ngx_http_cache_purge_reply(r, rc == NGX_DECLINED
@@ -213,6 +230,9 @@ ngx_http_cache_purge_dispatch(ngx_http_request_t *r)
         }
         if (rc == NGX_AGAIN) {
             return ngx_http_cache_purge_defer(r);
+        }
+        if (rc == NGX_CACHE_PURGE_NAMESPACE_FULL) {
+            return ngx_http_cache_purge_namespace_full(r, conf, len);
         }
         return rc == NGX_ABORT ? NGX_HTTP_CLOSE
                : ngx_http_cache_purge_reply(r, rc == NGX_DECLINED

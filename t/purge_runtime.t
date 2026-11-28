@@ -10,9 +10,10 @@ use File::Path qw(make_path);
 use File::Temp qw(tempdir);
 use HTTP::Tiny;
 use IO::Socket::INET;
+use IO::Select;
 use JSON::PP qw(decode_json);
 use POSIX qw(setsid WNOHANG);
-use Time::HiRes qw(time sleep);
+use Time::HiRes qw(time sleep clock_gettime CLOCK_MONOTONIC);
 use Text::ParseWords qw(shellwords);
 
 my $nginx = $ENV{TEST_NGINX_BINARY} || 'nginx';
@@ -71,6 +72,7 @@ sub config {
     my ($s) = @_;
     my $user = $> == 0 ? 'user root;' : '';
     my $background = $s->{background} ? 'on' : 'off';
+    my $daemon = $s->{daemon} ? 'on' : 'off';
     my $legacy = exists $s->{legacy} ? "cache_purge_legacy_status $s->{legacy};" : '';
     my $response = $s->{default_response} ? '' : 'cache_purge_response_type json;';
     my $extra_locations = $s->{extra_locations} || '';
@@ -102,21 +104,23 @@ sub config {
     my $origin_port = $s->{origin_port} || $s->{port};
     my $profile_host = $s->{profile_host} || 'origin.test';
     my $refresh_timeout = $s->{refresh_timeout} || '10s';
+    my $namespace_name = $s->{namespace_name} || 'objects';
+    my $namespace_size = $s->{namespace_size} || '1m';
     my $refresh_batch = $s->{refresh_batch}
         ? "cache_purge_refresh_batch $s->{refresh_batch};" : '';
     my $namespace = $s->{strict}
-        ? "cache_purge_namespace objects 1m $s->{root}/purge-state;\n"
-          . "cache_purge_key objects $logical;" : '';
+        ? "cache_purge_namespace $namespace_name $namespace_size $s->{root}/purge-state;\n"
+          . "cache_purge_key $namespace_name $logical;" : '';
     # Unused extra namespaces with the longest allowed name (32 bytes). They only
     # exist to make the status "namespaces" list outgrow its reply buffer.
     $namespace .= join '', map {
-        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state;", 'n' x 30, $_, $s->{root}
+        sprintf "\ncache_purge_namespace %s%02d 128k %s/purge-state-%02d;", 'n' x 30, $_, $s->{root}, $_
     } 1 .. $s->{extra_namespaces} if $s->{strict} && $s->{extra_namespaces};
     my $vary = $s->{strict} ? '' : 'add_header Vary Accept-Encoding always;';
     my $refresh = $s->{strict} ? <<"REFRESH" : '';
         location = /refresh {
             cache_purge_response_type none;
-            cache_purge_key objects \$http_x_refresh_key;
+            cache_purge_key $namespace_name \$http_x_refresh_key;
             proxy_cache_refresh a \$cache_purge_key;
             cache_purge_refresh_profile /probe /cache;
             cache_purge_refresh_timeout $refresh_timeout;
@@ -184,7 +188,7 @@ GATEWAY
     } qw(html json xml text none);
     return <<EOF;
 $user
-daemon off;
+daemon $daemon;
 worker_processes $count;
 $pool
 pid $s->{root}/nginx.pid;
@@ -334,8 +338,17 @@ sub reload_refused {
     $s->{generation}++;
     write_file("$s->{root}/nginx.conf", config($s));
     kill 'HUP', $s->{pid};
-    await(sub { substr(read_file("$s->{root}/error.log"), $mark) =~ $pattern },
-          'the refused reload was not logged', 20);
+    my $ok = eval {
+        await(sub { substr(read_file("$s->{root}/error.log"), $mark) =~ $pattern },
+              'the refused reload was not logged', 20);
+        1;
+    };
+    unless ($ok) {
+        my $error = $@;
+        diag("reload log after the refusal attempt:\n"
+             . substr(read_file("$s->{root}/error.log"), $mark));
+        die $error;
+    }
     $s->{generation} = $old;
     return (request($s, '/status-a')->{headers}{'x-generation'} // '-1') eq $old;
 }
@@ -348,6 +361,29 @@ sub namespace_view {
     my ($ns) = grep { $_->{name} eq $name } @{ $v->{namespaces} };
     die "namespace $name missing from status" unless $ns;
     return $ns;
+}
+
+sub namespace_token {
+    my ($name) = @_;
+    return unpack 'H*', $name || 'objects';
+}
+
+sub generation_state_path {
+    my ($s, $name) = @_;
+    return "$s->{root}/purge-state/" . namespace_token($name) . '.state';
+}
+
+sub running_marker_path {
+    my ($s, $name) = @_;
+    return "$s->{root}/purge-state/" . namespace_token($name) . '.running';
+}
+
+sub epoch_files {
+    my ($s) = @_;
+    opendir my $dh, "$s->{root}/purge-state" or return ();
+    my @files = sort grep { /^\d{10}\z/ } readdir $dh;
+    closedir $dh;
+    return @files;
 }
 
 # The classification documented in docs/OPERATIONS.md: what a tool reading
@@ -492,6 +528,35 @@ sub finish_request {
     return $response;
 }
 
+# Read an HTTP response under one absolute, monotonic deadline. A peer that
+# sends a partial response and stalls must not keep the test process alive.
+sub finish_request_timeout {
+    my ($socket, $seconds) = @_;
+    my $select = IO::Select->new($socket);
+    my $deadline = clock_gettime(CLOCK_MONOTONIC) + $seconds;
+    my $response = '';
+
+    while (1) {
+        my $remaining = $deadline - clock_gettime(CLOCK_MONOTONIC);
+        my @ready = $remaining > 0 ? $select->can_read($remaining) : ();
+        if (!@ready) {
+            close $socket;
+            return;
+        }
+
+        my $n = sysread($socket, my $chunk, 8192);
+        if (!defined $n) {
+            close $socket;
+            return;
+        }
+        last if $n == 0;
+        $response .= $chunk;
+    }
+
+    close $socket;
+    return $response;
+}
+
 sub start_server {
     my ($name, %options) = @_;
     my $s = { root => "$base/$name", generation => 0, background => 1,
@@ -526,15 +591,47 @@ sub start_server {
     }
     $s->{pid} = $pid;
     push @servers, $s;
+    if ($s->{expect_failure}) {
+        await(sub { waitpid($pid, WNOHANG) == $pid },
+              'nginx did not exit after the expected startup failure', 15);
+        delete $s->{pid};
+        stop_origin($s);
+        return $s;
+    }
     await(sub {
-        if (waitpid($pid, WNOHANG) == $pid) {
+        if (!$s->{daemon} && waitpid($pid, WNOHANG) == $pid) {
             delete $s->{pid};
             die read_file("$s->{root}/process.log");
         }
         my $health = request($s, '/health');
         $health->{status} == 200 && ($health->{content} || '') eq 'ready';
     }, 'nginx did not start');
+    if ($s->{daemon}) {
+        waitpid($pid, WNOHANG);
+        my $master = read_file("$s->{root}/nginx.pid");
+        chomp $master;
+        $s->{pid} = $master;
+    }
     return $s;
+}
+
+sub pid_running {
+    my ($pid) = @_;
+    return 0 unless kill 0, $pid;
+
+    # /proc/<pid>/stat is Linux-specific; elsewhere kill(0) is the fallback.
+    return 1 unless $^O eq 'linux';
+
+    my $fh;
+    return 1 unless open($fh, '<', "/proc/$pid/stat");
+
+    my $stat = <$fh>;
+    close $fh;
+
+    # Some platforms expose an empty or incomplete procfs entry.
+    return 1 unless defined $stat && $stat =~ /^\d+ \(.*\) (\S) /;
+
+    return $1 ne 'Z';
 }
 
 sub stop_server {
@@ -544,11 +641,31 @@ sub stop_server {
     kill 'QUIT', $pid;
     my $rc;
     my $ok = eval {
-        await(sub { return 0 unless waitpid($pid, WNOHANG) == $pid;
-                    $rc = $?; return 1; }, 'graceful exit stalled', 15);
+        await(sub {
+            if ($s->{daemon}) {
+                return 0 if pid_running($pid);
+                $rc = 0;
+                return 1;
+            }
+            return 0 unless waitpid($pid, WNOHANG) == $pid;
+            $rc = $?;
+            return 1;
+        }, 'graceful exit stalled', 15);
         1;
     };
-    if (!$ok) { kill 'TERM', -$pid; waitpid($pid, 0); die $@; }
+    if (!$ok) {
+        my $error = $@;
+        diag("shutdown failure for $s->{root}, master pid $pid: $error");
+        for my $name (qw(error.log process.log)) {
+            next unless -f "$s->{root}/$name";
+            diag("$name:\n" . read_file("$s->{root}/$name"));
+        }
+        system("ps -L -o pid,tid,ppid,stat,wchan:32,comm -p $pid --ppid $pid");
+        stop_origin($s);
+        kill 'TERM', -$pid;
+        waitpid($pid, 0);
+        die $error;
+    }
     stop_origin($s);
     is($rc, 0, 'master exited cleanly');
     my $log = read_file("$s->{root}/error.log");
@@ -596,6 +713,14 @@ sub stop_server {
     if ($s->{listen_fault}) {
         @severe = grep { !/\[emerg\].*(?:bind\(\) to 127\.0\.0\.1:\d+ failed \(\d+: (?:Address already in use|Unknown error)\)|still could not bind\(\))/ } @severe;
     }
+    if ($s->{expected_severe}) {
+        my @expected = @{ $s->{expected_severe} };
+        @severe = grep {
+            my $line = $_;
+            !grep { $line =~ $_ } @expected;
+        } @severe;
+    }
+    diag("severe diagnostics:\n" . join("\n", @severe)) if @severe;
     is_deeply(\@severe, [], 'no unexpected severe diagnostic');
 
 }
@@ -687,15 +812,29 @@ sub reload_server {
           'the previous generation did not exit') if $settle;
 }
 
+sub nginx_version_number {
+    my $pid = open my $pipe, '-|';
+    die "fork: $!" unless defined $pid;
+    if (!$pid) {
+        open STDERR, '>&', \*STDOUT or die $!;
+        exec $nginx, '-v' or POSIX::_exit(127);
+    }
+    my $line = <$pipe>;
+    close $pipe;
+    die 'cannot determine nginx version' unless $line && $line =~ m{nginx/(\d+)\.(\d+)\.(\d+)};
+    return $1 * 1000000 + $2 * 1000 + $3;
+}
+
 sub check_config {
-    my ($s, $text) = @_;
+    my ($s, $text, $dump) = @_;
     write_file("$s->{root}/invalid.conf", $text);
     my $pid = fork();
     die "fork: $!" unless defined $pid;
     if (!$pid) {
         open STDOUT, '>', "$s->{root}/config.log" or die $!;
         open STDERR, '>&', \*STDOUT or die $!;
-        exec $nginx, '-g', '', '-t', '-p', "$s->{root}/",
+        my @check = $dump ? ('-T') : ('-t');
+        exec $nginx, '-g', '', @check, '-p', "$s->{root}/",
              '-c', "$s->{root}/invalid.conf" or POSIX::_exit(127);
     }
     waitpid($pid, 0) == $pid or die "waitpid: $!";
@@ -901,12 +1040,14 @@ subtest 'strict generation invalidation precedes deferred physical cleanup' => s
     stop_server($s);
     $s = start_server('strict', strict => 1, throttle => '60s');
     my $restarted = namespace_view($s, 'objects');
-    isnt($restarted->{epoch}, $view->{epoch}, 'full restart creates a new epoch');
-    is($restarted->{baseline}, '0000000000000001', 'full restart starts from a fresh baseline');
+    is($restarted->{epoch}, $view->{epoch}, 'graceful restart reuses the persisted epoch');
+    is($restarted->{baseline}, $view->{baseline}, 'graceful restart restores the baseline');
+    is($restarted->{serial}, $view->{serial}, 'graceful restart restores the serial');
     my @carried = cached_entries($s);
     is_deeply([ grep { classify_generation_file($_->[1], $restarted) ne 'stale' } @carried ], [],
-              'every file of the previous epoch is certainly stale after a restart');
-    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS', 'full restart never reuses a persisted epoch');
+              'every file of the previous generation is certainly stale after a restart');
+    is(request($s, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'a restart does not resurrect an invalidated entry');
     stop_server($s);
 };
 
@@ -1503,14 +1644,55 @@ subtest 'REFRESH failure policy, URI identity and deadlines' => sub {
     # publication barrier: wait for an actual HIT before testing another probe.
     await(sub { (request($s, $key)->{headers}{'x-cache'} || '') eq 'HIT' },
           'entry did not refill after 410');
-    $s->{refresh_timeout} = '20ms';
-    reload_server($s);
+    $s->{refresh_timeout} = '500ms';
+    # The new generation can serve requests while retiring workers still
+    # accept them. Settle the old generation before testing its new timeout.
+    reload_server($s, 1);
     unlink "$s->{root}/head-release" or die $!;
+    write_file("$s->{root}/head-block-version", '1');
     write_file("$s->{root}/head-status", '200');
-    $r = refresh($s, $key);
-    ok($r->{timed_out} && !$r->{complete}, 'deadline reports incomplete work');
-    is($r->{next_cursor}, '0' x 32, 'unfinished probe does not advance the continuation');
+    unlink "$s->{root}/head-started" if -e "$s->{root}/head-started";
+    unlink "$s->{root}/head-unblocked-1" if -e "$s->{root}/head-unblocked-1";
+
+    # Keep the origin HEAD blocked until after REFRESH responds. This is an
+    # event barrier, not a delay: it proves the probe is outstanding when the
+    # configured deadline expires.
+    my $probe = pending_request($s, '/refresh', 'REFRESH', $key);
+    my $head_started = eval {
+        await(sub { -f "$s->{root}/head-started" },
+              'conditional HEAD did not reach the blocked origin', 5);
+        1;
+    } || 0;
+    my $response = $head_started
+        ? finish_request_timeout($probe, 3) : undef;
+    close $probe unless $head_started;
+
+    my $origin_still_blocked = $head_started
+        && !-e "$s->{root}/head-unblocked-1"
+        && !-e "$s->{root}/head-release";
     write_file("$s->{root}/head-release", '');
+    my $origin_unblocked = eval {
+        await(sub { -f "$s->{root}/head-unblocked-1" },
+              'controlled origin did not observe release', 5);
+        1;
+    } || 0;
+
+    ok($head_started, 'REFRESH HEAD reached the controlled origin');
+    ok($origin_still_blocked,
+       'origin remained blocked when the REFRESH response was read');
+    ok($origin_unblocked, 'controlled origin was released after the response');
+    ok(defined $response,
+       'REFRESH returned within the bounded test deadline');
+    if (defined $response) {
+        my ($headers, $body) = split /\r\n\r\n/, $response, 2;
+        like($headers, qr{^HTTP/1\.[01] 200 },
+             'REFRESH returns its incomplete-page response');
+        $r = decode_json($body);
+        ok($r->{timed_out} && !$r->{complete},
+           'REFRESH deadline reports incomplete work');
+        is($r->{next_cursor}, '0' x 32,
+           'unfinished probe does not advance the continuation');
+    }
     is(request($s, $key)->{headers}{'x-cache'}, 'HIT', 'timed-out decision retains the current generation');
     stop_server($s);
 
@@ -1878,7 +2060,7 @@ subtest 'traffic class HIT/MISS counters are subsets of the totals' => sub {
         my $t = $totals->();
         ($t->{hit} + $t->{miss}) - ($before->{hit} + $before->{miss}) == $counted;
     }, 'counted requests were not observed');
-    my ($v, $c) = class_status($s);
+    ($v, $c) = class_status($s);
     for my $name (qw(bot human)) {
         is($c->{$name}{hit},  $seen{$name}{HIT}  || 0, "$name HIT count");
         is($c->{$name}{miss}, $seen{$name}{MISS} || 0, "$name MISS count");
@@ -2194,4 +2376,625 @@ subtest 'capacity, duplicate tasks and reload ownership' => sub {
     stop_server($s);
 };
 
+# A graceful shutdown commits the namespace state; a later start must reuse
+# the epoch and the rule set.  Anything already invalidated has to stay
+# unreachable, so the check runs once with a live entry and once with one
+# that was invalidated before the restart.
+subtest 'graceful restart keeps live generations and rejects stale ones' => sub {
+    my $s = start_server('restart-state', workers => 1, strict => 1,
+                             throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    ok(-e $marker, 'boot creates the namespace dirty marker');
+    warm($s);
+    await(sub { (request($s, '/cache/item')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'second entry did not warm');
+    stop_server($s);
+    ok(-e generation_state_path($s), 'shutdown committed the namespace state');
+    ok(!-e $marker, 'graceful shutdown removes the dirty marker');
+
+    my $live = start_server('restart-state', workers => 1, strict => 1,
+                             throttle => '60s');
+    ok(-e $marker, 'startup recreates the dirty marker');
+    is(namespace_view($live, 'objects')->{epoch}, $epoch,
+       'graceful restart reuses the persisted epoch');
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'an untouched entry survives a graceful restart');
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'the restored generation keeps matching');
+
+    # Publish an invalidation and shut down without reading the key again:
+    # a later GET would repopulate the new generation and hide a resurrection.
+    is(request($live, '/cache/warm', 'PURGE')->{status}, 200,
+       'invalidation is accepted before the second shutdown');
+    stop_server($live);
+    ok(-e generation_state_path($live), 'second shutdown committed the state');
+    ok(!-e $marker, 'second shutdown removed the dirty marker');
+
+    my $stale = start_server('restart-state', workers => 1, strict => 1,
+                             throttle => '60s');
+    is(namespace_view($stale, 'objects')->{epoch}, $epoch,
+       'the second restart still reuses the epoch');
+    is(request($stale, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'restart does not resurrect an invalidated entry');
+    is(request($stale, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'restart still serves the entries that were never invalidated');
+    stop_server($stale);
+};
+
+subtest 'daemon mode commits generation state at final master exit' => sub {
+    my $s = start_server('daemon-state', workers => 1, strict => 1,
+                         throttle => '60s', daemon => 1);
+    my $marker = running_marker_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    warm($s);
+    await(sub { (request($s, '/cache/item')->{headers}{'x-cache'} || '') eq 'HIT' },
+          'daemon-mode entry did not warm');
+    stop_server($s);
+    ok(-e generation_state_path($s), 'daemon-mode final exit commits state');
+    ok(!-e $marker, 'daemon-mode final exit removes the dirty marker');
+    unlike(read_file("$s->{root}/error.log"), qr/cannot join the shutdown watchdog/,
+           'daemon master does not join a non-existent watchdog');
+
+    my $live = start_server('daemon-state', workers => 1, strict => 1,
+                            throttle => '60s', daemon => 1);
+    is(namespace_view($live, 'objects')->{epoch}, $epoch,
+       'daemon-mode restart reuses the persisted epoch');
+    is(request($live, '/cache/item')->{headers}{'x-cache'}, 'HIT',
+       'daemon-mode restart keeps a live cache entry');
+    stop_server($live);
+};
+
+subtest 'nginx -t and -T leave live namespace state untouched' => sub {
+    my $s = start_server('state-check', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $state = generation_state_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    my @epochs = epoch_files($s);
+    ok(-e $marker, 'the live master owns a dirty marker');
+    ok(!-e $state, 'no snapshot exists before the first graceful shutdown');
+
+    my @config_modes = (0);
+    push @config_modes, 1 if nginx_version_number() >= 1009002;
+    for my $dump (@config_modes) {
+        my $name = $dump ? '-T' : '-t';
+        is(check_config($s, config($s), $dump), 0, "$name accepts the live configuration")
+            or diag(read_file("$s->{root}/config.log"));
+        ok(-e $marker, "$name keeps the live dirty marker");
+        is(namespace_view($s, 'objects')->{epoch}, $epoch,
+           "$name leaves the live epoch unchanged");
+        is_deeply([epoch_files($s)], \@epochs, "$name creates no epoch file");
+        ok(!-e $state, "$name writes no namespace snapshot");
+    }
+    stop_server($s);
+    ok(-e $state, 'the live master still commits its snapshot on shutdown');
+    ok(!-e $marker, 'the live master removes its marker on shutdown');
+};
+
+subtest 'reload keeps the namespace and rejects zone identity changes' => sub {
+    my $s = start_server('reload-state', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+
+    reload_server($s, 1);
+    ok(-e $marker, 'reload keeps the dirty marker');
+    is(namespace_view($s, 'objects')->{epoch}, $epoch,
+       'reload keeps the namespace epoch');
+
+    $s->{expected_severe} = [
+        qr/\[emerg\].*namespace "objects" changes shared memory size .*restart nginx/,
+        qr/\[emerg\].*removing namespace shared zone .*requires a full restart/,
+        qr/\[emerg\].*cache purge namespace zone identity changed; full restart required/,
+    ];
+
+    $s->{namespace_size} = '2m';
+    ok(reload_refused($s, qr/\[emerg\].*namespace "objects" changes shared memory size/),
+       'a size change is refused');
+    $s->{namespace_size} = '1m';
+
+    $s->{namespace_name} = 'renamed';
+    ok(reload_refused($s, qr/\[emerg\].*removing namespace shared zone/),
+       'a namespace rename is refused');
+    $s->{namespace_name} = 'objects';
+
+    $s->{extra_namespaces} = 1;
+    ok(reload_refused($s, qr/\[emerg\].*cache purge namespace zone identity changed; full restart required/),
+       'a new namespace zone is refused on reload');
+    $s->{extra_namespaces} = 0;
+
+    is(namespace_view($s, 'objects')->{epoch}, $epoch,
+       'refused reloads leave the old epoch serving');
+    ok(-e $marker, 'refused reloads leave the old marker in place');
+    is(request($s, '/health')->{status}, 200, 'the old server still serves');
+    stop_server($s);
+};
+
+subtest 'duplicate namespace state paths are rejected' => sub {
+    my $s = start_server('duplicate-state', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $text = config($s);
+    my $duplicate = "cache_purge_namespace duplicate 128k $s->{root}/purge-state;";
+    $text =~ s/(cache_purge_namespace [^\n]+purge-state;)/$1\n$duplicate/;
+    isnt(check_config($s, $text), 0,
+         'two namespaces must not share a state directory');
+    stop_server($s);
+};
+
+subtest 'namespace rule-table exhaustion returns 507 and explicit refresh error' => sub {
+    my $s = start_server('namespace-full', workers => 1, strict => 1,
+                         namespace_size => ($^O eq 'darwin' ? '128k' : '64k'), throttle => '60s',
+                         controlled_origin => 1);
+    my $long = '/cache/' . ('f' x 2048);
+    warm($s);
+
+    my $purge = request($s, $long, 'PURGE');
+    is($purge->{status}, 507, 'PURGE reports insufficient storage');
+    is($purge->{headers}{'cache-purge-code'}, 'namespace_full',
+       'PURGE identifies the full namespace');
+    cmp_ok(namespace_view($s, 'objects')->{full}, '>', 0,
+           'the namespace reports a zone-full event');
+    like(read_file("$s->{root}/error.log"),
+         qr/\[error\].*namespace "objects" rule table is full \(key length \d+, zone \d+ bytes\); all cache entries were invalidated; increase cache_purge_namespace and restart nginx/,
+         'the full namespace is logged with key and zone sizes');
+
+    my $last;
+    my $warmed = eval {
+        await(sub {
+            $last = request($s, $long);
+            ($last->{headers}{'x-cache'} || '') eq 'HIT';
+        }, 'the long replacement entry did not warm');
+        1;
+    };
+    unless ($warmed) {
+        my $error = $@;
+        diag('long replacement response: ' . JSON::PP::encode_json($last)) if $last;
+        my @lines = split /\n/, read_file("$s->{root}/error.log");
+        splice @lines, 0, @lines - 20 if @lines > 20;
+        diag("error.log tail:\n" . join("\n", @lines));
+        die $error;
+    }
+
+    write_file("$s->{root}/version", '2');
+    my $refresh = request($s, '/refresh', 'REFRESH',
+                          { 'X-Refresh-Key' => $long });
+    is($refresh->{status}, 507, 'REFRESH reports insufficient storage');
+    is($refresh->{headers}{'cache-purge-code'}, 'refresh_namespace_full',
+       'REFRESH identifies the full namespace');
+    my $body = decode_json($refresh->{content});
+    is($body->{code}, 'refresh_namespace_full', 'refresh code matches the header');
+    ok(!$body->{scan_complete}, 'refresh scan is explicitly incomplete');
+    ok(!$body->{complete}, 'refresh is explicitly incomplete');
+    ok(!$body->{timed_out}, 'refresh did not time out');
+    ok($body->{scan_error}, 'refresh reports a scan error');
+    ok($body->{namespace_reset}, 'refresh reports the namespace reset');
+    is($body->{undispatched}, 0, 'no probes are left undispatched');
+    is($body->{next_cursor}, '0' x 32, 'the cursor does not advance');
+    is_deeply($body->{results}, [], 'the reset page returns no entry results');
+    is($body->{error},
+       'cache purge namespace "objects" rule table is full; all cache entries were invalidated; increase cache_purge_namespace and restart',
+       'refresh carries the operator-facing error');
+
+    # The slab allocator reports its own low-level failure before the module
+    # converts it into the explicit 507 contract above.
+    $s->{expected_severe} = [qr/\[crit\].*ngx_slab_alloc\(\) failed: no memory/];
+    stop_server($s);
+
+    my $restarted = start_server('namespace-full', workers => 1, strict => 1,
+                                 namespace_size => '1m', throttle => '60s');
+    is(request($restarted, $long, 'PURGE')->{status}, 200,
+       'a larger namespace accepts the invalidation after restart');
+    # The same root keeps the previous generation's slab diagnostics.
+    $restarted->{expected_severe} = [qr/\[crit\].*ngx_slab_alloc\(\) failed: no memory/];
+    stop_server($restarted);
+};
+
+subtest 'startup rejects a persisted snapshot that does not fit its zone' => sub {
+    my $s = start_server('state-too-large', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $long = '/cache/' . ('r' x 2048);
+    is(request($s, $long, 'PURGE')->{status}, 200,
+       'the large rule fits the initial namespace');
+    stop_server($s);
+    ok(-e generation_state_path($s), 'the large rule was persisted');
+
+    my $failed = start_server('state-too-large', workers => 1, strict => 1,
+                              namespace_size => ($^O eq 'darwin' ? '128k' : '64k'), throttle => '60s',
+                              expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*namespace "objects" persisted rules do not fit its \d+ byte shared zone; increase cache_purge_namespace and restart nginx/,
+         'startup fails with an explicit size diagnostic');
+    ok(-e generation_state_path($failed), 'the unreadable snapshot is kept');
+    ok(!-e running_marker_path($failed), 'the failed boot leaves no dirty marker');
+};
+
+# The dirty marker is created at boot, so a killed master always leaves one
+# behind.  The next start must rotate the epoch, not trust the snapshot.
+subtest 'an unclean shutdown rotates the epoch' => sub {
+    my $s = start_server('restart-unclean', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    ok(-e $marker, 'boot creates the dirty marker');
+    warm($s);
+
+    # Commit a snapshot first.  A later crash must not restore this snapshot:
+    # it predates the invalidation below.  Without this step the test would
+    # pass even if running_exists() failed to see the dirty marker, because a
+    # missing snapshot also forces a new epoch.
+    stop_server($s);
+    ok(-e generation_state_path($s),
+       'graceful shutdown commits the namespace state');
+    ok(!-e $marker, 'graceful shutdown removes the dirty marker');
+
+    my $live = start_server('restart-unclean', workers => 1, strict => 1,
+                            throttle => '60s');
+    ok(-e $marker, 'the restarted master recreates the dirty marker');
+    is(namespace_view($live, 'objects')->{epoch}, $epoch,
+       'the restarted master reuses the committed epoch');
+    is(request($live, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'the committed entry is still cached after restart');
+    is(request($live, '/cache/warm', 'PURGE')->{status}, 200,
+       'the invalidation is accepted before the kill');
+    my $live_epoch = namespace_view($live, 'objects')->{epoch};
+
+    kill 'KILL', -$live->{pid};
+    waitpid($live->{pid}, 0);
+    delete $live->{pid};
+    stop_origin($live);
+    ok(-e $marker, 'a killed run leaves its marker behind');
+
+    my $again = start_server('restart-unclean', workers => 1, strict => 1,
+                             throttle => '60s');
+    ok(-e $marker, 'the next boot recreates the dirty marker');
+    isnt(namespace_view($again, 'objects')->{epoch}, $live_epoch,
+         'the next boot rotates the epoch');
+    is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'the rotated epoch does not resurrect an invalidated entry');
+    stop_server($again);
+};
+
+subtest 'SIGQUIT after daemon-mode reload persists state before a forced master kill' => sub {
+    my $s = start_server('restart-sigterm', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $state = generation_state_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    my $pid = $s->{pid};
+    my ($worker) = live_workers($s);
+    my $early;
+
+    warm($s);
+    $s->{daemon} = 1;
+    reload_server($s, 1);
+    ($worker) = live_workers($s);
+    ok($worker, 'the off-to-on reload has a worker to keep draining');
+    kill 'STOP', $worker or die "cannot pause worker $worker: $!";
+    $s->{stopped} = [$worker];
+    ok(kill('QUIT', $pid), 'SIGQUIT reaches the reloaded master');
+
+    # The paused worker keeps the master alive.  The watchdog, rather than
+    # exit_master, must therefore commit the snapshot and clear the marker.
+    $early = eval {
+        await(sub { -f $state && !-e $marker },
+              'SIGQUIT did not persist state before master exit', 0.5);
+        1;
+    };
+    ok($early, 'the reloaded watchdog commits state while workers drain')
+        or diag($@);
+    ok(kill(0, $pid), 'the master is still alive before the forced kill');
+    ok(-f $state, 'the snapshot exists before SIGKILL');
+    ok(!-e $marker, 'the dirty marker is removed before SIGKILL');
+
+    kill 'KILL', -$pid;
+    is(waitpid($pid, 0), $pid, 'the forced master exit is reaped');
+    $s->{stopped} = [];
+    delete $s->{pid};
+    stop_origin($s);
+    write_file("$s->{root}/error.log", '');
+
+    my $restarted = start_server('restart-sigterm', workers => 1, strict => 1,
+                                 throttle => '60s');
+    is(namespace_view($restarted, 'objects')->{epoch}, $epoch,
+       'off-to-on reload, SIGQUIT and SIGKILL preserve the epoch');
+    is(request($restarted, '/cache/warm')->{headers}{'x-cache'}, 'HIT',
+       'the pre-shutdown cache entry remains reachable');
+    stop_server($restarted);
+};
+
+subtest 'failed early snapshot leaves the dirty marker and rotates the epoch' => sub {
+    my $s = start_server('restart-persist-failure', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $marker = running_marker_path($s);
+    my $state = generation_state_path($s);
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    my ($worker, $pid, $mark, $failed, $pending);
+
+    warm($s);
+    stop_server($s);
+    ok(-f $state, 'the initial graceful shutdown writes a snapshot');
+
+    $s = start_server('restart-persist-failure', workers => 1, strict => 1,
+                      throttle => '60s', controlled_origin => 1);
+    is(namespace_view($s, 'objects')->{epoch}, $epoch,
+       'the second boot starts from the committed epoch');
+
+    # A directory at the atomic rename destination fails even for root.
+    rename $state, "$state.saved" or die "cannot save snapshot: $!";
+    make_path($state);
+
+    # Stop the worker only after its cache miss reaches the blocked origin.
+    # It is then in upstream I/O, not at an arbitrary point that might hold
+    # the namespace shared-memory mutex needed by the shutdown watchdog.
+    write_file("$s->{root}/get-block", '');
+    write_file("$s->{root}/get-block-version", '1');
+    $pending = pending_request($s, '/cache/snapshot-failure-probe', 'GET');
+    await(sub { -f "$s->{root}/get-started" },
+          'the cache miss did not reach the blocked origin', 5);
+
+    ($worker) = live_workers($s);
+    ok($worker, 'the failing-persist master has a worker to pause');
+    kill 'STOP', $worker or die "cannot pause worker $worker: $!";
+    $s->{stopped} = [$worker];
+    $pid = $s->{pid};
+    $mark = length read_file("$s->{root}/error.log");
+    ok(kill('TERM', $pid), 'SIGTERM starts the failing early persist');
+    $failed = eval {
+        await(sub {
+            substr(read_file("$s->{root}/error.log"), $mark)
+                =~ /ngx_cache_purge: cannot replace/;
+        }, 'the early snapshot failure was not attempted', 5);
+        1;
+    };
+    ok($failed, 'the watchdog observes the snapshot rename failure') or diag($@);
+    ok(-e $marker, 'a failed snapshot leaves the dirty marker in place');
+
+    kill 'KILL', -$pid;
+    is(waitpid($pid, 0), $pid, 'the failed-persist master is reaped');
+    $s->{stopped} = [];
+    close $pending;
+    delete $s->{pid};
+    stop_origin($s);
+    rmdir $state or die "cannot remove the rename obstacle: $!";
+    rename "$state.saved", $state or die "cannot restore snapshot: $!";
+    write_file("$s->{root}/error.log", '');
+
+    my $restarted = start_server('restart-persist-failure', workers => 1,
+                                 strict => 1, throttle => '60s');
+    isnt(namespace_view($restarted, 'objects')->{epoch}, $epoch,
+         'the dirty marker rotates the epoch after a failed early snapshot');
+    is(request($restarted, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+       'the safe fallback does not trust the pre-shutdown cache entry');
+    stop_server($restarted);
+};
+
+# A symbolic link at the snapshot path must be rejected even when its target
+# is a regular snapshot file; recovery never follows links.
+subtest 'a symbolic link at the snapshot name is not restored' => sub {
+    my $s = start_server('state-link', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    my $state = generation_state_path($s);
+    ok(-f $state, 'graceful shutdown committed a regular snapshot');
+    rename $state, "$state.real" or die "cannot move snapshot: $!";
+    symlink "$state.real", $state or die "cannot link snapshot: $!";
+    write_file("$s->{root}/error.log", '');
+
+    my $again = start_server('state-link', workers => 1, strict => 1,
+                             throttle => '60s');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'a linked snapshot is ignored and the epoch rotates');
+    like(read_file("$again->{root}/error.log"),
+         qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
+         'the ignored link is reported');
+    $again->{expected_severe} = [
+        qr/\[alert\].*is a symbolic link; ignoring it and rotating the epoch of namespace "objects"/,
+    ];
+    stop_server($again);
+    ok(-f $state && !-l $state,
+       'the next snapshot replaces the link with a regular file');
+};
+
+# open() of a FIFO blocks until a peer appears; a FIFO planted at the snapshot
+# name must be rejected without hanging the master.
+subtest 'a FIFO at the snapshot name does not block startup' => sub {
+    my $s = start_server('state-fifo', workers => 1, strict => 1,
+                         throttle => '60s');
+    my $epoch = namespace_view($s, 'objects')->{epoch};
+    stop_server($s);
+
+    my $state = generation_state_path($s);
+    ok(-f $state, 'graceful shutdown committed a regular snapshot');
+    unlink $state or die "cannot remove snapshot: $!";
+    POSIX::mkfifo($state, 0600) or die "cannot create fifo: $!";
+
+    my $again = start_server('state-fifo', workers => 1, strict => 1,
+                             throttle => '60s');
+    isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+         'a FIFO is not a snapshot and the epoch rotates');
+    stop_server($again);
+    ok(-f $state, 'the next snapshot replaces the FIFO with a regular file');
+};
+
+# The lock is created in a directory that other users may be able to reach, so
+# a link at its name must not redirect the open or the lock.
+subtest 'a symbolic link at the lock name refuses startup' => sub {
+    my $dir = "$base/state-lock/purge-state";
+    make_path($dir);
+    chmod 0700, $dir or die "cannot restrict the state directory: $!";
+    write_file("$base/state-lock/victim", 'keep');
+    symlink "$base/state-lock/victim", "$dir/.lock"
+        or die "cannot link the lock: $!";
+
+    my $failed = start_server('state-lock', workers => 1, strict => 1,
+                              throttle => '60s', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*cannot open namespace lock/,
+         'startup refuses to lock through a link');
+    is(read_file("$base/state-lock/victim"), 'keep',
+       'the link target is untouched');
+};
+
+# The master persists and trusts this directory, so it must not be writable by
+# anyone else and nginx must not hand it to the worker user.
+subtest 'a state directory writable by others is refused' => sub {
+    my $dir = "$base/state-open/purge-state";
+    make_path($dir);
+    chmod 0777, $dir or die "cannot open the state directory: $!";
+
+    my $failed = start_server('state-open', workers => 1, strict => 1,
+                              throttle => '60s', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+         'startup names the unsafe state directory');
+    ok(!-e running_marker_path($failed),
+       'nothing is written into the refused directory');
+};
+
+subtest 'state files and epoch markers are owner-only' => sub {
+    my $s = start_server('state-file-modes', workers => 1, strict => 1,
+                         throttle => '60s');
+    warm($s);
+    is(request($s, '/cache/warm', 'PURGE')->{status}, 200,
+       'fixture records an invalidation');
+    my $dir = dirname(generation_state_path($s));
+    stop_server($s);
+
+    my @files = grep { -f } glob("$dir/*"), glob("$dir/.lock");
+    ok(@files >= 2, 'the state directory holds the snapshot and an epoch marker');
+    for my $file (@files) {
+        is(sprintf('%04o', (stat($file))[2] & 07777), '0600',
+           "$file is not readable by group or others");
+    }
+    ok(-f generation_state_path($s), 'the snapshot is among the checked files');
+};
+
+subtest 'state directory mode checks group and other writes independently' => sub {
+    for my $case ([0770, 'group'], [0702, 'other']) {
+        my ($mode, $label) = @$case;
+        my $name = "state-mode-$label";
+        my $dir = "$base/$name/purge-state";
+        make_path($dir);
+        chmod $mode, $dir or die "cannot set state directory mode: $!";
+
+        my $failed = start_server($name, workers => 1, strict => 1,
+                                  throttle => '60s', expect_failure => 1);
+        like(read_file("$failed->{root}/error.log"),
+             qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+             "a directory writable by $label is rejected");
+        ok(!-e running_marker_path($failed),
+           "a directory writable by $label receives no running marker");
+    }
+
+    my $name = 'state-mode-readable';
+    my $dir = "$base/$name/purge-state";
+    make_path($dir);
+    chmod 0755, $dir or die "cannot set readable state directory mode: $!";
+
+    my $s = start_server($name, workers => 1, strict => 1,
+                         throttle => '60s');
+    unlike(read_file("$s->{root}/error.log"),
+           qr/state directory .*must be owned/,
+           'read and search permission for group and others are allowed');
+    stop_server($s);
+    ok(-f generation_state_path($s),
+       'the master persists state in a non-group-writable 0755 directory');
+};
+
+subtest 'state directory ownership is enforced' => sub {
+    plan skip_all => 'requires root and a distinct nobody account' unless $> == 0;
+
+    my @nobody = getpwnam('nobody');
+    plan skip_all => 'the nobody account is unavailable'
+        unless @nobody && defined $nobody[2] && defined $nobody[3]
+               && $nobody[2] != 0;
+
+    my ($uid, $gid) = @nobody[2, 3];
+    my $probe = "$base/state-owner-probe";
+    make_path($probe);
+    plan skip_all => 'the test environment does not permit chown'
+        unless chown($uid, $gid, $probe) == 1;
+
+    my $name = 'state-owner';
+    my $dir = "$base/$name/purge-state";
+    make_path($dir);
+    chmod 0700, $dir or die "cannot restrict state directory: $!";
+    chown $uid, $gid, $dir
+        or die "cannot transfer state directory ownership: $!";
+
+    my $failed = start_server($name, workers => 1, strict => 1,
+                              throttle => '60s', expect_failure => 1);
+    like(read_file("$failed->{root}/error.log"),
+         qr/\[emerg\].*state directory ".*purge-state" of namespace "objects" must be owned by the user running the nginx master/,
+         'a foreign-owned directory is rejected');
+    ok(!-e running_marker_path($failed),
+       'the rejected foreign-owned directory is not modified');
+};
+
+subtest 'a FIFO at the namespace lock name is rejected without blocking' => sub {
+    {
+        my $name = 'state-lock-fifo';
+        my $dir = "$base/$name/purge-state";
+        make_path($dir);
+        chmod(0700, $dir)
+            or die "cannot set lock directory mode: $!";
+        POSIX::mkfifo("$dir/.lock", 0600)
+            or die "cannot create lock fifo: $!";
+
+        my $started = time;
+        my %options = (workers => 1, strict => 1, throttle => '60s',
+                       expect_failure => 1);
+        my $failed = start_server($name, %options);
+
+        cmp_ok(time - $started, '<', 5,
+               'a FIFO lock is rejected without waiting for a peer');
+        like(read_file("$failed->{root}/error.log"),
+             qr/\[emerg\].*(?:cannot open namespace lock|namespace lock .* is not a regular file)/,
+             'the non-regular lock is rejected');
+        ok(-p "$dir/.lock",
+           'the lock FIFO remains a FIFO after the failed startup');
+    }
+};
+
+subtest 'invalid persisted snapshots rotate the namespace epoch' => sub {
+    for my $kind (qw(checksum truncated version)) {
+        my $name = "snapshot-invalid-$kind";
+        my $s = start_server($name, workers => 1, strict => 1,
+                             throttle => '60s');
+        warm($s);
+        is(request($s, '/cache/warm', 'PURGE')->{status}, 200,
+           "$kind fixture records an invalidation");
+        my $epoch = namespace_view($s, 'objects')->{epoch};
+        stop_server($s);
+
+        my $state = generation_state_path($s);
+        ok(-f $state, "$kind fixture has a persisted snapshot");
+        my $snapshot = read_file($state);
+        cmp_ok(length($snapshot), '>', 64,
+               "$kind fixture contains a complete header and payload");
+
+        if ($kind eq 'checksum') {
+            substr($snapshot, -1, 1) =
+                chr(ord(substr($snapshot, -1, 1)) ^ 0x01);
+        } elsif ($kind eq 'truncated') {
+            $snapshot = substr($snapshot, 0, 20);
+        } else {
+            # The low byte of the big-endian version field is at offset 7.
+            substr($snapshot, 7, 1) =
+                chr(ord(substr($snapshot, 7, 1)) ^ 0x01);
+        }
+        write_file($state, $snapshot);
+
+        my $again = start_server($name, workers => 1, strict => 1,
+                                 throttle => '60s');
+        isnt(namespace_view($again, 'objects')->{epoch}, $epoch,
+             "$kind snapshot is rejected and the epoch rotates");
+        is(request($again, '/cache/warm')->{headers}{'x-cache'}, 'MISS',
+           "$kind snapshot cannot restore an invalidated cache entry");
+        stop_server($again);
+    }
+};
 done_testing();

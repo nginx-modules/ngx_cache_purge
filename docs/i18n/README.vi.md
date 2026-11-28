@@ -97,6 +97,8 @@ Dấu sao phải là byte cuối khóa đã tính, không chỉ cuối đường
 
 Thế hệ khóa ngăn yêu cầu mới dùng nội dung cũ sau PURGE, kể cả phản hồi cũ được ghi muộn. Tệp được xóa riêng. Không gian tên dùng chung quy tắc vô hiệu hóa; giữ thư mục trạng thái qua các lần khởi động lại.
 
+Trạng thái namespace được ghi lại khi tắt máy đúng cách, nên lần khởi động lại có kế hoạch sẽ dùng lại epoch và các quy tắc vô hiệu hóa thay vì bắt đầu với cache lạnh. Nếu một lần chạy không tới được hook tắt máy, một dấu đánh dấu sẽ còn lại và lần khởi động sau đổi epoch để các mục đã vô hiệu hóa vẫn không thể truy cập.
+
 <a id="conditional-refresh"></a>
 
 ### Kiểm tra bộ nhớ đệm với máy chủ gốc (REFRESH)

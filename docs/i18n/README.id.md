@@ -97,6 +97,8 @@ Bintang harus menjadi byte terakhir kunci yang dievaluasi, bukan sekadar jalur U
 
 Generasi kunci mencegah permintaan baru memakai konten lama setelah PURGE, termasuk respons lama yang baru selesai ditulis. Berkas dihapus secara terpisah. Namespace berbagi aturan invalidasi; pertahankan direktori statusnya saat memulai ulang.
 
+Status namespace disimpan saat shutdown yang rapi, sehingga restart terencana memakai ulang epoch dan aturan invalidasi yang sama alih-alih memulai dengan cache dingin. Jika suatu proses tidak mencapai hook shutdown, sebuah penanda tertinggal dan start berikutnya mengganti epoch agar entri yang sudah diinvalidasi tetap tidak dapat diakses.
+
 <a id="conditional-refresh"></a>
 
 ### Memeriksa cache ke server asal (REFRESH)

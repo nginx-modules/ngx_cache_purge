@@ -130,6 +130,11 @@ ngx_http_cache_refresh_reply(ngx_http_cache_refresh_t *job);
 #endif
 #if (NGX_HTTP_PROXY)
 static ngx_int_t
+ngx_http_cache_refresh_namespace_full(ngx_http_cache_refresh_t *job,
+    size_t key_len);
+#endif
+#if (NGX_HTTP_PROXY)
+static ngx_int_t
 ngx_http_cache_refresh_probe(ngx_http_cache_refresh_t *job,
     ngx_http_cache_refresh_entry_t *entry);
 #endif
@@ -496,6 +501,60 @@ ngx_http_cache_refresh_reply(ngx_http_cache_refresh_t *job)
 }
 
 
+/*
+ * The namespace reset is fail-safe for invalidation but makes this REFRESH
+ * page meaningless: every scanned entry is already stale.  Report the
+ * storage fault directly instead of resuming the scan or claiming success.
+ */
+static ngx_int_t
+ngx_http_cache_refresh_namespace_full(ngx_http_cache_refresh_t *job,
+    size_t key_len)
+{
+    ngx_http_request_t               *r = job->request;
+    ngx_http_cache_purge_namespace_t *ns = job->conf->namespace;
+    ngx_buf_t                        *b;
+    ngx_chain_t                       out;
+    ngx_int_t                         rc;
+
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "ngx_cache_purge: namespace \"%V\" rule table is full "
+                  "(key length %uz, zone %uz bytes); all cache entries were "
+                  "invalidated; increase cache_purge_namespace and restart "
+                  "nginx", &ns->name, key_len, ns->zone->shm.size);
+
+    b = ngx_create_temp_buf(r->pool, 1024 + ns->name.len);
+    if (b == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    b->last = ngx_snprintf(b->last, b->end - b->last,
+        "{\"code\":\"refresh_namespace_full\",\"scan_complete\":false,"
+        "\"complete\":false,\"timed_out\":false,\"scan_error\":true,"
+        "\"namespace_reset\":true,\"error\":\"cache purge namespace \\\"%V\\\" "
+        "rule table is full; all cache entries were invalidated; increase "
+        "cache_purge_namespace and restart\",\"undispatched\":0,"
+        "\"next_cursor\":\"00000000000000000000000000000000\","
+        "\"results\":[]}", &ns->name);
+    b->last_buf = 1;
+    b->last_in_chain = 1;
+
+    if (ngx_http_cache_purge_response_headers(
+            r, NGX_PURGE_RESULT_REFRESH_NAMESPACE_FULL) != NGX_OK)
+    {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+    ngx_str_set(&r->headers_out.content_type, "application/json");
+    r->headers_out.content_length_n = b->last - b->pos;
+
+    rc = ngx_http_send_header(r);
+    if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+        return rc;
+    }
+    out.buf = b;
+    out.next = NULL;
+    return ngx_http_output_filter(r, &out);
+}
+
+
 static ngx_int_t
 ngx_http_cache_refresh_probe(ngx_http_cache_refresh_t *job,
     ngx_http_cache_refresh_entry_t *entry)
@@ -729,6 +788,13 @@ ngx_http_cache_refresh_step(ngx_event_t *ev)
         }
         if (rc == NGX_AGAIN) {
             ngx_add_timer(ev, 10);
+            return;
+        }
+        if (rc == NGX_CACHE_PURGE_NAMESPACE_FULL) {
+            rc = ngx_http_cache_refresh_namespace_full(job, entry->key_len);
+            job->cleanup->handler = NULL;
+            ngx_http_cache_refresh_destroy(job);
+            ngx_http_finalize_request(r, rc);
             return;
         }
         entry->result = rc == NGX_OK ? NGX_REFRESH_INVALIDATED

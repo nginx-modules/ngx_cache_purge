@@ -115,6 +115,19 @@ including stale files written by older in-flight requests. See
 [generation-key operation](docs/OPERATIONS.md#generation-invalidation) for
 namespace persistence and cleanup constraints.
 
+The master process recreates the namespace dirty marker at startup. In
+`daemon off` mode (including the Docker deployment), SIGTERM or SIGQUIT starts
+an early watchdog snapshot. The namespace then drains: late PURGE/REFRESH
+invalidations are rejected so no mutation can follow the snapshot. A
+successful snapshot removes the marker before workers finish exiting; final
+shutdown repeats the atomic snapshot and releases the state lock. A subsequent
+SIGKILL can therefore preserve the epoch and invalidation rules. If the early
+snapshot cannot be written, the marker stays in place and the next start
+rotates the epoch so invalidated entries stay unreachable. With the default
+`daemon on`, nginx has no post-daemonization module hook to retain the
+watchdog, so only final master shutdown persists state and a forced kill may
+still start cold. `nginx -t` and `nginx -T` do not touch this state.
+
 <a id="conditional-refresh"></a>
 
 REFRESH checks cached proxy content against the origin without refilling

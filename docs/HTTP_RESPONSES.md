@@ -30,8 +30,12 @@ The status endpoint reports aggregate queue and cleanup counters. It is not a pe
 | 500 | `delete_failed` | A synchronous deletion failed; partial deletion is possible |
 | 500 | `scan_failed` | A synchronous PURGE or REFRESH scan failed; partial effects are possible |
 | 500 | `internal_error` | Other module failure or an unknown internal result |
+| 507 | `namespace_full` | The namespace rule table is full; the namespace was reset and every cache entry invalidated |
+| 507 | `refresh_namespace_full` | REFRESH encountered the full namespace rule table; see the dedicated JSON document below |
 
 Missing entries are successful idempotent outcomes (`200 no_match`), not failed HTTP preconditions. Generation invalidation of an absent key still returns `invalidated`. A completed REFRESH can contain origin/transport errors for individual entries; inspect its existing `results` and continuation fields. See [REFRESH semantics and edge cases](REFRESH.md) for origin-status policy, metadata limitations, cancellation and retry behavior. A directory scan failure returns `500 scan_failed`; it does not return a normal continuation document.
+
+A full namespace rule table is an explicit storage failure. PURGE resets the namespace fail-safe (all existing entries become stale) and returns `507 namespace_full`; the error log records the namespace, key length and shared-zone size. REFRESH stops the page and returns `507 refresh_namespace_full` with a JSON document whose `scan_complete`, `complete` and `namespace_reset` fields describe the reset. Increase `cache_purge_namespace` and restart nginx. Do not retry against the same size.
 
 Physical wildcard prefixes are limited to 511 bytes excluding the trailing `*`. Exact keys with Vary-aware traversal have the same 511-byte limit. Namespace selectors allow 8096 bytes including a trailing `*`. Oversized selectors are rejected before deletion; physical `purge_all` does not need a prefix. Native cache-file validation has its separate 8192-byte key limit.
 

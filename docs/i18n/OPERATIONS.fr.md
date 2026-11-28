@@ -10,6 +10,8 @@ Une **tâche** est une opération joker ou `purge_all`. Un **lot** compte les t�
 
 Avec les générations, un balayage physique par chemin et espace de noms regroupe les invalidations acceptées. Les pages REFRESH sont des opérations HTTP distinctes, pas des tâches de la file de purge.
 
+L'état de l'espace de noms est enregistré lors d'un arrêt propre : un redémarrage planifié réutilise l'époque et les règles ; une exécution sans hook d'arrêt laisse un marqueur et le démarrage suivant change d'époque.
+
 | Requête et configuration | Parcours des fichiers | Fin HTTP |
 |---|---|---|
 | Clé exacte historique, avec ou sans Vary | Worker de la requête ; Vary ajoute un parcours | Après l’opération |
@@ -252,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Avec le plugin Compose, utilisez `docker compose` à la place de `docker-compose` ; les Makefiles détectent les deux. `nginx-test` et `make test-all` lancent les sept suites `t/*.t` via le même `prove` qu’en CI. L’image d’intégration inclut contrôles natifs des auxiliaires/structures et exécution en pool. Les compilations strictes sans threads testent l’incrémental. Chaque test échoué fait échouer la commande.
 
 Voir [`t/TESTING.md`](../../t/TESTING.md) pour compilations strictes, sanitizers, Valgrind, plateformes et rapports. Tous les jobs GitHub sont dans `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Sécurité
+
+- Restreignez les points de terminaison PURGE avec les directives `allow` / `deny` ou une couche d'authentification en amont. Ne les exposez jamais publiquement.
+- Réglez `cache_purge_queue_size` en fonction du trafic afin de limiter la mémoire partagée consommée lors des pics de requêtes.
+- Envisagez d'associer les locations purge à `limit_req` pour limiter les requêtes PURGE indépendamment du trafic normal.
+- Mode génération : le répertoire d'état doit appartenir à l'utilisateur qui exécute le master nginx et ne doit être accessible en écriture ni à son groupe ni aux autres. Le master le crée en mode `0700`, nginx ne le transmet pas à l'utilisateur des workers et le démarrage échoue avec `[emerg]` si le propriétaire ou le mode est incorrect. Rendez une seule fois à l'utilisateur du master tout répertoire qu'une ancienne version aurait laissé appartenir à l'utilisateur des workers. L'instantané contient un CRC32 qui détecte la corruption, pas la falsification ; l'accès en écriture au répertoire donne donc le contrôle des entrées du cache qui restent accessibles. Les fichiers qu'il contient sont créés en mode `0600`. Les vérifications du propriétaire et du mode ne distinguent le master des workers que lorsque ceux-ci s'exécutent sous des utilisateurs différents. Si le master et ses workers partagent le même UID (nginx sans privilèges ou `user root`), il est impossible de savoir qui a écrit un fichier d'état : un worker peut falsifier l'époque, les règles et le CRC32 et rendre de nouveau accessibles des entrées invalidées. Ne vous fiez pas à l'état persistant dans ce déploiement ; cette configuration n'est pas prise en charge. Une nouvelle époque est synchronisée avec `fsync`, ainsi qu'avec le répertoire, avant d'être utilisée ; en cas d'échec, le démarrage échoue plutôt que de risquer de réutiliser une époque.
+- Mode génération : chaque sélecteur PURGE distinct peut ajouter des règles et un sélecteur peut mesurer jusqu'à 8096 octets. L'épuisement de `cache_purge_namespace` réinitialise l'espace de noms, invalide toutes ses entrées et renvoie `507`. Limitez les personnes autorisées à envoyer PURGE et REFRESH, et déclenchez une alerte si le compteur `full` de la réponse d'état augmente.
+

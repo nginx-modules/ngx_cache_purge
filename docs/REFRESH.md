@@ -12,7 +12,7 @@ The origin probe uses HEAD and stored `If-None-Match` / `If-Modified-Since` vali
 
 This is **not a complete implementation of cache revalidation** from [RFC 9111 §4.3.4–4.3.5](https://www.rfc-editor.org/rfc/rfc9111.html#section-4.3.4). That mechanism includes selecting stored responses and updating metadata. The v4 probe keeps a file unchanged on `304`; it does not merge new `Cache-Control`, `Vary`, validators or other response headers. It also does not compare a `200` HEAD's metadata to retain an otherwise unchanged object. Do not rely on REFRESH to apply a changed caching policy or extend freshness. If those are required, use normal core revalidation or explicitly PURGE and refill the entry.
 
-The administrative response uses `200` for a processed page, including a page with per-entry errors or a continuation. It uses `400` for a bad selector/cursor and `500 scan_failed` for a failed directory scan. Errors use the problem format from [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html), with a matching HTTP `status`, `type: about:blank`, and a module `code` extension. See the [full response contract](HTTP_RESPONSES.md).
+The administrative response uses `200` for a processed page, including a page with per-entry errors or a continuation. It uses `400` for a bad selector/cursor and `500 scan_failed` for a failed directory scan. A full namespace rule table returns `507 refresh_namespace_full` with a JSON document that marks `scan_error` and `namespace_reset` and does not resume the scan. Other errors use the problem format from [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457.html), with a matching HTTP `status`, `type: about:blank`, and a module `code` extension. See the [full response contract](HTTP_RESPONSES.md).
 
 ## Cases a client must handle
 
@@ -31,6 +31,7 @@ The administrative response uses `200` for a processed page, including a page wi
 | Page deadline expires | Stop new work; `refresh_incomplete` | An active HEAD still obeys core proxy timeouts; this is not a hard response deadline |
 | Client disconnects | Stop dispatching; retire active resources through NGINX callbacks | Previous invalidations remain; cancellation is not a rollback |
 | Allocation or generation invalidation fails | `invalidation_error`; entry retained | Check shared-memory pressure and the module error log |
+| Namespace rule table is full | `507 refresh_namespace_full`; namespace reset, scan stopped | All entries are stale; increase `cache_purge_namespace` and restart nginx |
 | Selected work remains undispatched | Counted in `undispatched` | Continuation cannot skip the unfinished work |
 | Storage scan fails | `500 scan_failed` problem response | Inspect the error log; do not expect continuation JSON for this failure |
 

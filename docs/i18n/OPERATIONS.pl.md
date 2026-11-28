@@ -10,6 +10,8 @@
 
 Przy generacjach jedno fizyczne przejście na ścieżkę i przestrzeń nazw scala zaakceptowane invalidacje. Strony REFRESH są osobnymi operacjami HTTP, nie zadaniami kolejki PURGE.
 
+Stan przestrzeni nazw jest zapisywany przy prawidłowym zamknięciu, więc planowany restart używa tej samej epoki i reguł; uruchomienie bez hooka zamknięcia pozostawia znacznik, a następny start zmienia epokę.
+
 | Żądanie i konfiguracja | Przejście plików | Zakończenie HTTP |
 |---|---|---|
 | Historyczny dokładny klucz, z Vary lub bez | Worker żądania; Vary dodaje przejście katalogu | Po operacji |
@@ -252,3 +254,14 @@ docker-compose -f docker-compose.test.yml run --rm test-runtime
 Dla wtyczki Compose zastąp `docker-compose` przez `docker compose`; Makefile wykrywa oba. `nginx-test` i `make test-all` uruchamiają siedem zestawów `t/*.t` przez ten sam `prove` co CI. Obraz integracyjny zawiera natywne testy pomocnicze/struktur i wykonanie z pulą. Rygorystyczne kompilacje bez wątków testują tryb przyrostowy. Każdy nieudany test oznacza niepowodzenie polecenia.
 
 Rygorystyczne kompilacje, sanitizery, Valgrind, platformy i raporty: [`t/TESTING.md`](../../t/TESTING.md). Wszystkie zadania GitHub są w `build-test-release.yml`.
+
+<a id="security"></a>
+
+## Bezpieczeństwo
+
+- Ogranicz punkty końcowe PURGE za pomocą dyrektyw `allow` / `deny` lub uwierzytelniania po stronie upstreamu. Nigdy nie udostępniaj ich publicznie.
+- Ustaw `cache_purge_queue_size` odpowiednio do ruchu, aby ograniczyć zużycie pamięci współdzielonej podczas nagłych wzrostów liczby żądań.
+- Rozważ połączenie lokalizacji purge z `limit_req`, aby ograniczać żądania PURGE niezależnie od zwykłego ruchu.
+- Tryb generacji: katalog stanu musi należeć do użytkownika uruchamiającego master nginx i nie może być zapisywalny przez jego grupę ani pozostałych użytkowników. Master tworzy go z trybem `0700`, nginx nie przekazuje go użytkownikowi workerów, a uruchomienie kończy się błędem `[emerg]`, jeśli właściciel lub tryb są nieprawidłowe. Katalog pozostawiony przez starszą wersję jako własność użytkownika workerów trzeba jednorazowo zwrócić użytkownikowi mastera. Migawka zawiera CRC32 wykrywające uszkodzenie, ale nie fałszerstwo, więc dostęp do zapisu w katalogu oznacza kontrolę nad tym, które wpisy cache pozostają osiągalne. Pliki w katalogu są tworzone z trybem `0600`. Kontrole właściciela i uprawnień odróżniają master od workerów tylko wtedy, gdy działają oni jako różni użytkownicy. Gdy master i workery współdzielą ten sam UID (rootless nginx lub `user root`), nie można ustalić, kto zapisał plik stanu: worker może sfałszować epokę, reguły i CRC32, ponownie udostępniając unieważnione wpisy. W takim wdrożeniu nie należy polegać na trwałym stanie; ta konfiguracja nie jest obsługiwana. Nowa epoka jest synchronizowana przez `fsync` wraz z katalogiem przed użyciem. Jeśli to się nie powiedzie, uruchomienie kończy się błędem zamiast ryzykować ponowne użycie epoki.
+- Tryb generacji: każdy odrębny selektor PURGE może dodawać reguły, a selektor może mieć do 8096 bajtów. Wyczerpanie `cache_purge_namespace` resetuje przestrzeń nazw, unieważnia wszystkie jej wpisy i zwraca `507`. Ogranicz, kto może wysyłać PURGE i REFRESH, oraz alarmuj o wzroście licznika `full` w odpowiedzi statusu.
+

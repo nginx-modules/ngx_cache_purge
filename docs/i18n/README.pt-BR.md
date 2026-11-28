@@ -97,6 +97,8 @@ O asterisco deve ser o último byte da chave avaliada, não apenas do caminho UR
 
 Use gerações de chaves para impedir que novas requisições obtenham conteúdo antigo após o PURGE, inclusive respostas gravadas com atraso. Os arquivos são removidos separadamente. Um namespace compartilha regras de invalidação; preserve seu diretório de estado entre reinicializações.
 
+O estado do namespace é gravado no desligamento ordenado, então um reinício planejado reutiliza a época e as regras de invalidação em vez de começar com o cache vazio. Se uma execução não chega ao hook de desligamento, um marcador permanece e a próxima inicialização troca de época para que entradas invalidadas continuem inacessíveis.
+
 <a id="conditional-refresh"></a>
 
 ### Verificar o cache na origem (REFRESH)

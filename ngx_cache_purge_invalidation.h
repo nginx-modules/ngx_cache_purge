@@ -15,9 +15,36 @@ typedef struct {
     ngx_path_t                         *state_path;
     ngx_pool_t                         *pool;
     ngx_http_cache_purge_generation_t  *shared;
+    ngx_fd_t                            lock_fd;
+    ngx_flag_t                          boot_dirty;
 } ngx_http_cache_purge_namespace_t;
 
 #define NGX_CACHE_PURGE_LOGICAL_KEY_MAX  8096
+
+/*
+ * Flag that makes open() fail with ELOOP on a symbolic link.  Older nginx
+ * releases do not define NGX_FILE_NOFOLLOW and some platforms lack
+ * O_NOFOLLOW; there the flag is zero and callers rely on O_EXCL or fstat().
+ */
+#ifdef O_NOFOLLOW
+#define NGX_CACHE_PURGE_OPEN_NOFOLLOW  O_NOFOLLOW
+#else
+#define NGX_CACHE_PURGE_OPEN_NOFOLLOW  0
+#endif
+
+/*
+ * Opening a FIFO blocks until a peer appears, which would hang the master at
+ * startup if one is planted at a state file name.  Regular files ignore the
+ * flag; the descriptor is checked with fstat() right after the open.
+ */
+#ifdef O_NONBLOCK
+#define NGX_CACHE_PURGE_OPEN_NONBLOCK  O_NONBLOCK
+#else
+#define NGX_CACHE_PURGE_OPEN_NONBLOCK  0
+#endif
+
+/* A rule allocation failed after the namespace was reset. */
+#define NGX_CACHE_PURGE_NAMESPACE_FULL   -100
 
 ngx_http_cache_purge_namespace_t *ngx_http_cache_purge_namespace_create(
     ngx_conf_t *cf, ngx_str_t *name, size_t size, const ngx_str_t *state_path);
@@ -32,11 +59,24 @@ ngx_int_t ngx_http_cache_purge_generation_stale(
 ngx_int_t ngx_http_cache_purge_generation_current(
     ngx_http_cache_purge_namespace_t *ns, ngx_str_t *key, ngx_str_t *logical);
 
+/*
+ * Persistent namespace ownership belongs to the master lifecycle only.
+ * Boot runs once after the shared zones are initialized; shutdown persists
+ * the snapshot, removes the dirty marker and releases the state lock.
+ * Both are no-ops after an nginx -t/-T configuration check.
+ */
+ngx_int_t ngx_http_cache_purge_generation_boot(ngx_cycle_t *cycle);
+void ngx_http_cache_purge_generation_shutdown(ngx_cycle_t *cycle);
+ngx_int_t ngx_http_cache_purge_generation_persist_early(ngx_cycle_t *cycle);
+ngx_int_t ngx_http_cache_purge_generation_persist(
+    ngx_http_cache_purge_namespace_t *ns);
+
 /* Consistent copy of the namespace generation state, for status reporting. */
 typedef struct {
     u_char      epoch[10];
     uint64_t    serial;
     uint64_t    baseline;
+    uint64_t    full;
     ngx_flag_t  rules;
 } ngx_http_cache_purge_generation_view_t;
 
