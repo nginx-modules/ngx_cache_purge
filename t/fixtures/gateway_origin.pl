@@ -41,7 +41,8 @@ sub gateway_respond {
         }
         my %params = split /\0/, gateway_read($socket, $length);
         die 'invalid SCGI parameters' unless $params{SCGI} eq '1'
-            && $params{CONTENT_LENGTH} eq '0' && $params{REQUEST_METHOD} eq 'GET';
+            && $params{CONTENT_LENGTH} eq '0'
+            && $params{REQUEST_METHOD} =~ /\A(?:GET|PURGE)\z/;
         die 'missing SCGI terminator' unless gateway_read($socket, 1) eq ',';
     } elsif ($protocol eq 'uwsgi') {
         my (undef, $length) = unpack('CvC', gateway_read($socket, 4));

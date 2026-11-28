@@ -146,7 +146,7 @@ sub config {
             proxy_pass http://127.0.0.1:$origin_port/origin\$cache_purge_refresh_uri;
         }
 REFRESH
-    my ($gateway_http, $gateway_location) = ('', '');
+    my ($gateway_http, $gateway_location, $health_purge) = ('', '', '');
     if (my $g = $s->{gateway}) {
         my $gateway_settings = $cache_settings;
         $gateway_settings =~ s/proxy_/${g}_/g;
@@ -154,9 +154,22 @@ REFRESH
             : "${g}_param CONTENT_LENGTH \"0\";";
         $gateway_http = "${g}_cache_path $s->{root}/gateway-cache levels=1:2 keys_zone=gw:2m inactive=1h;\n"
             . "${g}_temp_path $s->{root}/gateway-temp;";
+        # gateway_inherit keeps the server-level proxy_cache_purge (#83)
+        my $proxy_purge = $s->{gateway_inherit} ? '' : 'proxy_cache_purge off;';
+        # gateway_purge_off: purge enabled at http level, "off" in the location
+        my $gateway_purge = $s->{gateway_purge_off} ? "${g}_cache_purge off;"
+            : $s->{gateway_no_purge} ? ''
+            : "${g}_cache_purge PURGE from 127.0.0.1;";
+        if ($s->{gateway_purge_off}) {
+            $gateway_http .= "\n${g}_cache_purge PURGE from 127.0.0.1;";
+            # static /health must not inherit it: purge there answers GET with 405
+            $health_purge = "${g}_cache_purge off;";
+        }
+        my $gateway_if = $s->{gateway_if} ? 'if ($arg_t) { set $gateway_if 1; }' : '';
         $gateway_location = <<"GATEWAY";
         location /gateway/ {
-            proxy_cache_purge off;
+            $proxy_purge
+            $gateway_if
             ${g}_cache gw;
             ${g}_cache_key $key;
             ${g}_cache_valid 200 1h;
@@ -165,7 +178,7 @@ REFRESH
             ${g}_param REQUEST_URI \$request_uri;
             $length_param
             ${g}_pass 127.0.0.1:$origin_port;
-            ${g}_cache_purge PURGE from 127.0.0.1;
+            $gateway_purge
             add_header X-Cache \$upstream_cache_status always;
         }
 GATEWAY
@@ -215,7 +228,7 @@ http {
         $gateway_location
         $extra_locations
         proxy_cache_purge PURGE from 127.0.0.1;
-        location /health { proxy_cache_purge off; }
+        location /health { proxy_cache_purge off; $health_purge }
         location /origin/ {
             proxy_cache_purge off;
             $vary
@@ -971,6 +984,59 @@ subtest 'FastCGI SCGI and uWSGI use real native caches with generation keys' => 
                "$protocol: prefix applies to native protocol cache");
             stop_server($s);
         }
+    }
+};
+
+subtest 'inherited proxy_cache_purge does not take over *_pass locations' => sub {
+    # build_verify.pl builds without the rewrite module, so no "if" there
+    my $has_if = `$nginx -V 2>&1` !~ /--without-http_rewrite_module/;
+    for my $protocol (qw(fastcgi scgi uwsgi)) {
+        for my $if (0, $has_if ? 1 : ()) {
+            my $s = start_server("gateway-inherit-$protocol-$if", workers => 1,
+                                 gateway => $protocol, gateway_inherit => 1,
+                                 gateway_if => $if, controlled_origin => 1,
+                                 background => 0);
+            my $uri = $if ? '/gateway/first?t=1' : '/gateway/first';
+            my $r = request($s, $uri);
+            is($r->{status}, 200, "$protocol/if=$if: request reaches the upstream");
+            is($r->{content}, "$protocol origin content\n", "$protocol/if=$if: protocol body decoded");
+            await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
+                  "$protocol/if=$if: native cache did not warm");
+            $r = request($s, $uri, 'PURGE');
+            is($r->{status}, 200, "$protocol/if=$if: PURGE completed");
+            is($r->{headers}{'cache-purge-code'}, 'purged',
+               "$protocol/if=$if: PURGE uses the $protocol cache, not proxy_cache");
+            is(request($s, $uri)->{headers}{'x-cache'}, 'MISS',
+               "$protocol/if=$if: purged entry is unreachable");
+            stop_server($s);
+        }
+    }
+};
+
+subtest 'unrelated inherited purge does not intercept upstream PURGE' => sub {
+    # the location's own purge is omitted, or "off" over an http-level one
+    for my $mode (qw(no_purge purge_off)) {
+    for my $protocol (qw(fastcgi scgi uwsgi)) {
+        my $s = start_server("gateway-inherit-$mode-$protocol", workers => 1,
+                             gateway => $protocol, gateway_inherit => 1,
+                             "gateway_$mode" => 1, controlled_origin => 1,
+                             background => 0);
+        my $uri = '/gateway/first';
+        my $r = request($s, $uri);
+        is($r->{status}, 200, "$protocol/$mode: initial request reaches the upstream");
+        await(sub { (request($s, $uri)->{headers}{'x-cache'} || '') eq 'HIT' },
+              "$protocol/$mode: native cache did not warm");
+
+        $r = request($s, $uri, 'PURGE');
+        is($r->{status}, 200, "$protocol/$mode: PURGE is forwarded to the upstream");
+        is($r->{content}, "$protocol origin content\n",
+           "$protocol/$mode: upstream response is preserved");
+        ok(!exists $r->{headers}{'cache-purge-code'},
+           "$protocol/$mode: inherited proxy purge did not handle the request");
+        is(request($s, $uri)->{headers}{'x-cache'}, 'HIT',
+           "$protocol/$mode: unrelated PURGE did not invalidate the native cache");
+        stop_server($s);
+    }
     }
 };
 
