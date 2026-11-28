@@ -231,7 +231,7 @@ Compile e execute a suíte completa em Docker:
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.7 make test-all
+NGINX_VERSION=1.31.10 make test-all
 ```
 
 A partir de `t/`, os serviços Compose existentes permanecem disponíveis:

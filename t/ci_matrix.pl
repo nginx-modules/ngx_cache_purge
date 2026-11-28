@@ -19,7 +19,7 @@ if (!$full && $base =~ /^[0-9a-f]{40}$/ && $base !~ /^0+$/) {
 }
 
 my @integration = (
-    {name => 'stable', nginx => '1.30.6', ubuntu => '24.04'},
+    {name => 'stable', nginx => '1.30.8', ubuntu => '24.04'},
     {name => 'mainline', nginx => '1.31.10', ubuntu => '24.04'},
 );
 my @compatibility = (

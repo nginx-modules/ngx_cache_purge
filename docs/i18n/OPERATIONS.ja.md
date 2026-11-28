@@ -231,7 +231,7 @@ Docker 内でビルドし、全スイートを実行します。
 
 ```sh
 make test-all
-NGINX_VERSION=1.31.7 make test-all
+NGINX_VERSION=1.31.10 make test-all
 ```
 
 `t/` から従来の Compose サービスを使用できます。

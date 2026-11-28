@@ -78,7 +78,7 @@ Set `TEST_NGINX_WORKERS` and `TEST_NGINX_FILES` with Compose
 | `test-verify` | Strict debug/release module builds, then native and runtime suites |
 | `test-sanitize` | ASan/UBSan with threads, 16 workers and 16384 files |
 | `test-valgrind` | Memory suite with Test::Nginx's Valgrind launcher enabled |
-| `test-compat` | All seven suites on 1.20.2, 1.26.3, 1.28.3, 1.30.6 and 1.31.10 |
+| `test-compat` | All seven suites on 1.20.2, 1.26.3, 1.28.3, 1.30.8 and 1.31.10 |
 | `test-version VERSION=x.y.z` | All seven suites on the selected version |
 | `shell` | Open the integration container |
 | `clean` | Remove project test containers and generated test files |
@@ -299,7 +299,7 @@ and build configuration; it does not cover every release in a series.
 
 | NGINX | Commit checks | Extended checks |
 |---|---|---|
-| 1.30.6, 1.31.10 | All seven container suites | Same coverage |
+| 1.30.8, 1.31.10 | All seven container suites | Same coverage |
 | 1.31.10 | Strict GCC/Clang, incremental/pooled; ASan/UBSan; native macOS and Windows x64/x86; Valgrind on PRs | Valgrind also outside PRs |
 | 1.7.9 | Strict GCC, native helpers and runtime, incremental | Same coverage |
 | 1.7.11, 1.7.12 | Strict GCC; epoll fallback / first corrected thread-pool notification | Same coverage |
