@@ -44,7 +44,7 @@ class ReleasePublication(unittest.TestCase):
             gh.write_text(GH)
             gh.chmod(0o755)
             assets = [f'ngx_cache_purge-{tag}-nginx-{v}-linux-{a}.{e}'
-                      for v in ('1.30.6', '1.31.7')
+                      for v in ('1.30.8', '1.31.10')
                       for a in ('x86_64', 'aarch64') for e in ('tar.gz', 'zip')]
             for name in assets[1:] if missing else assets:
                 (root / 'dist' / name).write_bytes(name.encode())
@@ -110,7 +110,7 @@ class ReleaseTagContract(unittest.TestCase):
     def test_builder_rejects_prefixed_and_invalid_module_versions(self):
         for version in ('v4.0.0', '4.0', '5.0.0', '4.0.0.1'):
             with self.subTest(version=version):
-                env = dict(os.environ, MODULE_VERSION=version, NGINX_VERSION='1.31.7')
+                env = dict(os.environ, MODULE_VERSION=version, NGINX_VERSION='1.31.10')
                 result = subprocess.run(['bash', str(ROOT / 'tools/build-release-module.sh')],
                                         cwd=ROOT, env=env, capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0)
@@ -159,7 +159,7 @@ class RebuildCheck(unittest.TestCase):
                     'printf %s "$REBUILD_CONTENT" > "$RELEASE_OUTPUT_DIR/module.tar.gz"\n'
                     'printf %s "$REBUILD_CONTENT" > "$RELEASE_OUTPUT_DIR/module.zip"\n')
                 summary = root / 'summary'
-                env = dict(os.environ, REBUILD_CONTENT=content, NGINX_VERSION='1.31.7',
+                env = dict(os.environ, REBUILD_CONTENT=content, NGINX_VERSION='1.31.10',
                            GITHUB_STEP_SUMMARY=str(summary))
                 result = subprocess.run(['bash', str(ROOT / 'tools/verify-release-rebuild.sh')],
                                         cwd=root, env=env, capture_output=True, text=True)

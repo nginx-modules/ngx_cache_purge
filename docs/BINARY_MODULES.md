@@ -23,7 +23,7 @@ Use the target server's relevant configure options shown by `nginx -V`. `--with-
 
 ## What compatibility means
 
-`--with-compat` accommodates certain differences in NGINX build options. It does not remove the NGINX version check or guarantee compatibility across CPU architectures, C libraries, distribution patches or arbitrary NGINX derivatives. A binary for NGINX 1.31.7 is not a binary for every 1.31.x release. Always run `nginx -t` on the actual target installation.
+`--with-compat` accommodates certain differences in NGINX build options. It does not remove the NGINX version check or guarantee compatibility across CPU architectures, C libraries, distribution patches or arbitrary NGINX derivatives. A binary for NGINX 1.31.10 is not a binary for every 1.31.x release. Always run `nginx -t` on the actual target installation.
 
 NGINX Open Source is the open-source server. NGINX Plus is the commercial server offered within F5 NGINX One. For Plus, identify the underlying NGINX version with `nginx -v` and follow [F5's third-party module build instructions](https://www.f5.com/company/blog/nginx/compiling-dynamic-modules-nginx-plus). These release assets are built and load-tested with NGINX Open Source; they are not certified or tested against NGINX Plus. Do not infer Plus compatibility from the name of a stable or mainline branch.
 
@@ -33,8 +33,8 @@ The release matrix pins one current stable and one current mainline version, eac
 
 Example archive names:
 
-- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz`
-- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-aarch64.zip`
+- `ngx_cache_purge-4.0.0-nginx-1.31.10-linux-x86_64.tar.gz`
+- `ngx_cache_purge-4.0.0-nginx-1.31.10-linux-aarch64.zip`
 
 Both formats contain the same module, license, instructions, `SHA256SUMS` for the module and `BUILD-INFO.txt`. Build information records the commit, source archive hash, configure options, compiler, build OS, glibc and ELF dependencies. The build uses pinned Ubuntu 24.04 runners and glibc. The OS version is omitted from the archive name, not from the compatibility information. These are not Alpine/musl binaries; musl would require a separate build and clearly distinguished asset name.
 
@@ -56,7 +56,7 @@ Each release matrix job runs two clean builds in different temporary directories
 The build uses the commit timestamp as `SOURCE_DATE_EPOCH`, normalizes compiler source paths, and fixes archive entry order, timestamps and ownership. `BUILD-INFO.txt` records compiler, linker, packaging tools, installed package versions and source hashes. To repeat the check locally in the same compatible Linux build environment, run from the module checkout:
 
 ```sh
-export NGINX_VERSION=1.31.7 MODULE_VERSION=4.0.0
+export NGINX_VERSION=1.31.10 MODULE_VERSION=4.0.0
 bash tools/build-release-module.sh
 bash tools/verify-release-rebuild.sh
 ```
@@ -66,7 +66,7 @@ This is a same-environment repeat-build check. Hosted runner images and APT repo
 [Build provenance attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations) identify the source commit and GitHub Actions workflow that produced the archives. Verify a downloaded archive with:
 
 ```sh
-gh attestation verify ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz \
+gh attestation verify ngx_cache_purge-4.0.0-nginx-1.31.10-linux-x86_64.tar.gz \
     -R nginx-modules/ngx_cache_purge
 ```
 

@@ -23,7 +23,7 @@ nginx -t
 
 ## 兼容性的含义
 
-`--with-compat` 只处理 NGINX 构建选项中的部分差异。它不会取消 NGINX 版本检查，也不保证跨 CPU 架构、C 库、发行版补丁或任意 NGINX 衍生版本可用。为 NGINX 1.31.7 构建的二进制并不适用于所有 1.31.x 版本。请始终在实际的目标安装上执行 `nginx -t`。
+`--with-compat` 只处理 NGINX 构建选项中的部分差异。它不会取消 NGINX 版本检查，也不保证跨 CPU 架构、C 库、发行版补丁或任意 NGINX 衍生版本可用。为 NGINX 1.31.10 构建的二进制并不适用于所有 1.31.x 版本。请始终在实际的目标安装上执行 `nginx -t`。
 
 NGINX Open Source 是开源服务器；NGINX Plus 是 F5 NGINX One 中的商业服务器。对 Plus，请先用 `nginx -v` 确认其底层 NGINX 版本，并遵循 [F5 的第三方模块构建说明](https://www.f5.com/company/blog/nginx/compiling-dynamic-modules-nginx-plus)。本项目的发布产物使用 NGINX Open Source 构建并做加载测试，未经 NGINX Plus 认证或测试；不要从 stable 或 mainline 分支的名称推断 Plus 兼容性。
 
@@ -33,8 +33,8 @@ NGINX Open Source 是开源服务器；NGINX Plus 是 F5 NGINX One 中的商业�
 
 归档命名示例：
 
-- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz`
-- `ngx_cache_purge-4.0.0-nginx-1.31.7-linux-aarch64.zip`
+- `ngx_cache_purge-4.0.0-nginx-1.31.10-linux-x86_64.tar.gz`
+- `ngx_cache_purge-4.0.0-nginx-1.31.10-linux-aarch64.zip`
 
 两种格式包含相同的模块、许可证、说明、模块的 `SHA256SUMS` 和 `BUILD-INFO.txt`。构建信息记录提交、源码归档哈希、configure 选项、编译器、构建操作系统、glibc 与 ELF 依赖。构建使用固定版本的 Ubuntu 24.04 runner 与 glibc。操作系统版本不出现在归档名中，但会记录在兼容性信息里。这些不是 Alpine/musl 二进制；musl 需要单独构建并使用明确区分的产物名。
 
@@ -55,7 +55,7 @@ NGINX Open Source 是开源服务器；NGINX Plus 是 F5 NGINX One 中的商业�
 构建把提交时间戳用作 `SOURCE_DATE_EPOCH`，规范化编译器源码路径，并固定归档条目顺序、时间戳和属主。`BUILD-INFO.txt` 记录编译器、链接器、打包工具、所安装软件包的版本以及源码哈希。若要在相同的兼容 Linux 构建环境中本地复现检查，请在模块检出目录执行：
 
 ```sh
-export NGINX_VERSION=1.31.7 MODULE_VERSION=4.0.0
+export NGINX_VERSION=1.31.10 MODULE_VERSION=4.0.0
 bash tools/build-release-module.sh
 bash tools/verify-release-rebuild.sh
 ```
@@ -65,7 +65,7 @@ bash tools/verify-release-rebuild.sh
 [构建来源证明](https://docs.github.com/en/actions/concepts/security/artifact-attestations)标明产出归档的源提交与 GitHub Actions 工作流。可用以下命令校验下载的归档：
 
 ```sh
-gh attestation verify ngx_cache_purge-4.0.0-nginx-1.31.7-linux-x86_64.tar.gz \
+gh attestation verify ngx_cache_purge-4.0.0-nginx-1.31.10-linux-x86_64.tar.gz \
     -R nginx-modules/ngx_cache_purge
 ```
 
